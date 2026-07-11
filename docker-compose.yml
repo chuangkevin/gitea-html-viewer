@@ -1,6 +1,6 @@
 services:
   note-bridge:
-    image: ${DOCKERHUB_USERNAME:-kevin950805}/gitea-html-viewer:latest
+    image: ${DOCKERHUB_USERNAME:-kevin950805}/note-bridge:latest
     container_name: note-bridge
     restart: unless-stopped
     ports:
