@@ -1,0 +1,16 @@
+services:
+  note-bridge:
+    build: .
+    container_name: note-bridge
+    restart: unless-stopped
+    ports:
+      - "3210:3210"
+    environment:
+      - PORT=3210
+      - BASE_URL=${BASE_URL:-https://note.sisihome.org}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - SECRET=${SECRET}
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
