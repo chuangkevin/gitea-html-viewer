@@ -1,0 +1,83 @@
+name: Deploy to Server via Tailscale
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Docker Images"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream build
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "Upstream build did not succeed, skip deploy."
+            exit 0
+          fi
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Deploy via SSH
+        env:
+          DEPLOY_SERVER_IP: ${{ secrets.DEPLOY_SERVER_IP }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          ssh -i ~/.ssh/deploy_key ${DEPLOY_USER}@${DEPLOY_SERVER_IP} '
+            set -e
+            cd '"${DEPLOY_PATH}"'
+
+            echo "🔄 Pulling latest image..."
+            for i in 1 2 3; do docker compose pull && break || sleep $((i*10)); done
+
+            echo "🚀 Recreating container..."
+            docker compose up -d --force-recreate --remove-orphans
+
+            echo "🧹 Pruning old images..."
+            docker image prune -af --filter "until=24h" || true
+
+            docker compose ps
+          '
+
+      - name: Health Check
+        env:
+          DEPLOY_SERVER_IP: ${{ secrets.DEPLOY_SERVER_IP }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          for i in $(seq 1 24); do
+            echo "  health attempt $i/24..."
+            if ssh -i ~/.ssh/deploy_key ${DEPLOY_USER}@${DEPLOY_SERVER_IP} \
+              'docker exec note-bridge node -e "require(\"http\").get(\"http://localhost:3210/healthz\",r=>process.exit(r.statusCode===200?0:1)).on(\"error\",()=>process.exit(1))"' 2>/dev/null; then
+              echo "✅ Health check passed!"
+              exit 0
+            fi
+            sleep 5
+          done
+          ssh -i ~/.ssh/deploy_key ${DEPLOY_USER}@${DEPLOY_SERVER_IP} \
+            'docker compose logs --tail 40' || true
+          echo "❌ Health check failed"
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🚀 note-bridge Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Server**: \`${{ secrets.DEPLOY_SERVER_IP }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ secrets.DOCKERHUB_USERNAME }}/note-bridge:latest\`" >> $GITHUB_STEP_SUMMARY

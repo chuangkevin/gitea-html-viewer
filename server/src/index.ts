@@ -28,6 +28,11 @@ const DEV_PAT = process.env.DEV_PAT || "";
 
 const COOKIE = "nb_sid";
 
+// 部署健康檢查（CI 用；不需認證）
+app.get("/healthz", (_req, res) => {
+  res.json({ ok: true, oauth: Boolean(CLIENT_ID), dev: Boolean(DEV_PAT) });
+});
+
 function requireAuth(req: express.Request, res: express.Response): Session | null {
   const s = getSession(req.cookies?.[COOKIE]);
   if (!s) {

@@ -1,16 +1,18 @@
 services:
   note-bridge:
-    build: .
+    image: ${DOCKERHUB_USERNAME:-kevin950805}/note-bridge:latest
     container_name: note-bridge
     restart: unless-stopped
     ports:
       - "3210:3210"
     environment:
       - PORT=3210
+      # tailnet 內自己用：先走 DEV_PAT 登入，callback 指向 tailnet 網域。
+      # 之後公開時改設 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET 走 OAuth。
       - BASE_URL=${BASE_URL:-https://note.sisihome.org}
-      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
-      - SECRET=${SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - DEV_PAT=${DEV_PAT:-}
       - DATA_DIR=/data
     volumes:
       - ./data:/data
