@@ -57,7 +57,8 @@ function handleGhError(res: express.Response, e: unknown): void {
 // ── auth ───────────────────────────────────────────────
 app.get("/api/auth/login", (req, res) => {
   if (!CLIENT_ID) {
-    res.status(500).json({ error: "GITHUB_CLIENT_ID not configured" });
+    // 瀏覽器導頁情境：回首頁顯示提示，而不是給使用者看 raw JSON
+    res.redirect("/?login=unconfigured");
     return;
   }
   const state = crypto.randomBytes(16).toString("hex");
