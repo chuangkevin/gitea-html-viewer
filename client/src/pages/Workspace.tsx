@@ -33,6 +33,15 @@ export default function Workspace() {
     location.pathname + location.search
   )}`;
 
+  async function handleDevLogin() {
+    try {
+      await api.devLogin();
+      location.reload();
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    }
+  }
+
   useEffect(() => {
     api.me().then(setMe).catch(() => setMe({ login: null }));
   }, []);
@@ -128,13 +137,26 @@ export default function Workspace() {
             <span className="font-mono">{fullRepo}</span> 不存在，或是私有 repo。
           </p>
           <p className="text-sm text-zinc-500">若你有這個 repo 的權限，登入後即可存取。</p>
-          <a
-            href={loginUrl}
-            className="inline-flex items-center gap-2 rounded-lg bg-white text-zinc-900 font-semibold px-5 py-2.5 hover:bg-zinc-200"
-          >
-            <GitHubIcon className="h-5 w-5" />
-            使用 GitHub 登入
-          </a>
+          {me?.oauthReady && (
+            <a
+              href={loginUrl}
+              className="inline-flex items-center gap-2 rounded-lg bg-white text-zinc-900 font-semibold px-5 py-2.5 hover:bg-zinc-200"
+            >
+              <GitHubIcon className="h-5 w-5" />
+              使用 GitHub 登入
+            </a>
+          )}
+          {me?.devMode && (
+            <button
+              onClick={handleDevLogin}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-2.5 text-sm text-zinc-200 hover:border-zinc-400"
+            >
+              Dev PAT 登入
+            </button>
+          )}
+          {me && !me.oauthReady && !me.devMode && (
+            <p className="text-xs text-zinc-600">此站尚未設定 GitHub OAuth，暫時無法登入。</p>
+          )}
           <div>
             <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300">
               ← 回首頁
@@ -194,8 +216,8 @@ export default function Workspace() {
             </button>
           </>
         )}
-        {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進） */}
-        {me && !me.login && (
+        {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進；依站台配置給正確入口） */}
+        {me && !me.login && me.oauthReady && (
           <a
             href={loginUrl}
             className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-zinc-400"
@@ -203,6 +225,14 @@ export default function Workspace() {
             <GitHubIcon className="h-3.5 w-3.5" />
             登入以編輯
           </a>
+        )}
+        {me && !me.login && !me.oauthReady && me.devMode && (
+          <button
+            onClick={handleDevLogin}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-zinc-400"
+          >
+            Dev 登入
+          </button>
         )}
         {me?.login && (
           <span className="flex items-center gap-1.5 text-xs text-zinc-500">

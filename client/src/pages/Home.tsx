@@ -14,6 +14,9 @@ export default function Home() {
 
   useEffect(() => {
     api.me().then(setMe).catch(() => setMe({ login: null }));
+    if (new URLSearchParams(location.search).get("login") === "unconfigured") {
+      setError("此站尚未設定 GitHub OAuth（GITHUB_CLIENT_ID / SECRET），暫時無法以 GitHub 登入。");
+    }
   }, []);
 
   useEffect(() => {
