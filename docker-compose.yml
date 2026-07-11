@@ -1,6 +1,6 @@
 services:
   note-bridge:
-    image: ${DOCKERHUB_USERNAME:-kevin950805}/note-bridge:latest
+    image: ${DOCKERHUB_USERNAME:-kevin950805}/gitea-html-viewer:latest
     container_name: note-bridge
     restart: unless-stopped
     ports:
@@ -13,6 +13,7 @@ services:
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - DEV_PAT=${DEV_PAT:-}
+      - GITHUB_FALLBACK_TOKEN=${GITHUB_FALLBACK_TOKEN:-}
       - DATA_DIR=/data
     volumes:
       - ./data:/data
