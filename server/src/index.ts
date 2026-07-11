@@ -8,12 +8,17 @@ import {
   getSession,
   deleteSession,
   createShare,
+  createShareSet,
   getShare,
   listShares,
   revokeShare,
   type Session,
 } from "./db.js";
 import * as gh from "./github.js";
+
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err);
+});
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -105,10 +110,14 @@ app.post("/api/auth/dev", async (req, res) => {
     res.status(404).json({ error: "not_found" });
     return;
   }
-  const user = await gh.getUser(DEV_PAT);
-  const sid = createSession(user.login, user.avatar_url, DEV_PAT);
-  res.cookie(COOKIE, sid, { httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 3600 * 1000 });
-  res.json({ login: user.login });
+  try {
+    const user = await gh.getUser(DEV_PAT);
+    const sid = createSession(user.login, user.avatar_url, DEV_PAT);
+    res.cookie(COOKIE, sid, { httpOnly: true, sameSite: "lax", maxAge: 30 * 24 * 3600 * 1000 });
+    res.json({ login: user.login });
+  } catch (e) {
+    handleGhError(res, e);
+  }
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -167,6 +176,43 @@ function repoParam(req: express.Request): string {
   return `${req.params.owner}/${req.params.repo}`;
 }
 
+const MIME: Record<string, string> = {
+  html: "text/html; charset=utf-8",
+  htm: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8",
+  json: "application/json; charset=utf-8",
+  md: "text/markdown; charset=utf-8",
+  txt: "text/plain; charset=utf-8",
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  ico: "image/x-icon",
+  woff: "font/woff",
+  woff2: "font/woff2",
+};
+function mimeFor(p: string): string {
+  const ext = p.split(".").pop()?.toLowerCase() ?? "";
+  return MIME[ext] ?? "application/octet-stream";
+}
+
+/** raw 回應共用：HTML 一律掛 CSP sandbox——即使直接開 raw 網址，
+ *  頁內 script 也拿不到本站 origin 的權限（防止惡意 repo HTML 借
+ *  登入者 cookie 打 /api）。 */
+function sendRaw(res: express.Response, filePath: string, buf: Buffer): void {
+  const mime = mimeFor(filePath);
+  res.setHeader("Content-Type", mime);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (mime.startsWith("text/html")) {
+    res.setHeader("Content-Security-Policy", "sandbox allow-scripts");
+  }
+  res.send(buf);
+}
+
 // 讀取端點採 optional auth：
 // - 有 session → 用使用者自己的 token（能讀自己有權限的 private）
 // - 無 session → 用 FALLBACK_TOKEN / 匿名，且【必須】驗證 repo 為 public
@@ -181,7 +227,7 @@ app.get("/api/files/:owner/:repo", async (req, res) => {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
-    const files = await gh.listMarkdownFiles(token, repo, info.default_branch);
+    const files = await gh.listAllFiles(token, repo, info.default_branch);
     res.json({
       branch: info.default_branch,
       private: info.private,
@@ -220,6 +266,79 @@ app.get("/api/file/:owner/:repo/*", async (req, res) => {
   }
 });
 
+// raw 靜態服務：HTML 獨立網頁展示的基礎。相對路徑（./style.css 等）
+// 會自然解析回同一個 /raw 前綴底下，等於把 repo 當靜態網站 host。
+app.get("/raw/:owner/:repo/*", async (req, res) => {
+  const s = getSession(req.cookies?.[COOKIE]);
+  const token = s?.token ?? FALLBACK_TOKEN;
+  try {
+    const repo = repoParam(req);
+    const info = await gh.getRepo(token, repo);
+    if (info.private && !s) {
+      res.status(401).json({ error: "login_required" });
+      return;
+    }
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    const buf = await gh.readFileRaw(token, repo, filePath);
+    sendRaw(res, filePath, buf);
+  } catch (e) {
+    if (e instanceof gh.GitHubError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
+  }
+});
+
+// 私有 repo 的 HTML 展示：sandbox iframe 是 opaque origin，子資源請求
+// 不帶 cookie，改發短效 grant 放在路徑裡，相對路徑資產自然繼承授權。
+const rawGrants = new Map<string, { repo: string; sid: string; exp: number }>();
+app.post("/api/raw-grant", async (req, res) => {
+  const s = requireAuth(req, res);
+  if (!s) return;
+  const { repo } = req.body as { repo?: string };
+  if (!repo) {
+    res.status(400).json({ error: "repo required" });
+    return;
+  }
+  try {
+    await gh.getRepo(s.token, repo); // 驗證此使用者可讀
+  } catch (e) {
+    handleGhError(res, e);
+    return;
+  }
+  // 簡單清掉過期的，避免無限成長
+  for (const [k, v] of rawGrants) if (v.exp < Date.now()) rawGrants.delete(k);
+  const grant = crypto.randomBytes(12).toString("base64url");
+  rawGrants.set(grant, { repo, sid: s.sid, exp: Date.now() + 6 * 3600e3 });
+  res.json({ grant });
+});
+
+app.get("/rawt/:grant/:owner/:repo/*", async (req, res) => {
+  const g = rawGrants.get(req.params.grant);
+  const repo = repoParam(req);
+  if (!g || g.repo !== repo || g.exp < Date.now()) {
+    res.status(401).json({ error: "grant_invalid" });
+    return;
+  }
+  const owner = getSession(g.sid);
+  if (!owner) {
+    res.status(401).json({ error: "grant_session_expired" });
+    return;
+  }
+  try {
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    const buf = await gh.readFileRaw(owner.token, repo, filePath);
+    sendRaw(res, filePath, buf);
+  } catch (e) {
+    if (e instanceof gh.GitHubError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
+  }
+});
+
 app.put("/api/file/:owner/:repo/*", async (req, res) => {
   const s = requireAuth(req, res);
   if (!s) return;
@@ -246,9 +365,28 @@ app.put("/api/file/:owner/:repo/*", async (req, res) => {
 app.post("/api/share", async (req, res) => {
   const s = requireAuth(req, res);
   if (!s) return;
-  const { repo, path: filePath, title } = req.body as { repo?: string; path?: string; title?: string };
-  if (!repo || !filePath) {
-    res.status(400).json({ error: "repo and path required" });
+  const { repo, path: filePath, paths, title } = req.body as {
+    repo?: string;
+    path?: string;
+    paths?: string[];
+    title?: string;
+  };
+  if (!repo) {
+    res.status(400).json({ error: "repo required" });
+    return;
+  }
+  // 多檔展示集
+  if (Array.isArray(paths) && paths.length > 0) {
+    if (paths.length > 200 || paths.some((p) => typeof p !== "string")) {
+      res.status(400).json({ error: "invalid paths" });
+      return;
+    }
+    const token = createShareSet(s, repo, paths, title ?? null);
+    res.json({ token, url: `${BASE_URL}/s/${token}`, slidesUrl: `${BASE_URL}/s/${token}/slides` });
+    return;
+  }
+  if (!filePath) {
+    res.status(400).json({ error: "path or paths required" });
     return;
   }
   const token = createShare(s, repo, filePath, title ?? null);
@@ -269,20 +407,39 @@ app.delete("/api/share/:token", (req, res) => {
 });
 
 // 公開端點：訪客不需登入。內容用「分享者」的 session token 即時從 GitHub 拉。
-app.get("/api/public/:token", async (req, res) => {
+function resolveShare(req: express.Request, res: express.Response) {
   const share = getShare(req.params.token);
   if (!share) {
     res.status(404).json({ error: "share_not_found" });
-    return;
+    return null;
   }
   const owner = getSession(share.owner_sid);
   if (!owner) {
     res.status(410).json({ error: "share_owner_session_expired" });
-    return;
+    return null;
   }
+  return { share, owner };
+}
+
+app.get("/api/public/:token", async (req, res) => {
+  const ctx = resolveShare(req, res);
+  if (!ctx) return;
+  const { share, owner } = ctx;
   try {
+    if (share.kind === "set" && share.paths) {
+      const items = JSON.parse(share.paths) as string[];
+      res.json({
+        kind: "set",
+        title: share.title || `${share.repo} 展示`,
+        ownerLogin: share.owner_login,
+        repo: share.repo,
+        items,
+      });
+      return;
+    }
     const f = await gh.readFile(owner.token, share.repo, share.path);
     res.json({
+      kind: "doc",
       title: share.title || share.path.split("/").pop(),
       ownerLogin: share.owner_login,
       repo: share.repo,
@@ -291,6 +448,44 @@ app.get("/api/public/:token", async (req, res) => {
     });
   } catch (e) {
     handleGhError(res, e);
+  }
+});
+
+// set 內單一 md 檔內容（限展示集內的路徑）
+app.get("/api/public/:token/file/*", async (req, res) => {
+  const ctx = resolveShare(req, res);
+  if (!ctx) return;
+  const { share, owner } = ctx;
+  const filePath = (req.params as Record<string, string>)[0] || "";
+  const allowed: string[] = share.kind === "set" && share.paths ? JSON.parse(share.paths) : [share.path];
+  if (!allowed.includes(filePath)) {
+    res.status(403).json({ error: "not_in_share" });
+    return;
+  }
+  try {
+    const f = await gh.readFile(owner.token, share.repo, filePath);
+    res.json({ path: f.path, content: f.content });
+  } catch (e) {
+    handleGhError(res, e);
+  }
+});
+
+// 分享的 HTML 需要相對資產（css/js/圖），開放該 repo 範圍的 raw 讀取。
+// 分享任何一頁 HTML 等同分享其資產，token 即授權範圍（可撤銷）。
+app.get("/api/public/:token/raw/*", async (req, res) => {
+  const ctx = resolveShare(req, res);
+  if (!ctx) return;
+  const { share, owner } = ctx;
+  const filePath = (req.params as Record<string, string>)[0] || "";
+  try {
+    const buf = await gh.readFileRaw(owner.token, share.repo, filePath);
+    sendRaw(res, filePath, buf);
+  } catch (e) {
+    if (e instanceof gh.GitHubError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
   }
 });
 

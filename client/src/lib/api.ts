@@ -20,11 +20,13 @@ export interface ShareInfo {
 }
 
 export interface PublicDoc {
+  kind: "doc" | "set";
   title: string;
   ownerLogin: string;
   repo: string;
-  path: string;
-  content: string;
+  path?: string;
+  content?: string;
+  items?: string[];
 }
 
 async function j<T>(res: Response): Promise<T> {
@@ -64,5 +66,21 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo, path, title }),
     }).then((r) => j<{ token: string; url: string; slidesUrl: string }>(r)),
+  rawGrant: (repo: string) =>
+    fetch("/api/raw-grant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo }),
+    }).then((r) => j<{ grant: string }>(r)),
+  shareSet: (repo: string, paths: string[], title?: string) =>
+    fetch("/api/share", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo, paths, title }),
+    }).then((r) => j<{ token: string; url: string; slidesUrl: string }>(r)),
   publicDoc: (token: string) => fetch(`/api/public/${token}`).then((r) => j<PublicDoc>(r)),
+  publicSetFile: (token: string, path: string) =>
+    fetch(`/api/public/${token}/file/${path.split("/").map(encodeURIComponent).join("/")}`).then((r) =>
+      j<{ path: string; content: string }>(r)
+    ),
 };

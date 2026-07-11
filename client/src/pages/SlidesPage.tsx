@@ -29,5 +29,5 @@ export default function SlidesPage() {
   }
   if (!doc) return <div className="min-h-screen grid place-items-center text-zinc-600">載入中…</div>;
 
-  return <SlideDeck content={doc.content} docUrl={`/s/${token}`} />;
+  return <SlideDeck content={doc.content ?? ""} docUrl={`/s/${token}`} />;
 }
