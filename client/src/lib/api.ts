@@ -47,7 +47,9 @@ export const api = {
       body: JSON.stringify({ name, isPrivate }),
     }).then((r) => j<RepoInfo>(r)),
   files: (repo: string) =>
-    fetch(`/api/files/${repo}`).then((r) => j<{ branch: string; files: { path: string }[] }>(r)),
+    fetch(`/api/files/${repo}`).then((r) =>
+      j<{ branch: string; private: boolean; canWrite: boolean; files: { path: string }[] }>(r)
+    ),
   readFile: (repo: string, path: string) =>
     fetch(`/api/file/${repo}/${path}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
   saveFile: (repo: string, path: string, content: string, sha?: string) =>

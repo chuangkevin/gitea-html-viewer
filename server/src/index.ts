@@ -25,6 +25,9 @@ const CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || "";
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 // dev 便利：設 DEV_PAT 可跳過 OAuth 直接用 PAT 登入（僅限本機開發）
 const DEV_PAT = process.env.DEV_PAT || "";
+// 匿名訪客讀取 public repo 用的後備 token（僅為提高 rate limit；
+// 絕不能讓匿名請求透過它讀到 private repo——讀取端點會先驗 repo.private）
+const FALLBACK_TOKEN = process.env.GITHUB_FALLBACK_TOKEN || "";
 
 const COOKIE = "nb_sid";
 
@@ -59,6 +62,8 @@ app.get("/api/auth/login", (req, res) => {
   }
   const state = crypto.randomBytes(16).toString("hex");
   res.cookie("nb_state", state, { httpOnly: true, sameSite: "lax", maxAge: 10 * 60 * 1000 });
+  const next = typeof req.query.next === "string" && req.query.next.startsWith("/") ? req.query.next : "/";
+  res.cookie("nb_next", next, { httpOnly: true, sameSite: "lax", maxAge: 10 * 60 * 1000 });
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("redirect_uri", `${BASE_URL}/api/auth/callback`);
@@ -84,7 +89,9 @@ app.get("/api/auth/callback", async (req, res) => {
       maxAge: 30 * 24 * 3600 * 1000,
     });
     res.clearCookie("nb_state");
-    res.redirect("/");
+    const next = typeof req.cookies?.nb_next === "string" && req.cookies.nb_next.startsWith("/") ? req.cookies.nb_next : "/";
+    res.clearCookie("nb_next");
+    res.redirect(next);
   } catch (e) {
     console.error(e);
     res.status(500).send("登入失敗，請重試");
@@ -159,27 +166,55 @@ function repoParam(req: express.Request): string {
   return `${req.params.owner}/${req.params.repo}`;
 }
 
+// 讀取端點採 optional auth：
+// - 有 session → 用使用者自己的 token（能讀自己有權限的 private）
+// - 無 session → 用 FALLBACK_TOKEN / 匿名，且【必須】驗證 repo 為 public
+//   才回傳，否則後備 token 會把站主的 private repo 洩漏給訪客。
 app.get("/api/files/:owner/:repo", async (req, res) => {
-  const s = requireAuth(req, res);
-  if (!s) return;
+  const s = getSession(req.cookies?.[COOKIE]);
+  const token = s?.token ?? FALLBACK_TOKEN;
   try {
     const repo = repoParam(req);
-    const info = await gh.getRepo(s.token, repo);
-    const files = await gh.listMarkdownFiles(s.token, repo, info.default_branch);
-    res.json({ branch: info.default_branch, files: files.map((f) => ({ path: f.path })) });
+    const info = await gh.getRepo(token, repo);
+    if (info.private && !s) {
+      res.status(401).json({ error: "login_required", reason: "private_repo" });
+      return;
+    }
+    const files = await gh.listMarkdownFiles(token, repo, info.default_branch);
+    res.json({
+      branch: info.default_branch,
+      private: info.private,
+      canWrite: Boolean(s && info.permissions?.push),
+      files: files.map((f) => ({ path: f.path })),
+    });
   } catch (e) {
+    if (e instanceof gh.GitHubError && e.status === 404 && !s) {
+      // 匿名看不到＝不存在或 private，提示登入
+      res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
+      return;
+    }
     handleGhError(res, e);
   }
 });
 
 app.get("/api/file/:owner/:repo/*", async (req, res) => {
-  const s = requireAuth(req, res);
-  if (!s) return;
+  const s = getSession(req.cookies?.[COOKIE]);
+  const token = s?.token ?? FALLBACK_TOKEN;
   try {
+    const repo = repoParam(req);
+    const info = await gh.getRepo(token, repo);
+    if (info.private && !s) {
+      res.status(401).json({ error: "login_required", reason: "private_repo" });
+      return;
+    }
     const filePath = (req.params as Record<string, string>)[0] || "";
-    const f = await gh.readFile(s.token, repoParam(req), filePath);
+    const f = await gh.readFile(token, repo, filePath);
     res.json(f);
   } catch (e) {
+    if (e instanceof gh.GitHubError && e.status === 404 && !s) {
+      res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
+      return;
+    }
     handleGhError(res, e);
   }
 });

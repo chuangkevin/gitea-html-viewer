@@ -6,6 +6,7 @@ import Home from "./pages/Home";
 import Workspace from "./pages/Workspace";
 import SharePage from "./pages/SharePage";
 import SlidesPage from "./pages/SlidesPage";
+import DirectSlidesPage from "./pages/DirectSlidesPage";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -15,6 +16,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/edit/:owner/:repo" element={<Workspace />} />
         <Route path="/s/:token" element={<SharePage />} />
         <Route path="/s/:token/slides" element={<SlidesPage />} />
+        <Route path="/p/:owner/:repo/*" element={<DirectSlidesPage />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>

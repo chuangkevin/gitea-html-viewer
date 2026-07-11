@@ -15,7 +15,8 @@ async function gh<T>(token: string, path: string, init?: RequestInit): Promise<T
   const res = await fetch(`${API}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${token}`,
+      // token 為空字串時走匿名請求（只能讀 public，rate limit 較低）
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "note-bridge",
