@@ -1,93 +1,47 @@
-# note
+# note-bridge
 
+**文件就住在你的 GitHub repo。** 網頁編輯 Markdown、存檔即 commit——版本歷史、diff、協作全部交給 Git；一鍵把任何文件變成可分享的獨立網頁，或直接開成簡報。
 
+> 概念延續我在公司主導的 AI 文件協作平台（獲 PM 部門協理指定為全部門統一工具）。公司版整合內部 Gitea 無法公開，這是以 GitHub 重新實作的公開版本。
 
-## Getting started
+## 核心理念：技術模糊化
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+PM 不需要知道什麼是 Git。他們得到的是「線上文件工具 + 一鍵分享 + 簡報模式」；
+工程師得到的是「所有規格文件都是 repo 裡的 Markdown，AI 友善、可 diff、可 review」。
+兩邊都用自己習慣的方式工作，中間的技術細節被藏起來——這就是 note-bridge 要橋接的東西。
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## 功能
 
-## Add your files
+- **GitHub repo 即資料庫**：不自建儲存，文件 = repo 裡的 `.md`，每次存檔都是一個真實 commit
+- **GitHub OAuth 多使用者**：訪客用自己的帳號登入、操作自己的 repo
+- **分享為獨立網頁**：`/s/<token>` 公開頁面，可隨時撤銷；訪客不需要 GitHub 帳號
+- **簡報模式**：同一份文件以 `---` 分頁即為投影片，鍵盤／點擊翻頁——相容 PM 的簡報習慣
+- Roadmap：PM 側 AI 討論優化（RAG 知識注入）、研發側 AI 總結
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## 開發
+
+```bash
+npm install
+cp .env.example .env   # 填 GITHUB_CLIENT_ID / SECRET，或先填 DEV_PAT 跳過 OAuth
+npm run dev            # server :3210 + client :5210（proxy /api）
+```
+
+## 部署
+
+```bash
+npm run build && npm start   # Express 同時服務 API 與 client/dist
+```
+
+Docker：見 `docker-compose.yml`。
+
+## 架構
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/interagent-io/note.git
-git branch -M main
-git push -uf origin main
+client (React 19 + Vite + Tailwind 4)
+   │  /api proxy
+server (Express + TypeScript)
+   ├─ GitHub OAuth（token AES-256-GCM 加密存放）
+   ├─ Contents API：list / read / write(=commit)
+   └─ SQLite：sessions + share tokens（唯二不放 GitHub 的資料）
+GitHub  ←── 唯一的文件儲存
 ```
-
-## Integrate with your tools
-
-* [Set up project integrations](https://gitlab.com/interagent-io/note/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.

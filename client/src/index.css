@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-100 antialiased;
+}
+
+/* ── 渲染後的 Markdown 文件樣式（分享頁與預覽共用）── */
+.doc {
+  @apply text-zinc-200 leading-relaxed;
+}
+.doc h1 {
+  @apply text-3xl font-bold mt-8 mb-4 text-white border-b border-zinc-800 pb-2;
+}
+.doc h2 {
+  @apply text-2xl font-bold mt-8 mb-3 text-white;
+}
+.doc h3 {
+  @apply text-xl font-semibold mt-6 mb-2 text-white;
+}
+.doc p {
+  @apply my-3;
+}
+.doc a {
+  @apply text-sky-400 hover:underline;
+}
+.doc ul {
+  @apply list-disc pl-6 my-3 space-y-1;
+}
+.doc ol {
+  @apply list-decimal pl-6 my-3 space-y-1;
+}
+.doc blockquote {
+  @apply border-l-4 border-sky-600/60 pl-4 my-4 text-zinc-400;
+}
+.doc code {
+  @apply bg-zinc-800 rounded px-1.5 py-0.5 text-[0.9em] text-sky-300;
+}
+.doc pre {
+  @apply bg-zinc-900 border border-zinc-800 rounded-lg p-4 my-4 overflow-x-auto;
+}
+.doc pre code {
+  @apply bg-transparent p-0 text-zinc-200;
+}
+.doc table {
+  @apply w-full my-4 text-sm;
+}
+.doc th {
+  @apply border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-left;
+}
+.doc td {
+  @apply border border-zinc-800 px-3 py-1.5;
+}
+.doc img {
+  @apply max-w-full rounded-lg my-4;
+}
+.doc hr {
+  @apply border-zinc-800 my-8;
+}
+
+/* ── 簡報模式：一頁一張投影片 ── */
+.slide .doc h1 {
+  @apply text-5xl border-0 mt-0;
+}
+.slide .doc h2 {
+  @apply text-4xl mt-0;
+}
+.slide .doc p,
+.slide .doc li {
+  @apply text-xl;
+}

@@ -1,0 +1,21 @@
+{
+  "name": "note-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Markdown notes that live in your GitHub repo — edit on the web, share as standalone pages, present as slides.",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm-run-all2 -p dev:server dev:client",
+    "dev:server": "npm -w server run dev",
+    "dev:client": "npm -w client run dev",
+    "build": "npm -w client run build && npm -w server run build",
+    "start": "npm -w server run start",
+    "typecheck": "npm -w server run typecheck && npm -w client run typecheck"
+  },
+  "devDependencies": {
+    "npm-run-all2": "^7.0.2"
+  }
+}
