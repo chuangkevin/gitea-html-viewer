@@ -71,13 +71,29 @@ export interface GhTreeItem {
   sha: string;
 }
 
-/** 列出 repo 內全部 .md 檔（遞迴 git tree，一次拿完） */
-export async function listMarkdownFiles(token: string, repo: string, branch: string): Promise<GhTreeItem[]> {
+/** 列出 repo 內全部檔案（遞迴 git tree，一次拿完）。巢狀樹由 client 端組。 */
+export async function listAllFiles(token: string, repo: string, branch: string): Promise<GhTreeItem[]> {
   const data = await gh<{ tree: GhTreeItem[]; truncated: boolean }>(
     token,
     `/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
   );
-  return data.tree.filter((t) => t.type === "blob" && t.path.toLowerCase().endsWith(".md"));
+  return data.tree.filter((t) => t.type === "blob");
+}
+
+/** 以 raw bytes 讀檔（HTML/CSS/JS/圖片等靜態資產用；contents API 的 raw accept）。 */
+export async function readFileRaw(token: string, repo: string, filePath: string): Promise<Buffer> {
+  const res = await fetch(`${API}/repos/${repo}/contents/${encodePath(filePath)}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      Accept: "application/vnd.github.raw",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "note-bridge",
+    },
+  });
+  if (!res.ok) {
+    throw new GitHubError(res.status, `GitHub ${res.status}: raw read failed for ${filePath}`);
+  }
+  return Buffer.from(await res.arrayBuffer());
 }
 
 export interface GhFile {

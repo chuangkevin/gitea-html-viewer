@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { api, type Me } from "../lib/api";
 import { renderMarkdown } from "../lib/markdown";
 import { GitHubIcon } from "./Home";
+import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
+import { kindOf } from "../components/Presenter";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
 
@@ -28,6 +30,11 @@ export default function Workspace() {
   const [error, setError] = useState("");
   const [newFile, setNewFile] = useState("");
   const [shareUrl, setShareUrl] = useState<{ url: string; slidesUrl: string } | null>(null);
+  const [presentMode, setPresentMode] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [rawGrant, setRawGrant] = useState("");
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [activeFolder, setActiveFolder] = useState("");
 
   const loginUrl = `/api/auth/login?next=${encodeURIComponent(
     location.pathname + location.search
@@ -53,6 +60,7 @@ export default function Workspace() {
       .then((r) => {
         setFiles(r.files.map((f) => f.path));
         setCanWrite(r.canWrite);
+        setIsPrivate(r.private);
       })
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
@@ -62,10 +70,20 @@ export default function Workspace() {
 
   useEffect(loadFiles, [loadFiles]);
 
+  const activeKind = activePath ? kindOf(activePath) : null;
+
+  useEffect(() => {
+    if (!isPrivate || !me?.login || rawGrant) return;
+    api.rawGrant(fullRepo).then((r) => setRawGrant(r.grant)).catch(() => {});
+  }, [isPrivate, me, rawGrant, fullRepo]);
+
+  const rawBase = isPrivate && rawGrant ? `/rawt/${rawGrant}` : "/raw";
+
   useEffect(() => {
     if (!activePath) return;
     setSave("clean");
     setShareUrl(null);
+    if (kindOf(activePath) === "html" || kindOf(activePath) === "image") return;
     api
       .readFile(fullRepo, activePath)
       .then((f) => {
@@ -109,6 +127,32 @@ export default function Workspace() {
     const title = content.match(/^#\s+(.+)$/m)?.[1];
     const r = await api.share(fullRepo, activePath, title);
     setShareUrl({ url: r.url, slidesUrl: r.slidesUrl });
+  }
+
+  // 展示順序一律取檔案樹的資料夾排序
+  const sortedFiles = useMemo(() => (files ? flattenFiles(buildTree(files)) : []), [files]);
+  const checkedInOrder = useMemo(() => sortedFiles.filter((f) => checked.has(f)), [sortedFiles, checked]);
+  const folderFiles = useMemo(
+    () => (activeFolder ? sortedFiles.filter((f) => f.startsWith(activeFolder + "/")) : []),
+    [sortedFiles, activeFolder]
+  );
+
+  function startPresent(items: string[], title: string) {
+    if (items.length === 0) return;
+    const g = isPrivate && rawGrant ? `&grant=${rawGrant}` : "";
+    navigate(
+      `/present/${fullRepo}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}`
+    );
+  }
+
+  async function handleShareSet() {
+    if (checkedInOrder.length === 0) return;
+    try {
+      const r = await api.shareSet(fullRepo, checkedInOrder, `${repo} 展示`);
+      setShareUrl({ url: r.url, slidesUrl: r.url });
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    }
   }
 
   // Cmd/Ctrl+S 存檔
@@ -178,7 +222,7 @@ export default function Workspace() {
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">唯讀</span>
         )}
         <div className="flex-1" />
-        {activePath && !readOnly && (
+        {activePath && activeKind === "md" && !readOnly && (
           <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-xs">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
@@ -191,7 +235,7 @@ export default function Workspace() {
             ))}
           </div>
         )}
-        {activePath && (
+        {activePath && activeKind === "md" && (
           <button
             onClick={() => navigate(`/p/${fullRepo}/${activePath}`)}
             className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400"
@@ -199,7 +243,7 @@ export default function Workspace() {
             🎞️ 簡報
           </button>
         )}
-        {activePath && canWrite && (
+        {activePath && activeKind === "md" && canWrite && (
           <>
             <button
               onClick={handleShare}
@@ -283,36 +327,108 @@ export default function Workspace() {
               </button>
             </div>
           )}
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-600">檔案</span>
+            <button
+              onClick={() => {
+                setPresentMode((v) => !v);
+                if (presentMode) setChecked(new Set());
+              }}
+              className={`rounded px-2 py-0.5 text-[10px] border ${
+                presentMode
+                  ? "border-sky-600 bg-sky-950 text-sky-300"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+              }`}
+              title="勾選檔案組成展示清單"
+            >
+              🎬 展示模式
+            </button>
+          </div>
           {!files ? (
             <p className="text-xs text-zinc-600">載入中…</p>
           ) : files.length === 0 ? (
             <p className="text-xs text-zinc-600">
-              {canWrite ? "repo 裡還沒有 .md，建立第一份吧" : "這個 repo 裡沒有 .md 檔"}
+              {canWrite ? "repo 是空的，建立第一份 .md 吧" : "這個 repo 是空的"}
             </p>
           ) : (
-            <ul className="space-y-0.5">
-              {files.map((f) => (
-                <li key={f}>
-                  <button
-                    onClick={() => setParams({ f })}
-                    className={`w-full text-left rounded px-2 py-1.5 text-xs font-mono truncate ${
-                      f === activePath ? "bg-sky-950 text-sky-300" : "text-zinc-400 hover:bg-zinc-900"
-                    }`}
-                    title={f}
-                  >
-                    {f}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <FileTree
+              paths={files}
+              activePath={activePath}
+              activeFolder={activeFolder}
+              onSelectFile={(f) => {
+                setActiveFolder("");
+                setParams({ f });
+              }}
+              onSelectFolder={setActiveFolder}
+              presentMode={presentMode}
+              checked={checked}
+              onCheckedChange={setChecked}
+            />
+          )}
+          {presentMode && (
+            <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
+              <p className="text-[10px] text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
+              <button
+                onClick={() => startPresent(checkedInOrder, `${repo} 展示`)}
+                disabled={checkedInOrder.length === 0}
+                className="w-full rounded bg-sky-600 py-1.5 text-xs font-semibold hover:bg-sky-500 disabled:opacity-40"
+              >
+                ▶ 開始展示
+              </button>
+              {canWrite && (
+                <button
+                  onClick={handleShareSet}
+                  disabled={checkedInOrder.length === 0}
+                  className="w-full rounded border border-zinc-700 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400 disabled:opacity-40"
+                >
+                  🔗 分享展示集
+                </button>
+              )}
+            </div>
           )}
         </aside>
 
         {/* 編輯／預覽 */}
-        {!activePath ? (
+        {activeFolder ? (
+          <div className="flex-1 grid place-items-center text-center px-6">
+            <div className="space-y-3">
+              <p className="text-3xl">📂</p>
+              <p className="font-mono text-sm text-zinc-300">{activeFolder}/</p>
+              <p className="text-xs text-zinc-500">{folderFiles.length} 個檔案</p>
+              <button
+                onClick={() => startPresent(folderFiles, activeFolder)}
+                disabled={folderFiles.length === 0}
+                className="rounded-lg bg-sky-600 px-5 py-2 text-sm font-semibold hover:bg-sky-500 disabled:opacity-40"
+              >
+                ▶ 連續模式展示（依資料夾排序）
+              </button>
+            </div>
+          </div>
+        ) : !activePath ? (
           <div className="flex-1 grid place-items-center text-zinc-600 text-sm">
             從左側選擇檔案{canWrite ? "，或建立新檔" : ""}
           </div>
+        ) : activeKind === "html" ? (
+          // 獨立分享網站預覽:sandbox iframe,相對 css/js 由 /raw 供應
+          <iframe
+            key={activePath}
+            src={`${rawBase}/${fullRepo}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+            sandbox="allow-scripts"
+            className="flex-1 bg-white"
+            title={activePath}
+          />
+        ) : activeKind === "image" ? (
+          <div className="flex-1 grid place-items-center p-6 overflow-auto">
+            <img
+              src={`${rawBase}/${fullRepo}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+              alt={activePath}
+              className="max-w-full max-h-full"
+            />
+          </div>
+        ) : activeKind === "text" ? (
+          <pre className="flex-1 overflow-auto p-6 text-xs font-mono text-zinc-300 whitespace-pre-wrap">
+            {content}
+          </pre>
         ) : (
           <div className="flex-1 flex min-w-0">
             {effectiveView !== "preview" && (

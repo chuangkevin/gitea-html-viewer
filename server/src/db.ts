@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS shares (
 );
 `);
 
+// 既有部署的漸進式 migration：展示集欄位（kind: doc=單檔, set=多檔展示）
+const shareCols = (db.prepare("PRAGMA table_info(shares)").all() as { name: string }[]).map((c) => c.name);
+if (!shareCols.includes("kind")) db.exec("ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'doc'");
+if (!shareCols.includes("paths")) db.exec("ALTER TABLE shares ADD COLUMN paths TEXT");
+
 // ── token 加密（at rest）────────────────────────────────
 // SECRET 未設定時自動產生並存檔，重啟後 session 仍可解。
 const secretFile = path.join(DATA_DIR, ".secret");
@@ -100,6 +105,17 @@ export interface Share {
   path: string;
   title: string | null;
   revoked: number;
+  kind: "doc" | "set";
+  paths: string | null; // set 專用：JSON string[]，依資料夾排序
+}
+
+/** 多檔展示集：勾選的檔案（已排序）打包成一個分享 token。 */
+export function createShareSet(s: Session, repo: string, paths: string[], title: string | null): string {
+  const token = crypto.randomBytes(8).toString("base64url");
+  db.prepare(
+    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, kind, paths) VALUES (?, ?, ?, ?, ?, ?, ?, 'set', ?)"
+  ).run(token, s.sid, s.login, repo, paths[0] ?? "", title, Date.now(), JSON.stringify(paths));
+  return token;
 }
 
 export function createShare(s: Session, repo: string, filePath: string, title: string | null): string {
