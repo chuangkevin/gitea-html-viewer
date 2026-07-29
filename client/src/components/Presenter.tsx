@@ -96,7 +96,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
             />
           </div>
         ) : (
-          <pre className="h-full overflow-auto p-6 text-xs font-mono text-zinc-300 whitespace-pre-wrap">
+          <pre className="h-full overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
             {text}
           </pre>
         )}

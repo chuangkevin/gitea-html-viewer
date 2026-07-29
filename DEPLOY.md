@@ -48,6 +48,13 @@ cp .env.example .env
 > GitHub 也想開就一併填 `GITHUB_CLIENT_ID/SECRET`；不填就只顯示 GitLab 登入。
 > `SECRET` 不填會自動產生存在 `data/.secret`（換機器要保留 `data/` 才能沿用既有 session/分享）。
 
+### 首頁預設落地（選配）
+
+`DEFAULT_REPO` 設了，開首頁「/」就直接導到該 repo 的 `DEFAULT_FILE`；
+compose 預設值是 `gitlab/interagent-io%2Finteragent-bible` + `README.md`。
+格式是 `<provider>/<URL-encode 過的 projectPath>`（GitLab 巢狀群組的 `/` 要寫成 `%2F`）。
+想回原本首頁：`.env` 填 `DEFAULT_REPO=`（空值）關掉，或直接開 `/?home=1`。
+
 ## 3. 起服務
 
 ```bash

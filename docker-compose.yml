@@ -23,6 +23,9 @@ services:
       - GITHUB_FALLBACK_TOKEN=${GITHUB_FALLBACK_TOKEN:-}
       # session token 加密金鑰（不填會自動產生存在 data/.secret）
       - SECRET=${SECRET:-}
+      # 首頁預設落地：「/」直接導到這個 repo 的 DEFAULT_FILE（清空即回原本首頁）
+      - DEFAULT_REPO=${DEFAULT_REPO-gitlab/interagent-io%2Finteragent-bible}
+      - DEFAULT_FILE=${DEFAULT_FILE-README.md}
       - DATA_DIR=/data
     volumes:
       - ./data:/data

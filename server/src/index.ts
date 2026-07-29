@@ -527,6 +527,21 @@ app.get("/api/public/:token/raw/*", async (req, res) => {
   }
 });
 
+// ── 首頁預設落地 ───────────────────────────────────────
+// DEFAULT_REPO 設了就把「/」直接導到該 repo 的預設檔案，沒設維持原本首頁。
+// 值格式：<provider>/<URL-encode 過的 projectPath>
+//   例：gitlab/interagent-io%2Finteragent-bible
+// 帶 query 的「/」（?login=unconfigured、或想看原本首頁時用 /?home=1）不導轉。
+const DEFAULT_REPO = process.env.DEFAULT_REPO || "";
+const DEFAULT_FILE = process.env.DEFAULT_FILE || "README.md";
+app.get("/", (req, res, next) => {
+  if (!DEFAULT_REPO || Object.keys(req.query).length > 0) {
+    next();
+    return;
+  }
+  res.redirect(`/edit/${DEFAULT_REPO}${DEFAULT_FILE ? `?f=${encodeURIComponent(DEFAULT_FILE)}` : ""}`);
+});
+
 // ── SPA（production）───────────────────────────────────
 const clientDist = path.resolve(process.cwd(), "../client/dist");
 if (fs.existsSync(clientDist)) {

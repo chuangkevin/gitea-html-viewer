@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type Me } from "../lib/api";
 import { renderMarkdown } from "../lib/markdown";
@@ -164,6 +164,30 @@ export default function Workspace() {
   const effectiveView = readOnly ? "preview" : view;
   const html = useMemo(() => renderMarkdown(content), [content]);
 
+  // ── 分割檢視：編輯區與預覽區依捲動比例雙向同步 ──
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  // 同步旗標：記住「現在是哪一邊在帶動」加一段冷卻時間。被帶動的那一邊會因為
+  // scrollTop 被改而回彈一個 scroll 事件，冷卻期內直接忽略，避免兩邊互相觸發。
+  // 用時間戳而非 callback 清旗標——不依賴 rAF/timer，卡不住。
+  const syncSource = useRef<HTMLElement | null>(null);
+  const syncUntil = useRef(0);
+
+  const syncScroll = useCallback(
+    (from: HTMLElement | null, to: HTMLElement | null) => {
+      if (effectiveView !== "split" || !from || !to) return;
+      const now = performance.now();
+      if (syncSource.current !== from && now < syncUntil.current) return; // 回彈事件
+      const fromMax = from.scrollHeight - from.clientHeight;
+      const toMax = to.scrollHeight - to.clientHeight;
+      if (fromMax <= 0 || toMax <= 0) return;
+      syncSource.current = from;
+      syncUntil.current = now + 120;
+      to.scrollTop = (from.scrollTop / fromMax) * toMax;
+    },
+    [effectiveView]
+  );
+
   // private repo 且未登入：整頁登入提示
   if (needLogin) {
     return (
@@ -173,7 +197,7 @@ export default function Workspace() {
           <p className="text-zinc-300">
             <span className="font-mono">{projectPath}</span> 不存在，或是私有 repo。
           </p>
-          <p className="text-sm text-zinc-500">若你有這個 repo 的權限，登入後即可存取。</p>
+          <p className="text-base text-zinc-500">若你有這個 repo 的權限，登入後即可存取。</p>
           {me?.providers?.[provider as "github" | "gitlab"] ? (
             <a
               href={loginUrl}
@@ -183,10 +207,10 @@ export default function Workspace() {
               使用 {providerLabel(provider)} 登入
             </a>
           ) : (
-            <p className="text-xs text-zinc-600">此站尚未設定 {providerLabel(provider)} OAuth，暫時無法登入。</p>
+            <p className="text-sm text-zinc-600">此站尚未設定 {providerLabel(provider)} OAuth，暫時無法登入。</p>
           )}
           <div>
-            <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300">
+            <Link to="/" className="text-sm text-zinc-500 hover:text-zinc-300">
               ← 回首頁
             </Link>
           </div>
@@ -201,13 +225,13 @@ export default function Workspace() {
         <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-sm text-zinc-500 truncate">{projectPath}</span>
+        <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>
         {readOnly && (
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">唯讀</span>
+          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">唯讀</span>
         )}
         <div className="flex-1" />
         {activePath && activeKind === "md" && !readOnly && (
-          <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-xs">
+          <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
                 key={v}
@@ -222,7 +246,7 @@ export default function Workspace() {
         {activePath && activeKind === "md" && (
           <button
             onClick={() => navigate(`/p/${refPath}/${activePath}`)}
-            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
           >
             🎞️ 簡報
           </button>
@@ -231,14 +255,14 @@ export default function Workspace() {
           <>
             <button
               onClick={handleShare}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
             >
               分享
             </button>
             <button
               onClick={handleSave}
               disabled={save === "saving"}
-              className="rounded-lg bg-sky-600 px-4 py-1.5 text-xs font-semibold hover:bg-sky-500 disabled:opacity-50"
+              className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"
             >
               {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
             </button>
@@ -248,14 +272,14 @@ export default function Workspace() {
         {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
           <a
             href={loginUrl}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-zinc-400"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
           >
-            <ProviderIcon provider={provider} className="h-3.5 w-3.5" />
+            <ProviderIcon provider={provider} className="h-4 w-4" />
             登入以編輯
           </a>
         )}
         {me?.login && (
-          <span className="flex items-center gap-1.5 text-xs text-zinc-500">
+          <span className="flex items-center gap-1.5 text-sm text-zinc-500">
             {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
             {me.login}
           </span>
@@ -263,7 +287,7 @@ export default function Workspace() {
       </header>
 
       {shareUrl && (
-        <div className="border-b border-sky-900/50 bg-sky-950/40 px-4 py-2 text-xs flex flex-wrap items-center gap-x-6 gap-y-1">
+        <div className="border-b border-sky-900/50 bg-sky-950/40 px-4 py-2 text-sm flex flex-wrap items-center gap-x-6 gap-y-1">
           <span className="text-sky-300">已建立公開分享：</span>
           <a href={shareUrl.url} target="_blank" rel="noreferrer" className="text-sky-400 underline">
             📄 文件頁 {shareUrl.url}
@@ -277,7 +301,7 @@ export default function Workspace() {
         </div>
       )}
       {error && (
-        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-xs text-red-300 flex">
+        <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-sm text-red-300 flex">
           <span className="flex-1">{error}</span>
           <button onClick={() => setError("")}>✕</button>
         </div>
@@ -285,7 +309,7 @@ export default function Workspace() {
 
       <div className="flex-1 flex min-h-0">
         {/* 檔案樹 */}
-        <aside className="w-60 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block">
+        <aside className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block">
           {canWrite && (
             <div className="flex gap-1.5 mb-3">
               <input
@@ -293,24 +317,24 @@ export default function Workspace() {
                 onChange={(e) => setNewFile(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCreate()}
                 placeholder="新檔名…"
-                className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1 text-xs outline-none focus:border-sky-600"
+                className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600"
               />
               <button
                 onClick={handleCreate}
-                className="rounded bg-zinc-800 px-2 text-xs text-zinc-300 hover:bg-zinc-700"
+                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700"
               >
                 ＋
               </button>
             </div>
           )}
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] uppercase tracking-wider text-zinc-600">檔案</span>
+            <span className="text-xs uppercase tracking-wider text-zinc-600">檔案</span>
             <button
               onClick={() => {
                 setPresentMode((v) => !v);
                 if (presentMode) setChecked(new Set());
               }}
-              className={`rounded px-2 py-0.5 text-[10px] border ${
+              className={`rounded px-2 py-0.5 text-xs border ${
                 presentMode
                   ? "border-sky-600 bg-sky-950 text-sky-300"
                   : "border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
@@ -321,9 +345,9 @@ export default function Workspace() {
             </button>
           </div>
           {!files ? (
-            <p className="text-xs text-zinc-600">載入中…</p>
+            <p className="text-sm text-zinc-600">載入中…</p>
           ) : files.length === 0 ? (
-            <p className="text-xs text-zinc-600">
+            <p className="text-sm text-zinc-600">
               {canWrite ? "repo 是空的，建立第一份 .md 吧" : "這個 repo 是空的"}
             </p>
           ) : (
@@ -343,11 +367,11 @@ export default function Workspace() {
           )}
           {presentMode && (
             <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
-              <p className="text-[10px] text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
+              <p className="text-xs text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
               <button
                 onClick={() => startPresent(checkedInOrder, `${repoLeaf} 展示`)}
                 disabled={checkedInOrder.length === 0}
-                className="w-full rounded bg-sky-600 py-1.5 text-xs font-semibold hover:bg-sky-500 disabled:opacity-40"
+                className="w-full rounded bg-sky-600 py-2 text-sm font-semibold hover:bg-sky-500 disabled:opacity-40"
               >
                 ▶ 開始展示
               </button>
@@ -355,7 +379,7 @@ export default function Workspace() {
                 <button
                   onClick={handleShareSet}
                   disabled={checkedInOrder.length === 0}
-                  className="w-full rounded border border-zinc-700 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400 disabled:opacity-40"
+                  className="w-full rounded border border-zinc-700 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 disabled:opacity-40"
                 >
                   🔗 分享展示集
                 </button>
@@ -369,8 +393,8 @@ export default function Workspace() {
           <div className="flex-1 grid place-items-center text-center px-6">
             <div className="space-y-3">
               <p className="text-3xl">📂</p>
-              <p className="font-mono text-sm text-zinc-300">{activeFolder}/</p>
-              <p className="text-xs text-zinc-500">{folderFiles.length} 個檔案</p>
+              <p className="font-mono text-base text-zinc-300">{activeFolder}/</p>
+              <p className="text-sm text-zinc-500">{folderFiles.length} 個檔案</p>
               <button
                 onClick={() => startPresent(folderFiles, activeFolder)}
                 disabled={folderFiles.length === 0}
@@ -381,7 +405,7 @@ export default function Workspace() {
             </div>
           </div>
         ) : !activePath ? (
-          <div className="flex-1 grid place-items-center text-zinc-600 text-sm">
+          <div className="flex-1 grid place-items-center text-zinc-600 text-base">
             從左側選擇檔案{canWrite ? "，或建立新檔" : ""}
           </div>
         ) : activeKind === "html" ? (
@@ -402,24 +426,28 @@ export default function Workspace() {
             />
           </div>
         ) : activeKind === "text" ? (
-          <pre className="flex-1 overflow-auto p-6 text-xs font-mono text-zinc-300 whitespace-pre-wrap">
+          <pre className="flex-1 overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
             {content}
           </pre>
         ) : (
           <div className="flex-1 flex min-w-0">
             {effectiveView !== "preview" && (
               <textarea
+                ref={editorRef}
                 value={content}
                 onChange={(e) => {
                   setContent(e.target.value);
                   setSave("dirty");
                 }}
+                onScroll={() => syncScroll(editorRef.current, previewRef.current)}
                 spellCheck={false}
-                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} resize-none bg-zinc-950 p-5 font-mono text-sm leading-relaxed outline-none border-r border-zinc-900`}
+                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} resize-none bg-zinc-950 p-5 font-mono text-base leading-7 outline-none border-r border-zinc-900`}
               />
             )}
             {effectiveView !== "edit" && (
               <div
+                ref={previewRef}
+                onScroll={() => syncScroll(previewRef.current, editorRef.current)}
                 className={`${effectiveView === "split" ? "w-1/2" : "w-full"} overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto" : ""}`}
                 dangerouslySetInnerHTML={{ __html: html }}
               />

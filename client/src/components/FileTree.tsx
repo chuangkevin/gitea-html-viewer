@@ -134,7 +134,7 @@ export default function FileTree({
         return (
           <li key={(isFolder ? "d:" : "f:") + node.path}>
             <div
-              className={`flex items-center gap-1 rounded pr-1 text-xs font-mono cursor-pointer select-none ${
+              className={`flex items-center gap-1.5 rounded pr-1 text-sm font-mono cursor-pointer select-none ${
                 isFolder
                   ? node.path === activeFolder
                     ? "bg-zinc-800/80 text-zinc-100"
@@ -143,7 +143,7 @@ export default function FileTree({
                     ? "bg-sky-950 text-sky-300"
                     : "text-zinc-400 hover:bg-zinc-900"
               }`}
-              style={{ paddingLeft: `${depth * 12 + 4}px` }}
+              style={{ paddingLeft: `${depth * 14 + 4}px` }}
               onClick={() => {
                 if (isFolder) {
                   toggleFolder(node.path);
