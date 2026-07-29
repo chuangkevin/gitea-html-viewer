@@ -4,13 +4,17 @@ import { api, type Me } from "../lib/api";
 import { renderMarkdown } from "../lib/markdown";
 import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
+import IdentityPicker from "../components/IdentityPicker";
 import { kindOf } from "../components/Presenter";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
 
 /**
  * 主工作區。設計原則：public repo 誰都能直接讀（不登入 = 唯讀模式），
- * 需要編輯或讀 private 時才走右上角 GitHub 登入。
+ * 需要編輯或讀 private 時才走右上角登入。
+ *
+ * 團隊模式（server 有成員清單）時另有一條路：不必個人 OAuth，
+ * 在 header 選「你是誰」即可用該成員的 token 讀寫，commit 記在該成員名下。
  */
 export default function Workspace() {
   const { provider = "github", project = "" } = useParams();
@@ -37,14 +41,23 @@ export default function Workspace() {
   const [rawGrant, setRawGrant] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
+  const [reloadKey, setReloadKey] = useState(0); // 換身分後強制重讀檔案樹與檔案內容
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
   )}`;
 
+  const refreshMe = useCallback(() => api.me().then(setMe).catch(() => setMe({ login: null })), []);
+
   useEffect(() => {
-    api.me().then(setMe).catch(() => setMe({ login: null }));
-  }, []);
+    void refreshMe();
+  }, [refreshMe]);
+
+  // 團隊模式：選了成員（或改選別人）→ 重抓身分、檔案樹與目前檔案
+  const handleIdentityChange = useCallback(() => {
+    void refreshMe();
+    setReloadKey((k) => k + 1);
+  }, [refreshMe]);
 
   const loadFiles = useCallback(() => {
     setNeedLogin(false);
@@ -59,16 +72,19 @@ export default function Workspace() {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [refPath]);
+  }, [refPath, reloadKey]);
 
   useEffect(loadFiles, [loadFiles]);
 
   const activeKind = activePath ? kindOf(activePath) : null;
 
+  // 個人登入或團隊模式選了身分，才有資格拿 private repo 的 raw grant
+  const hasIdentity = Boolean(me?.login || me?.team?.selected);
+
   useEffect(() => {
-    if (!isPrivate || !me?.login || rawGrant) return;
+    if (!isPrivate || !hasIdentity || rawGrant) return;
     api.rawGrant(provider, projectPath).then((r) => setRawGrant(r.grant)).catch(() => {});
-  }, [isPrivate, me, rawGrant, provider, projectPath]);
+  }, [isPrivate, hasIdentity, rawGrant, provider, projectPath]);
 
   const rawBase = isPrivate && rawGrant ? `/rawt/${rawGrant}` : "/raw";
 
@@ -87,7 +103,7 @@ export default function Workspace() {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [refPath, activePath]);
+  }, [refPath, activePath, reloadKey]);
 
   async function handleSave() {
     if (!activePath || !canWrite) return;
@@ -198,6 +214,12 @@ export default function Workspace() {
             <span className="font-mono">{projectPath}</span> 不存在，或是私有 repo。
           </p>
           <p className="text-base text-zinc-500">若你有這個 repo 的權限，登入後即可存取。</p>
+          {me?.team?.enabled && !me.login && (
+            <div className="space-y-2">
+              <p className="text-sm text-zinc-400">或者，選一下你是誰（團隊模式）：</p>
+              <IdentityPicker team={me.team} onChange={handleIdentityChange} size="lg" />
+            </div>
+          )}
           {me?.providers?.[provider as "github" | "gitlab"] ? (
             <a
               href={loginUrl}
@@ -227,7 +249,16 @@ export default function Workspace() {
         </Link>
         <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>
         {readOnly && (
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">唯讀</span>
+          <span
+            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
+            title={
+              me?.team?.enabled && !me.team.selected
+                ? "先在右上角選「你是誰」才能編輯"
+                : "沒有這個 repo 的寫入權限"
+            }
+          >
+            {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
+          </span>
         )}
         <div className="flex-1" />
         {activePath && activeKind === "md" && !readOnly && (
@@ -253,12 +284,16 @@ export default function Workspace() {
         )}
         {activePath && activeKind === "md" && canWrite && (
           <>
-            <button
-              onClick={handleShare}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
-            >
-              分享
-            </button>
+            {/* 分享連結的內容是用「分享者的 session」持續拉取，團隊身分沒有 session，
+                所以分享功能仍只開給個人 OAuth 登入者 */}
+            {me?.login && (
+              <button
+                onClick={handleShare}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+              >
+                分享
+              </button>
+            )}
             <button
               onClick={handleSave}
               disabled={save === "saving"}
@@ -267,6 +302,10 @@ export default function Workspace() {
               {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
             </button>
           </>
+        )}
+        {/* 團隊模式：不必個人 OAuth，選「你是誰」就用該成員的 token 讀寫 */}
+        {me && !me.login && me.team?.enabled && (
+          <IdentityPicker team={me.team} onChange={handleIdentityChange} />
         )}
         {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進，依目前 repo 來源） */}
         {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
@@ -375,7 +414,7 @@ export default function Workspace() {
               >
                 ▶ 開始展示
               </button>
-              {canWrite && (
+              {canWrite && me?.login && (
                 <button
                   onClick={handleShareSet}
                   disabled={checkedInOrder.length === 0}

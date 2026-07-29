@@ -1,8 +1,22 @@
+/** 團隊模式成員：前端永遠只拿得到 name / email，拿不到 token。 */
+export interface TeamMember {
+  name: string;
+  email: string;
+  provider: string;
+}
+
+export interface TeamInfo {
+  enabled: boolean;
+  members: TeamMember[];
+  selected: { index: number; name: string; email: string } | null;
+}
+
 export interface Me {
   login: string | null;
   avatarUrl?: string;
   provider?: string;
   providers?: { github: boolean; gitlab: boolean };
+  team?: TeamInfo;
 }
 
 export interface RepoInfo {
@@ -44,6 +58,13 @@ const encFilePath = (p: string) => p.split("/").map(encodeURIComponent).join("/"
 export const api = {
   me: () => fetch("/api/me").then((r) => j<Me>(r)),
   logout: () => fetch("/api/auth/logout", { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
+  /** 團隊模式選身分；index 傳 null = 清除選擇（回唯讀）。 */
+  selectIdentity: (index: number | null) =>
+    fetch("/api/identity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ index }),
+    }).then((r) => j<{ ok: boolean; selected: { index: number; name: string; email: string } | null }>(r)),
   repos: () => fetch("/api/repos").then((r) => j<RepoInfo[]>(r)),
   createRepo: (name: string, isPrivate: boolean) =>
     fetch("/api/repos", {

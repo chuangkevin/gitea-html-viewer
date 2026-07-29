@@ -172,13 +172,17 @@ export const gitlab: Provider = {
     return Buffer.from(await res.arrayBuffer());
   },
 
-  async writeFile(token, projectPath, filePath, content, message, _sha, branch) {
+  async writeFile(token, projectPath, filePath, content, message, _sha, branch, author) {
     const url = `/projects/${pid(projectPath)}/repository/files/${encFile(filePath)}`;
+    // 團隊模式：token 是某個人的，但 commit 的 author 要記成該成員
+    // （committer 仍是 token 帳號，這是 GitLab API 的行為）。
     const body = JSON.stringify({
       branch,
       content: Buffer.from(content, "utf8").toString("base64"),
       encoding: "base64",
       commit_message: message,
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
     });
     const headers = { "Content-Type": "application/json" };
     // 先試更新（PUT）；檔案不存在時 GitLab 回 400，改用建立（POST）。

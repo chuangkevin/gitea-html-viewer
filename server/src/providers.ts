@@ -36,6 +36,15 @@ export interface RepoFile {
   path: string;
 }
 
+/**
+ * commit 的作者。團隊模式下 token 是「某個人的 token」，但 commit 要記在
+ * 該成員名下：committer 是 token 帳號、author 是這裡指定的人。
+ */
+export interface CommitAuthor {
+  name: string;
+  email: string;
+}
+
 export interface Provider {
   name: ProviderName;
 
@@ -53,6 +62,7 @@ export interface Provider {
   listAllFiles(token: string, projectPath: string, branch: string): Promise<{ path: string }[]>;
   readFile(token: string, projectPath: string, filePath: string): Promise<RepoFile>;
   readFileRaw(token: string, projectPath: string, filePath: string): Promise<Buffer>;
+  /** author 省略時就用 token 帳號當作者（個人 OAuth 登入的情況）。 */
   writeFile(
     token: string,
     projectPath: string,
@@ -60,7 +70,8 @@ export interface Provider {
     content: string,
     message: string,
     sha: string | undefined,
-    branch: string
+    branch: string,
+    author?: CommitAuthor
   ): Promise<{ sha: string }>;
 }
 

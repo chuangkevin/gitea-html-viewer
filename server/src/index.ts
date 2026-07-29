@@ -20,9 +20,17 @@ import {
   isProviderName,
   ProviderError,
   type ProviderName,
+  type CommitAuthor,
 } from "./providers.js";
 import { github } from "./github.js";
 import { gitlab } from "./gitlab.js";
+import {
+  identities,
+  teamEnabled,
+  publicIdentities,
+  resolveSelection,
+  encodeSelection,
+} from "./identities.js";
 
 registerProvider(github);
 registerProvider(gitlab);
@@ -59,6 +67,7 @@ const OAUTH: Record<ProviderName, OAuthConf> = {
 const oauthReady = (p: ProviderName) => Boolean(OAUTH[p].clientId && OAUTH[p].clientSecret);
 
 const COOKIE = "nb_sid";
+const IDENT_COOKIE = "nb_ident"; // 團隊模式：只存「選了哪位成員」，不存 token
 const REDIRECT_URI = `${BASE_URL}/api/auth/callback`;
 
 // 部署健康檢查（CI 用；不需認證）
@@ -142,14 +151,48 @@ app.post("/api/auth/logout", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/me", (req, res) => {
-  const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab") };
-  const s = getSession(req.cookies?.[COOKIE]);
-  if (!s) {
-    res.json({ login: null, providers });
+// ── 團隊模式（多 token、一人一組）──────────────────────
+// 回前端的資料一律不含 token：只有 name / email / provider。
+function teamInfo(req: express.Request) {
+  const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+  return {
+    enabled: teamEnabled(),
+    members: publicIdentities(),
+    selected: sel ? { index: sel.index, name: sel.identity.name, email: sel.identity.email } : null,
+  };
+}
+
+// 選身分：只把「第幾位成員 + 名字」寫進 cookie，token 留在 server。
+// index 傳 null（或非法值）＝清除選擇，回到唯讀。
+app.post("/api/identity", (req, res) => {
+  const list = identities();
+  if (list.length === 0) {
+    res.status(404).json({ error: "team_mode_disabled" });
     return;
   }
-  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers });
+  const { index } = req.body as { index?: number | null };
+  const opts = { httpOnly: true, sameSite: "lax" as const, secure: BASE_URL.startsWith("https") };
+  if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= list.length) {
+    res.clearCookie(IDENT_COOKIE);
+    res.json({ ok: true, selected: null });
+    return;
+  }
+  res.cookie(IDENT_COOKIE, encodeSelection(index, list[index]), {
+    ...opts,
+    maxAge: 30 * 24 * 3600 * 1000,
+  });
+  res.json({ ok: true, selected: { index, name: list[index].name, email: list[index].email } });
+});
+
+app.get("/api/me", (req, res) => {
+  const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab") };
+  const team = teamInfo(req);
+  const s = getSession(req.cookies?.[COOKIE]);
+  if (!s) {
+    res.json({ login: null, providers, team });
+    return;
+  }
+  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers, team });
 });
 
 // ── 共用：解析路由上的 provider / project ──────────────
@@ -162,10 +205,30 @@ function routeProvider(req: express.Request): ProviderName {
 function projectParam(req: express.Request): string {
   return req.params.project; // Express 已 decodeURIComponent
 }
-// 讀取用 token：登入且同 provider → 用使用者 token；否則用該 provider 的後備 token。
-function readToken(s: Session | null, provider: ProviderName): string {
-  if (s && s.provider === provider) return s.token;
-  return OAUTH[provider].fallbackToken;
+/**
+ * 這個請求要用「誰的 token」打 provider API。優先序：
+ *   1. 個人 OAuth session（同 provider）→ 用他自己的 token
+ *   2. 團隊模式所選成員（同 provider）→ 用該成員的 token，commit author 記成該成員
+ *   3. 都沒有 → 該 provider 的後備 token（只夠讀 public）
+ * authed = 有具名身分 → 可讀 private、可寫。token 只在 server 內流動。
+ */
+interface Actor {
+  token: string;
+  authed: boolean;
+  author?: CommitAuthor;
+}
+function actorFor(req: express.Request, provider: ProviderName): Actor {
+  const s = getSession(req.cookies?.[COOKIE]);
+  if (s && s.provider === provider) return { token: s.token, authed: true };
+  const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+  if (sel && sel.identity.provider === provider) {
+    return {
+      token: sel.identity.token,
+      authed: true,
+      author: { name: sel.identity.name, email: sel.identity.email },
+    };
+  }
+  return { token: OAUTH[provider].fallbackToken, authed: false };
 }
 
 // ── repos（登入者自己的）──────────────────────────────
@@ -243,26 +306,26 @@ function sendRaw(res: express.Response, filePath: string, buf: Buffer): void {
 // - 有 session 且同 provider → 用使用者 token（能讀自己有權限的 private）
 // - 否則 → 用該 provider 後備 token / 匿名，且【必須】驗證 repo 為 public
 app.get("/api/files/:provider/:project", async (req, res) => {
-  const s = getSession(req.cookies?.[COOKIE]);
+  let actor: Actor | null = null;
   try {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    const token = readToken(s, provider);
-    const info = await p.getRepo(token, project);
-    if (info.private && !(s && s.provider === provider)) {
+    actor = actorFor(req, provider);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
-    const files = await p.listAllFiles(token, project, info.defaultBranch);
+    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
     res.json({
       branch: info.defaultBranch,
       private: info.private,
-      canWrite: Boolean(s && s.provider === provider && info.canPush),
+      canWrite: Boolean(actor.authed && info.canPush),
       files: files.map((f) => ({ path: f.path })),
     });
   } catch (e) {
-    if (e instanceof ProviderError && e.status === 404 && !s) {
+    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;
     }
@@ -271,22 +334,22 @@ app.get("/api/files/:provider/:project", async (req, res) => {
 });
 
 app.get("/api/file/:provider/:project/*", async (req, res) => {
-  const s = getSession(req.cookies?.[COOKIE]);
+  let actor: Actor | null = null;
   try {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    const token = readToken(s, provider);
-    const info = await p.getRepo(token, project);
-    if (info.private && !(s && s.provider === provider)) {
+    actor = actorFor(req, provider);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
-    const f = await p.readFile(token, project, filePath);
+    const f = await p.readFile(actor.token, project, filePath);
     res.json(f);
   } catch (e) {
-    if (e instanceof ProviderError && e.status === 404 && !s) {
+    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;
     }
@@ -296,19 +359,18 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
 
 // raw 靜態服務（把 repo 當靜態網站 host）
 app.get("/raw/:provider/:project/*", async (req, res) => {
-  const s = getSession(req.cookies?.[COOKIE]);
   try {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    const token = readToken(s, provider);
-    const info = await p.getRepo(token, project);
-    if (info.private && !(s && s.provider === provider)) {
+    const actor = actorFor(req, provider);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required" });
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
-    const buf = await p.readFileRaw(token, project, filePath);
+    const buf = await p.readFileRaw(actor.token, project, filePath);
     sendRaw(res, filePath, buf);
   } catch (e) {
     if (e instanceof ProviderError) {
@@ -321,25 +383,55 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
 
 // 私有 repo 的 HTML 展示：sandbox iframe 是 opaque origin，子資源不帶 cookie，
 // 改發短效 grant 放在路徑裡，相對路徑資產自然繼承授權。
-const rawGrants = new Map<string, { provider: ProviderName; project: string; sid: string; exp: number }>();
+// grant 只記「用誰的身分」（session id 或成員名字），token 每次現查——
+// 成員被移出清單或 session 過期，既有 grant 就自動失效。
+interface RawGrant {
+  provider: ProviderName;
+  project: string;
+  sid: string | null;
+  identName: string | null;
+  exp: number;
+}
+const rawGrants = new Map<string, RawGrant>();
+
+/** grant → 目前可用的 token；身分已消失時回 null。 */
+function grantToken(g: RawGrant): string | null {
+  if (g.sid) return getSession(g.sid)?.token ?? null;
+  if (g.identName) {
+    const m = identities().find((x) => x.name === g.identName && x.provider === g.provider);
+    return m ? m.token : null;
+  }
+  return null;
+}
+
 app.post("/api/raw-grant", async (req, res) => {
-  const s = requireAuth(req, res);
-  if (!s) return;
   const { provider: pv, repo } = req.body as { provider?: string; repo?: string };
-  if (!repo || !isProviderName(pv || "") || pv !== s.provider) {
+  if (!repo || !isProviderName(pv || "")) {
     res.status(400).json({ error: "provider/repo required" });
     return;
   }
   const provider = pv as ProviderName;
+  const actor = actorFor(req, provider);
+  if (!actor.authed) {
+    res.status(401).json({ error: "not_authenticated" });
+    return;
+  }
   try {
-    await getProvider(provider).getRepo(s.token, repo); // 驗證此使用者可讀
+    await getProvider(provider).getRepo(actor.token, repo); // 驗證這個身分讀得到
   } catch (e) {
     handleError(res, e);
     return;
   }
   for (const [k, v] of rawGrants) if (v.exp < Date.now()) rawGrants.delete(k);
   const grant = crypto.randomBytes(12).toString("base64url");
-  rawGrants.set(grant, { provider, project: repo, sid: s.sid, exp: Date.now() + 6 * 3600e3 });
+  const s = getSession(req.cookies?.[COOKIE]);
+  rawGrants.set(grant, {
+    provider,
+    project: repo,
+    sid: s && s.provider === provider ? s.sid : null,
+    identName: actor.author?.name ?? null,
+    exp: Date.now() + 6 * 3600e3,
+  });
   res.json({ grant });
 });
 
@@ -352,13 +444,13 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
       res.status(401).json({ error: "grant_invalid" });
       return;
     }
-    const owner = getSession(g.sid);
-    if (!owner) {
+    const token = grantToken(g);
+    if (!token) {
       res.status(401).json({ error: "grant_session_expired" });
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
-    const buf = await getProvider(provider).readFileRaw(owner.token, project, filePath);
+    const buf = await getProvider(provider).readFileRaw(token, project, filePath);
     sendRaw(res, filePath, buf);
   } catch (e) {
     if (e instanceof ProviderError) {
@@ -370,12 +462,12 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
 });
 
 app.put("/api/file/:provider/:project/*", async (req, res) => {
-  const s = requireAuth(req, res);
-  if (!s) return;
   try {
     const provider = routeProvider(req);
-    if (s.provider !== provider) {
-      res.status(403).json({ error: "wrong_provider_session" });
+    // 個人 OAuth 或團隊模式選定成員都可以寫；兩者皆無 → 401
+    const actor = actorFor(req, provider);
+    if (!actor.authed) {
+      res.status(401).json({ error: "not_authenticated" });
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
@@ -390,9 +482,18 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     }
     const p = getProvider(provider);
     const project = projectParam(req);
-    const info = await p.getRepo(s.token, project); // 取預設分支（GitLab 寫入需要）
+    const info = await p.getRepo(actor.token, project); // 取預設分支（GitLab 寫入需要）
     const commitMsg = message || `docs: update ${filePath} via note-bridge`;
-    const result = await p.writeFile(s.token, project, filePath, content, commitMsg, sha, info.defaultBranch);
+    const result = await p.writeFile(
+      actor.token,
+      project,
+      filePath,
+      content,
+      commitMsg,
+      sha,
+      info.defaultBranch,
+      actor.author // 團隊模式才有；個人登入時 undefined = 用 token 帳號
+    );
     res.json(result);
   } catch (e) {
     handleError(res, e);
