@@ -1,14 +1,15 @@
 import { useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { refPathOf } from "../lib/providers";
 import Presenter from "../components/Presenter";
 
-/** 本地展示（不經分享 token）：/present/:owner/:repo?list=<JSON paths>。
+/** 本地展示（不經分享 token）：/present/:provider/:project?list=<JSON paths>。
  *  勾選展示與資料夾連續模式都導到這裡；讀取權限同工作區（public 免登入）。 */
 export default function PresentPage() {
-  const { owner, repo } = useParams();
+  const { provider = "github", project = "" } = useParams();
   const [params] = useSearchParams();
-  const fullRepo = `${owner}/${repo}`;
+  const refPath = refPathOf(provider, project);
 
   const items = useMemo<string[]>(() => {
     try {
@@ -19,7 +20,7 @@ export default function PresentPage() {
     }
   }, [params]);
 
-  const title = params.get("title") || fullRepo;
+  const title = params.get("title") || project;
   const grant = params.get("grant") || "";
   const rawBase = grant ? `/rawt/${grant}` : "/raw";
 
@@ -27,9 +28,9 @@ export default function PresentPage() {
     <Presenter
       title={title}
       items={items}
-      loadText={(p) => api.readFile(fullRepo, p).then((f) => f.content)}
-      rawUrl={(p) => `${rawBase}/${fullRepo}/${p.split("/").map(encodeURIComponent).join("/")}`}
-      exitUrl={`/edit/${fullRepo}`}
+      loadText={(p) => api.readFile(refPath, p).then((f) => f.content)}
+      rawUrl={(p) => `${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}`}
+      exitUrl={`/edit/${refPath}`}
     />
   );
 }

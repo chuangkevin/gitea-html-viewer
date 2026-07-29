@@ -1,8 +1,8 @@
 {
-  "name": "note-bridge",
+  "name": "note",
   "version": "0.1.0",
   "private": true,
-  "description": "Markdown notes that live in your GitHub repo — edit on the web, share as standalone pages, present as slides.",
+  "description": "Markdown notes that live in your Git repo (GitHub / GitLab) — edit on the web, share as standalone pages, present as slides.",
   "workspaces": [
     "server",
     "client"

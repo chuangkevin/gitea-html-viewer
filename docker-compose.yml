@@ -1,19 +1,28 @@
 services:
-  note-bridge:
-    image: ${DOCKERHUB_USERNAME:-kevin950805}/note-bridge:latest
-    container_name: note-bridge
+  note:
+    build: .
+    container_name: note
     restart: unless-stopped
+    # 對外只綁 8790（host）→ 3210（container）。domain 由 docker-host 上的
+    # Nginx Proxy Manager 反代到這個 port，見 interagent-bible 的部署文件。
     ports:
-      - "3210:3210"
+      - "8790:3210"
     environment:
       - PORT=3210
-      # tailnet 內自己用：先走 DEV_PAT 登入，callback 指向 tailnet 網域。
-      # 之後公開時改設 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET 走 OAuth。
-      - BASE_URL=${BASE_URL:-https://note.sisihome.org}
+      # ⚠️ 上 NPM domain 後改成正式網址（OAuth callback 用它）。
+      #    先直連測試可填 http://<docker-host-ip>:8790
+      - BASE_URL=${BASE_URL:-http://localhost:8790}
+      # GitLab OAuth（gitlab.com/-/profile/applications；scope 勾 api；
+      # Redirect URI = <BASE_URL>/api/auth/callback）
+      - GITLAB_CLIENT_ID=${GITLAB_CLIENT_ID:-}
+      - GITLAB_CLIENT_SECRET=${GITLAB_CLIENT_SECRET:-}
+      - GITLAB_FALLBACK_TOKEN=${GITLAB_FALLBACK_TOKEN:-}
+      # GitHub 一併保留為選配，不填就不顯示 GitHub 登入
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
-      - DEV_PAT=${DEV_PAT:-}
       - GITHUB_FALLBACK_TOKEN=${GITHUB_FALLBACK_TOKEN:-}
+      # session token 加密金鑰（不填會自動產生存在 data/.secret）
+      - SECRET=${SECRET:-}
       - DATA_DIR=/data
     volumes:
       - ./data:/data

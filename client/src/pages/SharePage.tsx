@@ -65,7 +65,7 @@ export default function SharePage() {
       <main className="max-w-3xl mx-auto px-6 py-10">
         <article className="doc" dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.content ?? "") }} />
         <footer className="mt-16 pt-6 border-t border-zinc-900 text-xs text-zinc-600">
-          以 <span className="font-mono">note-bridge</span> 分享 — 文件原文存放於 GitHub（{doc.repo}）
+          以 <span className="font-mono">note-bridge</span> 分享 — 文件原文存放於 Git repo（{doc.repo}）
         </footer>
       </main>
     </div>

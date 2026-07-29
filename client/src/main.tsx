@@ -14,11 +14,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/edit/:owner/:repo" element={<Workspace />} />
+        <Route path="/edit/:provider/:project" element={<Workspace />} />
         <Route path="/s/:token" element={<SharePage />} />
         <Route path="/s/:token/slides" element={<SlidesPage />} />
-        <Route path="/p/:owner/:repo/*" element={<DirectSlidesPage />} />
-        <Route path="/present/:owner/:repo" element={<PresentPage />} />
+        <Route path="/p/:provider/:project/*" element={<DirectSlidesPage />} />
+        <Route path="/present/:provider/:project" element={<PresentPage />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>

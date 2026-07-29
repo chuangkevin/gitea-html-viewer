@@ -29,10 +29,14 @@ CREATE TABLE IF NOT EXISTS shares (
 );
 `);
 
-// 既有部署的漸進式 migration：展示集欄位（kind: doc=單檔, set=多檔展示）
+// 既有部署的漸進式 migration
 const shareCols = (db.prepare("PRAGMA table_info(shares)").all() as { name: string }[]).map((c) => c.name);
 if (!shareCols.includes("kind")) db.exec("ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'doc'");
 if (!shareCols.includes("paths")) db.exec("ALTER TABLE shares ADD COLUMN paths TEXT");
+// 多 provider：舊資料一律視為 github
+if (!shareCols.includes("provider")) db.exec("ALTER TABLE shares ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
+const sessionCols = (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+if (!sessionCols.includes("provider")) db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
 
 // ── token 加密（at rest）────────────────────────────────
 // SECRET 未設定時自動產生並存檔，重啟後 session 仍可解。
@@ -69,24 +73,36 @@ export interface Session {
   login: string;
   avatar_url: string | null;
   token: string;
+  provider: string;
 }
 
-export function createSession(login: string, avatarUrl: string | null, accessToken: string): string {
+export function createSession(
+  login: string,
+  avatarUrl: string | null,
+  accessToken: string,
+  provider: string
+): string {
   const sid = crypto.randomBytes(24).toString("hex");
   db.prepare(
-    "INSERT INTO sessions (sid, login, avatar_url, token_enc, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(sid, login, avatarUrl, encrypt(accessToken), Date.now());
+    "INSERT INTO sessions (sid, login, avatar_url, token_enc, created_at, provider) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(sid, login, avatarUrl, encrypt(accessToken), Date.now(), provider);
   return sid;
 }
 
 export function getSession(sid: string | undefined): Session | null {
   if (!sid) return null;
   const row = db.prepare("SELECT * FROM sessions WHERE sid = ?").get(sid) as
-    | { sid: string; login: string; avatar_url: string | null; token_enc: string }
+    | { sid: string; login: string; avatar_url: string | null; token_enc: string; provider?: string }
     | undefined;
   if (!row) return null;
   try {
-    return { sid: row.sid, login: row.login, avatar_url: row.avatar_url, token: decrypt(row.token_enc) };
+    return {
+      sid: row.sid,
+      login: row.login,
+      avatar_url: row.avatar_url,
+      token: decrypt(row.token_enc),
+      provider: row.provider || "github",
+    };
   } catch {
     return null;
   }
@@ -107,28 +123,29 @@ export interface Share {
   revoked: number;
   kind: "doc" | "set";
   paths: string | null; // set 專用：JSON string[]，依資料夾排序
+  provider: string;
 }
 
 /** 多檔展示集：勾選的檔案（已排序）打包成一個分享 token。 */
 export function createShareSet(s: Session, repo: string, paths: string[], title: string | null): string {
   const token = crypto.randomBytes(8).toString("base64url");
   db.prepare(
-    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, kind, paths) VALUES (?, ?, ?, ?, ?, ?, ?, 'set', ?)"
-  ).run(token, s.sid, s.login, repo, paths[0] ?? "", title, Date.now(), JSON.stringify(paths));
+    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, kind, paths, provider) VALUES (?, ?, ?, ?, ?, ?, ?, 'set', ?, ?)"
+  ).run(token, s.sid, s.login, repo, paths[0] ?? "", title, Date.now(), JSON.stringify(paths), s.provider);
   return token;
 }
 
 export function createShare(s: Session, repo: string, filePath: string, title: string | null): string {
   // 同一份文件重複分享時回收既有 token，避免連結氾濫
   const existing = db
-    .prepare("SELECT token FROM shares WHERE owner_login = ? AND repo = ? AND path = ? AND revoked = 0")
-    .get(s.login, repo, filePath) as { token: string } | undefined;
+    .prepare("SELECT token FROM shares WHERE owner_login = ? AND provider = ? AND repo = ? AND path = ? AND revoked = 0")
+    .get(s.login, s.provider, repo, filePath) as { token: string } | undefined;
   if (existing) return existing.token;
 
   const token = crypto.randomBytes(8).toString("base64url");
   db.prepare(
-    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).run(token, s.sid, s.login, repo, filePath, title, Date.now());
+    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(token, s.sid, s.login, repo, filePath, title, Date.now(), s.provider);
   return token;
 }
 

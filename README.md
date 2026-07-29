@@ -12,9 +12,11 @@ PM 不需要知道什麼是 Git。他們得到的是「線上文件工具 + 一�
 
 ## 功能
 
-- **GitHub repo 即資料庫**：不自建儲存，文件 = repo 裡的 `.md`，每次存檔都是一個真實 commit
-- **GitHub OAuth 多使用者**：訪客用自己的帳號登入、操作自己的 repo
-- **分享為獨立網頁**：`/s/<token>` 公開頁面，可隨時撤銷；訪客不需要 GitHub 帳號
+- **Git repo 即資料庫**：不自建儲存，文件 = repo 裡的 `.md`，每次存檔都是一個真實 commit
+- **GitHub / GitLab 皆可**：貼上 repo 網址自動判斷來源（`github.com/…` 或 `gitlab.com/…`）
+- **OAuth 多使用者**：訪客用自己的帳號登入、操作自己的 repo（GitHub、GitLab 各自的 OAuth App）
+- **公開 repo 免登入**：public repo 直接讀、直接放簡報；private 或要編輯時才右上角登入
+- **分享為獨立網頁**：`/s/<token>` 公開頁面，可隨時撤銷；訪客不需要帳號
 - **簡報模式**：同一份文件以 `---` 分頁即為投影片，鍵盤／點擊翻頁——相容 PM 的簡報習慣
 - Roadmap：PM 側 AI 討論優化（RAG 知識注入）、研發側 AI 總結
 
@@ -22,7 +24,7 @@ PM 不需要知道什麼是 Git。他們得到的是「線上文件工具 + 一�
 
 ```bash
 npm install
-cp .env.example .env   # 填 GITHUB_CLIENT_ID / SECRET，或先填 DEV_PAT 跳過 OAuth
+cp .env.example .env   # 填 GITHUB_* 和／或 GITLAB_* OAuth（兩邊都是選配）
 npm run dev            # server :3210 + client :5210（proxy /api）
 ```
 
@@ -40,8 +42,15 @@ Docker：見 `docker-compose.yml`。
 client (React 19 + Vite + Tailwind 4)
    │  /api proxy
 server (Express + TypeScript)
-   ├─ GitHub OAuth（token AES-256-GCM 加密存放）
-   ├─ Contents API：list / read / write(=commit)
-   └─ SQLite：sessions + share tokens（唯二不放 GitHub 的資料）
-GitHub  ←── 唯一的文件儲存
+   ├─ Provider 抽象層（providers.ts）：GitHub / GitLab 各一實作
+   ├─ OAuth（GitHub / GitLab，token AES-256-GCM 加密存放）
+   ├─ list / read / write(=commit) / raw
+   └─ SQLite：sessions + share tokens（唯二不放 repo 的資料）
+GitHub / GitLab repo  ←── 唯一的文件儲存
 ```
+
+## 新增 provider
+
+`server/src/providers.ts` 定義 `Provider` 介面與 `parseRepoInput()`（貼上網址判斷來源）。
+要再支援別的後端（如自架 Gitea/GitLab），實作同一介面、`registerProvider()` 註冊，
+再於 `parseRepoInput` 加上該 host 的判斷即可，路由與前端不必動。

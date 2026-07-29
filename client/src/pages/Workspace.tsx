@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type Me } from "../lib/api";
 import { renderMarkdown } from "../lib/markdown";
-import { GitHubIcon } from "./Home";
+import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import { kindOf } from "../components/Presenter";
 
@@ -13,9 +13,11 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
  * 需要編輯或讀 private 時才走右上角 GitHub 登入。
  */
 export default function Workspace() {
-  const { owner, repo } = useParams();
+  const { provider = "github", project = "" } = useParams();
   const navigate = useNavigate();
-  const fullRepo = `${owner}/${repo}`;
+  const projectPath = project; // react-router 已解碼；GitLab 可含巢狀群組
+  const refPath = `${provider}/${encodeURIComponent(projectPath)}`; // 路由/API 用
+  const repoLeaf = projectPath.split("/").pop() || projectPath;
   const [params, setParams] = useSearchParams();
   const activePath = params.get("f") || "";
 
@@ -36,18 +38,9 @@ export default function Workspace() {
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
 
-  const loginUrl = `/api/auth/login?next=${encodeURIComponent(
+  const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
   )}`;
-
-  async function handleDevLogin() {
-    try {
-      await api.devLogin();
-      location.reload();
-    } catch (e) {
-      setError(String((e as Error).message || e));
-    }
-  }
 
   useEffect(() => {
     api.me().then(setMe).catch(() => setMe({ login: null }));
@@ -56,7 +49,7 @@ export default function Workspace() {
   const loadFiles = useCallback(() => {
     setNeedLogin(false);
     api
-      .files(fullRepo)
+      .files(refPath)
       .then((r) => {
         setFiles(r.files.map((f) => f.path));
         setCanWrite(r.canWrite);
@@ -66,7 +59,7 @@ export default function Workspace() {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [fullRepo]);
+  }, [refPath]);
 
   useEffect(loadFiles, [loadFiles]);
 
@@ -74,8 +67,8 @@ export default function Workspace() {
 
   useEffect(() => {
     if (!isPrivate || !me?.login || rawGrant) return;
-    api.rawGrant(fullRepo).then((r) => setRawGrant(r.grant)).catch(() => {});
-  }, [isPrivate, me, rawGrant, fullRepo]);
+    api.rawGrant(provider, projectPath).then((r) => setRawGrant(r.grant)).catch(() => {});
+  }, [isPrivate, me, rawGrant, provider, projectPath]);
 
   const rawBase = isPrivate && rawGrant ? `/rawt/${rawGrant}` : "/raw";
 
@@ -85,7 +78,7 @@ export default function Workspace() {
     setShareUrl(null);
     if (kindOf(activePath) === "html" || kindOf(activePath) === "image") return;
     api
-      .readFile(fullRepo, activePath)
+      .readFile(refPath, activePath)
       .then((f) => {
         setContent(f.content);
         setSha(f.sha);
@@ -94,13 +87,13 @@ export default function Workspace() {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [fullRepo, activePath]);
+  }, [refPath, activePath]);
 
   async function handleSave() {
     if (!activePath || !canWrite) return;
     setSave("saving");
     try {
-      const r = await api.saveFile(fullRepo, activePath, content, sha);
+      const r = await api.saveFile(refPath, activePath, content, sha);
       setSha(r.sha);
       setSave("saved");
       setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
@@ -125,7 +118,7 @@ export default function Workspace() {
   async function handleShare() {
     if (!activePath) return;
     const title = content.match(/^#\s+(.+)$/m)?.[1];
-    const r = await api.share(fullRepo, activePath, title);
+    const r = await api.share(projectPath, activePath, title);
     setShareUrl({ url: r.url, slidesUrl: r.slidesUrl });
   }
 
@@ -141,14 +134,14 @@ export default function Workspace() {
     if (items.length === 0) return;
     const g = isPrivate && rawGrant ? `&grant=${rawGrant}` : "";
     navigate(
-      `/present/${fullRepo}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}`
+      `/present/${refPath}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}`
     );
   }
 
   async function handleShareSet() {
     if (checkedInOrder.length === 0) return;
     try {
-      const r = await api.shareSet(fullRepo, checkedInOrder, `${repo} 展示`);
+      const r = await api.shareSet(projectPath, checkedInOrder, `${repoLeaf} 展示`);
       setShareUrl({ url: r.url, slidesUrl: r.url });
     } catch (e) {
       setError(String((e as Error).message || e));
@@ -178,28 +171,19 @@ export default function Workspace() {
         <div className="space-y-4">
           <p className="text-3xl">🔒</p>
           <p className="text-zinc-300">
-            <span className="font-mono">{fullRepo}</span> 不存在，或是私有 repo。
+            <span className="font-mono">{projectPath}</span> 不存在，或是私有 repo。
           </p>
           <p className="text-sm text-zinc-500">若你有這個 repo 的權限，登入後即可存取。</p>
-          {me?.oauthReady && (
+          {me?.providers?.[provider as "github" | "gitlab"] ? (
             <a
               href={loginUrl}
               className="inline-flex items-center gap-2 rounded-lg bg-white text-zinc-900 font-semibold px-5 py-2.5 hover:bg-zinc-200"
             >
-              <GitHubIcon className="h-5 w-5" />
-              使用 GitHub 登入
+              <ProviderIcon provider={provider} className="h-5 w-5" />
+              使用 {providerLabel(provider)} 登入
             </a>
-          )}
-          {me?.devMode && (
-            <button
-              onClick={handleDevLogin}
-              className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-2.5 text-sm text-zinc-200 hover:border-zinc-400"
-            >
-              Dev PAT 登入
-            </button>
-          )}
-          {me && !me.oauthReady && !me.devMode && (
-            <p className="text-xs text-zinc-600">此站尚未設定 GitHub OAuth，暫時無法登入。</p>
+          ) : (
+            <p className="text-xs text-zinc-600">此站尚未設定 {providerLabel(provider)} OAuth，暫時無法登入。</p>
           )}
           <div>
             <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300">
@@ -217,7 +201,7 @@ export default function Workspace() {
         <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-sm text-zinc-500 truncate">{fullRepo}</span>
+        <span className="font-mono text-sm text-zinc-500 truncate">{projectPath}</span>
         {readOnly && (
           <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">唯讀</span>
         )}
@@ -237,7 +221,7 @@ export default function Workspace() {
         )}
         {activePath && activeKind === "md" && (
           <button
-            onClick={() => navigate(`/p/${fullRepo}/${activePath}`)}
+            onClick={() => navigate(`/p/${refPath}/${activePath}`)}
             className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-sky-600 hover:text-sky-400"
           >
             🎞️ 簡報
@@ -260,23 +244,15 @@ export default function Workspace() {
             </button>
           </>
         )}
-        {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進；依站台配置給正確入口） */}
-        {me && !me.login && me.oauthReady && (
+        {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進，依目前 repo 來源） */}
+        {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
           <a
             href={loginUrl}
             className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:border-zinc-400"
           >
-            <GitHubIcon className="h-3.5 w-3.5" />
+            <ProviderIcon provider={provider} className="h-3.5 w-3.5" />
             登入以編輯
           </a>
-        )}
-        {me && !me.login && !me.oauthReady && me.devMode && (
-          <button
-            onClick={handleDevLogin}
-            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-zinc-400"
-          >
-            Dev 登入
-          </button>
         )}
         {me?.login && (
           <span className="flex items-center gap-1.5 text-xs text-zinc-500">
@@ -369,7 +345,7 @@ export default function Workspace() {
             <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
               <p className="text-[10px] text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
               <button
-                onClick={() => startPresent(checkedInOrder, `${repo} 展示`)}
+                onClick={() => startPresent(checkedInOrder, `${repoLeaf} 展示`)}
                 disabled={checkedInOrder.length === 0}
                 className="w-full rounded bg-sky-600 py-1.5 text-xs font-semibold hover:bg-sky-500 disabled:opacity-40"
               >
@@ -412,7 +388,7 @@ export default function Workspace() {
           // 獨立分享網站預覽:sandbox iframe,相對 css/js 由 /raw 供應
           <iframe
             key={activePath}
-            src={`${rawBase}/${fullRepo}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+            src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
             sandbox="allow-scripts"
             className="flex-1 bg-white"
             title={activePath}
@@ -420,7 +396,7 @@ export default function Workspace() {
         ) : activeKind === "image" ? (
           <div className="flex-1 grid place-items-center p-6 overflow-auto">
             <img
-              src={`${rawBase}/${fullRepo}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+              src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
               alt={activePath}
               className="max-w-full max-h-full"
             />
