@@ -61,48 +61,6 @@ export default function Workspace() {
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [overflowOpen, setOverflowOpen] = useState(false);
-  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 1024);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  useEffect(() => {
-    if (!mobileDrawerOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMobileDrawerOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [mobileDrawerOpen]);
-
-  useEffect(() => {
-    if (!overflowOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (overflowMenuRef.current && !overflowMenuRef.current.contains(e.target as Node)) {
-        setOverflowOpen(false);
-      }
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOverflowOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [overflowOpen]);
-
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
   )}`;
@@ -415,8 +373,7 @@ export default function Workspace() {
   });
 
   const readOnly = !canWrite;
-  const activeView = isMobile && view === "split" ? "preview" : view;
-  const effectiveView = readOnly ? "preview" : activeView;
+  const effectiveView = readOnly ? "preview" : view;
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -931,158 +888,19 @@ export default function Workspace() {
     );
   }
 
-  const renderSidebarContent = () => (
-    <>
-      <RepoSelector
-        currentProvider={provider}
-        currentProject={projectPath}
-        collapsed={repoSelectorCollapsed}
-        onToggleCollapse={() => setRepoSelectorCollapsed((v) => !v)}
-        identified={hasIdentity}
-        identityId={identityId}
-      />
-      {hasRepo && isDragging && (
-        <div
-          className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-4 text-center backdrop-blur-sm pointer-events-none ${
-            canWrite
-              ? "border-sky-500 bg-sky-950/80 text-sky-200"
-              : "border-red-500 bg-red-950/80 text-red-200"
-          }`}
-        >
-          <div className="text-3xl mb-1">{canWrite ? "📥" : "🔒"}</div>
-          <div className="font-mono text-xs font-semibold">
-            {canWrite ? `放開以上傳到 ${targetDirLabel}` : "唯讀，無法上傳"}
-          </div>
-        </div>
-      )}
-      {hasRepo && canWrite && (
-        <div className="flex gap-1.5 mb-3">
-          <input
-            value={newFile}
-            onChange={(e) => setNewFile(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-            placeholder="新檔名…"
-            className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600 focus-visible:ring-1 focus-visible:ring-sky-500"
-          />
-          <button
-            onClick={handleCreate}
-            className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-            title="新增檔案"
-          >
-            ＋
-          </button>
-          <button
-            onClick={handleCreateFolder}
-            className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 font-mono text-xs flex items-center justify-center whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-            title="新增資料夾"
-          >
-            📁+
-          </button>
-        </div>
-      )}
-      {hasRepo && (
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs uppercase tracking-wider text-zinc-600">檔案</span>
-          <button
-            onClick={() => {
-              setPresentMode((v) => !v);
-              if (presentMode) setChecked(new Set());
-            }}
-            className={`rounded px-2 py-0.5 text-xs border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 ${
-              presentMode
-                ? "border-sky-600 bg-sky-950 text-sky-300"
-                : "border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
-            }`}
-            title="勾選檔案組成展示清單"
-          >
-            🎬 展示模式
-          </button>
-        </div>
-      )}
-      {!hasRepo ? null : !files ? (
-        <p className="text-sm text-zinc-600">載入中…</p>
-      ) : files.length === 0 ? (
-        <p className="text-sm text-zinc-600">
-          {canWrite ? "repo 是空的，建立第一份 .md 吧" : "這個 repo 是空的"}
-        </p>
-      ) : (
-        <FileTree
-          paths={files}
-          activePath={activePath}
-          activeFolder={params.has("dir") ? cleanDir : activeFolder}
-          onSelectFile={(f) => {
-            setActiveFolder("");
-            setParams({ f });
-            setMobileDrawerOpen(false);
-          }}
-          onSelectFolder={(dir) => {
-            setActiveFolder(dir);
-            setParams({ dir });
-          }}
-          presentMode={presentMode}
-          checked={checked}
-          onCheckedChange={setChecked}
-        />
-      )}
-      {hasRepo && presentMode && (
-        <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
-          <p className="text-xs text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
-          <button
-            onClick={() => {
-              startPresent(checkedInOrder, `${repoLeaf} 展示`);
-              setMobileDrawerOpen(false);
-            }}
-            disabled={checkedInOrder.length === 0}
-            className="w-full rounded bg-sky-600 py-2 text-sm font-semibold hover:bg-sky-500 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-          >
-            ▶ 開始展示
-          </button>
-          {canWrite && me?.login && (
-            <button
-              onClick={() => {
-                handleShareSet();
-                setMobileDrawerOpen(false);
-              }}
-              disabled={checkedInOrder.length === 0}
-              className="w-full rounded border border-zinc-700 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-            >
-              🔗 分享展示集
-            </button>
-          )}
-        </div>
-      )}
-    </>
-  );
-
   return (
-    <div className="h-screen flex flex-col overflow-x-hidden">
+    <div className="h-screen flex flex-col">
       <header className="border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
-        {/* 手機開啟抽屜側欄按鈕 */}
-        {hasRepo && (
-          <button
-            onClick={() => setMobileDrawerOpen((v) => !v)}
-            className="lg:hidden rounded-lg border border-zinc-700 p-1.5 text-zinc-300 hover:border-zinc-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 shrink-0"
-            aria-label="開啟選單與檔案樹"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-        )}
-        <Link to="/" className="font-mono font-bold shrink-0">
+        <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-[10px] text-zinc-600 hidden sm:inline shrink-0">
+        <span className="font-mono text-[10px] text-zinc-600">
           {__APP_VERSION__}-{__BUILD_SHA__}
         </span>
-        {hasRepo && (
-          <span className="font-mono text-xs sm:text-base text-zinc-500 truncate max-w-[100px] sm:max-w-[200px] lg:max-w-none">
-            {projectPath}
-          </span>
-        )}
+        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>}
         {readOnly && (
           <span
-            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 shrink-0"
+            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
             title={
               me?.team?.enabled && !me.team.selected
                 ? "先在右上角選「你是誰」才能編輯"
@@ -1092,250 +910,116 @@ export default function Workspace() {
             {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
           </span>
         )}
-        <div className="flex-1 min-w-0" />
-
-        {/* 手機/平板 主要動作 (存檔 & 檢視模式切換) & ⋯ 溢出選單 (<1024px) */}
-        <div className="lg:hidden flex items-center gap-2 shrink-0">
-          {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
-            <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-xs">
-              {(["edit", "preview"] as const).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`px-2.5 py-1.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500 ${
-                    effectiveView === v ? "bg-zinc-800 text-white font-medium" : "text-zinc-500 hover:text-zinc-200"
-                  }`}
-                >
-                  {v === "edit" ? "編輯" : "預覽"}
-                </button>
-              ))}
-            </div>
-          )}
-          {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
+        <div className="flex-1" />
+        {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
+          <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
+            {(["edit", "split", "preview"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1.5 ${view === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+              >
+                {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
+              </button>
+            ))}
+          </div>
+        )}
+        {activePath && activeKind === "md" && (
+          <button
+            onClick={() => navigate(`/p/${refPath}/${activePath}`)}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+          >
+            🎞️ 簡報
+          </button>
+        )}
+        {(activePath || params.has("dir")) && (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleCopyShare}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="分享＝在 note 裡開啟"
+            >
+              {copiedShare ? "已複製 ✓" : "🔗 分享"}
+            </button>
+            <button
+              onClick={handleCopySite}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="獨立網站＝乾淨的網頁、沒有 note 介面"
+            >
+              {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
+            </button>
+          </div>
+        )}
+        {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
+          <>
+            {/* 分享連結的內容是用「分享者的 session」持續拉取，團隊身分沒有 session，
+                所以分享功能仍只開給個人 OAuth 登入者 */}
+            {me?.login && (
+              <button
+                onClick={handleShare}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+              >
+                分享 Token
+              </button>
+            )}
             <button
               onClick={handleSave}
               disabled={save === "saving"}
-              className="rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+              className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"
             >
-              {save === "saving" ? "commit…" : save === "saved" ? "已 commit ✓" : "存檔(commit)"}
+              {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
             </button>
-          )}
-
-          {/* ⋯ 溢出選單 */}
-          <div className="relative" ref={overflowMenuRef}>
-            <button
-              onClick={() => setOverflowOpen((v) => !v)}
-              className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              aria-expanded={overflowOpen}
-              aria-label="更多選項"
-            >
-              ⋯
-            </button>
-            {overflowOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 mt-2 w-56 rounded-lg border border-zinc-800 bg-zinc-900 p-2 shadow-2xl z-50 flex flex-col gap-1.5 text-xs transition-all duration-150 ease-in-out motion-reduce:transition-none"
-              >
-                {activePath && activeKind === "md" && (
-                  <button
-                    onClick={() => {
-                      setOverflowOpen(false);
-                      navigate(`/p/${refPath}/${activePath}`);
-                    }}
-                    className="w-full text-left rounded-md px-2.5 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                  >
-                    🎞️ 簡報
-                  </button>
-                )}
-                {(activePath || params.has("dir")) && (
-                  <>
-                    <button
-                      onClick={() => {
-                        handleCopyShare();
-                        setOverflowOpen(false);
-                      }}
-                      className="w-full text-left rounded-md px-2.5 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                    >
-                      {copiedShare ? "已複製 ✓" : "🔗 分享"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        handleCopySite();
-                        setOverflowOpen(false);
-                      }}
-                      className="w-full text-left rounded-md px-2.5 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                    >
-                      {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
-                    </button>
-                  </>
-                )}
-                {activePath && (activeKind === "md" || activeKind === "html") && canWrite && me?.login && (
-                  <button
-                    onClick={() => {
-                      handleShare();
-                      setOverflowOpen(false);
-                    }}
-                    className="w-full text-left rounded-md px-2.5 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                  >
-                    分享 Token
-                  </button>
-                )}
-                {me?.admin?.enabled && (
-                  <Link
-                    to="/admin"
-                    onClick={() => setOverflowOpen(false)}
-                    className="w-full text-left rounded-md px-2.5 py-1.5 text-zinc-300 hover:bg-zinc-800 hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                  >
-                    ⚙️ 管理
-                  </Link>
-                )}
-                <div className="border-t border-zinc-800 pt-1.5 flex flex-col gap-1.5">
-                  {accessMode === "open" && me && !me.login && !me.team?.selected && (
-                    <input
-                      type="text"
-                      defaultValue={guestName}
-                      placeholder="你是誰？（選填）"
-                      onBlur={(e) => void api.setGuestName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.currentTarget.blur();
-                        }
-                      }}
-                      className="bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500"
-                    />
-                  )}
-                  {me && !me.login && me.team?.enabled && (
-                    <IdentityPicker team={me.team} onChange={handleIdentityChange} />
-                  )}
-                  {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
-                    <a
-                      href={loginUrl}
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200 hover:border-zinc-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500"
-                    >
-                      <ProviderIcon provider={provider} className="h-3.5 w-3.5" />
-                      登入
-                    </a>
-                  )}
-                  {me?.login && (
-                    <div className="flex items-center gap-1.5 text-xs text-zinc-400 px-1 py-0.5">
-                      {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-4 w-4 rounded-full" />}
-                      <span className="truncate">{me.login}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 桌機動作 (≥1024px) */}
-        <div className="hidden lg:flex items-center gap-3">
-          {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
-            <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
-              {(["edit", "split", "preview"] as const).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`px-3 py-1.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sky-500 ${
-                    view === v ? "bg-zinc-800 text-white font-medium" : "text-zinc-500 hover:text-zinc-200"
-                  }`}
-                >
-                  {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
-                </button>
-              ))}
-            </div>
-          )}
-          {activePath && activeKind === "md" && (
-            <button
-              onClick={() => navigate(`/p/${refPath}/${activePath}`)}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-            >
-              🎞️ 簡報
-            </button>
-          )}
-          {(activePath || params.has("dir")) && (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleCopyShare}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                title="分享＝在 note 裡開啟"
-              >
-                {copiedShare ? "已複製 ✓" : "🔗 分享"}
-              </button>
-              <button
-                onClick={handleCopySite}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                title="獨立網站＝乾淨的網頁、沒有 note 介面"
-              >
-                {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
-              </button>
-            </div>
-          )}
-          {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
-            <>
-              {me?.login && (
-                <button
-                  onClick={handleShare}
-                  className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                >
-                  分享 Token
-                </button>
-              )}
-              <button
-                onClick={handleSave}
-                disabled={save === "saving"}
-                className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              >
-                {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
-              </button>
-            </>
-          )}
-          {accessMode === "open" && me && !me.login && !me.team?.selected && (
-            <input
-              type="text"
-              defaultValue={guestName}
-              placeholder="你是誰？（選填，會寫進 commit）"
-              onBlur={(e) => void api.setGuestName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.currentTarget.blur();
-                }
-              }}
-              className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
-            />
-          )}
-          {me && !me.login && me.team?.enabled && (
-            <IdentityPicker team={me.team} onChange={handleIdentityChange} />
-          )}
-          {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
-            <a
-              href={loginUrl}
-              className={
-                me.team?.enabled
-                  ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                  : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+          </>
+        )}
+        {/* 免登入 open 模式：顯示署名輸入框（訪客 commit author 名字） */}
+        {accessMode === "open" && me && !me.login && !me.team?.selected && (
+          <input
+            type="text"
+            defaultValue={guestName}
+            placeholder="你是誰？（選填，會寫進 commit）"
+            onBlur={(e) => void api.setGuestName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
               }
-            >
-              <ProviderIcon provider={provider} className="h-4 w-4" />
-              登入
-            </a>
-          )}
-          {me?.login && (
-            <span className="flex items-center gap-1.5 text-sm text-zinc-500">
-              {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
-              {me.login}
-            </span>
-          )}
-          {me?.admin?.enabled && (
-            <Link
-              to="/admin"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-              title="管理控制台"
-            >
-              ⚙️ 管理
-            </Link>
-          )}
-        </div>
+            }}
+            className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
+          />
+        )}
+        {/* 團隊模式：不必個人 OAuth，選「你是誰」就用該成員的 token 讀寫 */}
+        {me && !me.login && me.team?.enabled && (
+          <IdentityPicker team={me.team} onChange={handleIdentityChange} />
+        )}
+        {/* 右上角：未登入顯示登入鈕（依目前 repo 來源） */}
+        {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
+          <a
+            href={loginUrl}
+            className={
+              me.team?.enabled
+                ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
+                : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            }
+          >
+            <ProviderIcon provider={provider} className="h-4 w-4" />
+            登入
+          </a>
+        )}
+        {me?.login && (
+          <span className="flex items-center gap-1.5 text-sm text-zinc-500">
+            {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
+            {me.login}
+          </span>
+        )}
+        {/* Admin 連結 */}
+        {me?.admin?.enabled && (
+          <Link
+            to="/admin"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            title="管理控制台"
+          >
+            ⚙️ 管理
+          </Link>
+        )}
       </header>
 
       {shareUrl && (
@@ -1366,48 +1050,124 @@ export default function Workspace() {
       )}
 
       <div className="flex-1 flex min-h-0">
-        {/* 桌機固定左側欄 (≥1024px) */}
+        {/* 左側欄 */}
         <aside
-          className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden lg:block relative"
+          className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block relative"
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {renderSidebarContent()}
-        </aside>
-
-        {/* 手機/平板 抽屜側欄 (<1024px) */}
-        {mobileDrawerOpen && (
-          <div className="fixed inset-0 z-50 lg:hidden">
+          <RepoSelector
+            currentProvider={provider}
+            currentProject={projectPath}
+            collapsed={repoSelectorCollapsed}
+            onToggleCollapse={() => setRepoSelectorCollapsed((v) => !v)}
+            identified={hasIdentity}
+            identityId={identityId}
+          />
+          {hasRepo && isDragging && (
             <div
-              className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity duration-150 motion-reduce:transition-none"
-              onClick={() => setMobileDrawerOpen(false)}
-              aria-hidden="true"
-            />
-            <aside
-              className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-zinc-950 border-r border-zinc-800 p-3 overflow-y-auto shadow-2xl transition-transform duration-150 ease-in-out motion-reduce:transition-none flex flex-col"
-              onDragEnter={handleDragEnter}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
+              className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-4 text-center backdrop-blur-sm pointer-events-none ${
+                canWrite
+                  ? "border-sky-500 bg-sky-950/80 text-sky-200"
+                  : "border-red-500 bg-red-950/80 text-red-200"
+              }`}
             >
-              <div className="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800 shrink-0">
-                <span className="font-mono text-sm font-bold text-zinc-300">選單與檔案</span>
+              <div className="text-3xl mb-1">{canWrite ? "📥" : "🔒"}</div>
+              <div className="font-mono text-xs font-semibold">
+                {canWrite ? `放開以上傳到 ${targetDirLabel}` : "唯讀，無法上傳"}
+              </div>
+            </div>
+          )}
+          {hasRepo && canWrite && (
+            <div className="flex gap-1.5 mb-3">
+              <input
+                value={newFile}
+                onChange={(e) => setNewFile(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+                placeholder="新檔名…"
+                className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600"
+              />
+              <button
+                onClick={handleCreate}
+                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700"
+                title="新增檔案"
+              >
+                ＋
+              </button>
+              <button
+                onClick={handleCreateFolder}
+                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 font-mono text-xs flex items-center justify-center whitespace-nowrap"
+                title="新增資料夾"
+              >
+                📁+
+              </button>
+            </div>
+          )}
+          {hasRepo && <div className="flex items-center justify-between mb-2">
+            <span className="text-xs uppercase tracking-wider text-zinc-600">檔案</span>
+            <button
+              onClick={() => {
+                setPresentMode((v) => !v);
+                if (presentMode) setChecked(new Set());
+              }}
+              className={`rounded px-2 py-0.5 text-xs border ${
+                presentMode
+                  ? "border-sky-600 bg-sky-950 text-sky-300"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-600"
+              }`}
+              title="勾選檔案組成展示清單"
+            >
+              🎬 展示模式
+            </button>
+          </div>}
+          {!hasRepo ? null : !files ? (
+            <p className="text-sm text-zinc-600">載入中…</p>
+          ) : files.length === 0 ? (
+            <p className="text-sm text-zinc-600">
+              {canWrite ? "repo 是空的，建立第一份 .md 吧" : "這個 repo 是空的"}
+            </p>
+          ) : (
+            <FileTree
+              paths={files}
+              activePath={activePath}
+              activeFolder={params.has("dir") ? cleanDir : activeFolder}
+              onSelectFile={(f) => {
+                setActiveFolder("");
+                setParams({ f });
+              }}
+              onSelectFolder={(dir) => {
+                setActiveFolder(dir);
+                setParams({ dir });
+              }}
+              presentMode={presentMode}
+              checked={checked}
+              onCheckedChange={setChecked}
+            />
+          )}
+          {hasRepo && presentMode && (
+            <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
+              <p className="text-xs text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
+              <button
+                onClick={() => startPresent(checkedInOrder, `${repoLeaf} 展示`)}
+                disabled={checkedInOrder.length === 0}
+                className="w-full rounded bg-sky-600 py-2 text-sm font-semibold hover:bg-sky-500 disabled:opacity-40"
+              >
+                ▶ 開始展示
+              </button>
+              {canWrite && me?.login && (
                 <button
-                  onClick={() => setMobileDrawerOpen(false)}
-                  className="rounded p-1 text-zinc-400 hover:text-white hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
-                  aria-label="關閉選單"
+                  onClick={handleShareSet}
+                  disabled={checkedInOrder.length === 0}
+                  className="w-full rounded border border-zinc-700 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 disabled:opacity-40"
                 >
-                  ✕
+                  🔗 分享展示集
                 </button>
-              </div>
-              <div className="flex-1 overflow-y-auto min-h-0">
-                {renderSidebarContent()}
-              </div>
-            </aside>
-          </div>
-        )}
+              )}
+            </div>
+          )}
+        </aside>
 
         {/* 編輯／預覽 */}
         <main
