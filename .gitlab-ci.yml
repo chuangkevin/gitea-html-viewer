@@ -104,7 +104,7 @@ deploy-dockerhost:
           fi
         fi
       done
-    - docker compose up -d --build
+    - BUILD_SHA=$CI_COMMIT_SHORT_SHA docker compose up -d --build
     - |
       echo "=== 開始服務健康檢查 ==="
       HEALTH_OK=0

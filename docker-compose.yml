@@ -1,6 +1,9 @@
 services:
   note:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_SHA: ${BUILD_SHA:-}
     container_name: note
     restart: unless-stopped
     # 對外只綁 8790（host）→ 3210（container）。domain 由 docker-host 上的

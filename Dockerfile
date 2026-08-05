@@ -5,6 +5,8 @@ COPY server/package.json server/
 COPY client/package.json client/
 RUN npm ci
 COPY . .
+ARG BUILD_SHA
+ENV VITE_BUILD_SHA=$BUILD_SHA
 RUN npm run build
 
 FROM node:22-alpine
