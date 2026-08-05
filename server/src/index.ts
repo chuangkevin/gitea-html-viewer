@@ -20,6 +20,12 @@ import {
   getLastRepo,
   createRawGrant,
   getRawGrant,
+  upsertKnownIdentity,
+  searchKnownIdentities,
+  getUserRepoPrefs,
+  upsertUserRepoPref,
+  deleteUserRepoPref,
+  mergeUserRepoPrefs,
   type Session,
   type RawGrantRow,
 } from "./db.js";
@@ -262,11 +268,101 @@ app.post("/api/identity", (req, res) => {
     res.json({ ok: true, selected: null });
     return;
   }
+  // 記錄到 known_identities，供 autocomplete 建議
+  upsertKnownIdentity(list[index].name, list[index].email);
   res.cookie(IDENT_COOKIE, encodeSelection(index, list[index]), {
     ...opts,
     maxAge: 30 * 24 * 3600 * 1000,
   });
   res.json({ ok: true, selected: { index, name: list[index].name, email: list[index].email } });
+});
+
+// ── identity suggest（autocomplete）─────────────────────
+app.get("/api/identities/suggest", (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const limit = 20;
+
+  // roster 來源：data/identities.json 正式成員
+  const roster = publicIdentities();
+  const rosterFiltered = q
+    ? roster.filter((m) => m.name.toLowerCase().includes(q.toLowerCase()))
+    : roster;
+  const rosterResults = rosterFiltered.map((m) => ({
+    name: m.name,
+    email: m.email,
+    source: "roster" as const,
+  }));
+
+  // history 來源：known_identities 累積
+  const historyRows = searchKnownIdentities(q, limit);
+  const rosterNames = new Set(rosterResults.map((r) => r.name.toLowerCase()));
+  const historyResults = historyRows
+    .filter((r) => !rosterNames.has(r.name.toLowerCase()))
+    .map((r) => ({
+      name: r.name,
+      email: r.email,
+      source: "history" as const,
+    }));
+
+  // roster 優先，合併後上限 limit
+  const combined = [...rosterResults, ...historyResults].slice(0, limit);
+  res.json(combined);
+});
+
+// ── user-prefs（per-user pinned/recent repos）──────────
+/** 解析 owner 身分：OAuth session > team identity > null */
+function ownerFor(req: express.Request): string | null {
+  const s = req.nbSession ?? null;
+  if (s) return `${s.provider}:${s.login}`;
+  const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+  if (sel) return `ident:${sel.identity.name}`;
+  return null;
+}
+
+app.get("/api/user-prefs", (req, res) => {
+  const owner = ownerFor(req);
+  if (!owner) {
+    res.json({ pinned: [], recent: [] });
+    return;
+  }
+  res.json(getUserRepoPrefs(owner));
+});
+
+app.put("/api/user-prefs", (req, res) => {
+  const owner = ownerFor(req);
+  if (!owner) {
+    res.status(401).json({ error: "not_identified" });
+    return;
+  }
+  const body = req.body as {
+    action: "upsert" | "delete" | "merge";
+    provider?: string;
+    project?: string;
+    pinned?: boolean;
+    lastSeenAt?: number;
+    items?: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[];
+  };
+  if (body.action === "merge" && Array.isArray(body.items)) {
+    mergeUserRepoPrefs(owner, body.items);
+    res.json(getUserRepoPrefs(owner));
+    return;
+  }
+  if (!body.provider || typeof body.project !== "string" || !body.project.trim()) {
+    res.status(400).json({ error: "invalid parameters" });
+    return;
+  }
+  if (body.action === "delete") {
+    deleteUserRepoPref(owner, body.provider, body.project);
+  } else {
+    upsertUserRepoPref(
+      owner,
+      body.provider,
+      body.project,
+      body.pinned ?? false,
+      body.lastSeenAt ?? Date.now(),
+    );
+  }
+  res.json(getUserRepoPrefs(owner));
 });
 
 app.get("/api/me", (req, res) => {

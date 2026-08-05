@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { parseRepoInput, refPathOf } from "../lib/providers";
+import { api, type UserPrefsResult } from "../lib/api";
 
 /** ── 儲存結構 ── */
 interface RepoEntry {
@@ -41,6 +42,16 @@ export function touchRecent(provider: string, project: string) {
   saveList(LS_RECENT, filtered.slice(0, MAX_RECENT));
 }
 
+/** Convert server prefs to RepoEntry[] */
+function prefsToEntries(prefs: { provider: string; project: string; lastSeenAt: number }[]): RepoEntry[] {
+  return prefs.map((p) => ({
+    provider: p.provider,
+    project: p.project,
+    label: p.project,
+    lastOpened: p.lastSeenAt,
+  }));
+}
+
 // ── Component ──
 
 interface Props {
@@ -48,6 +59,9 @@ interface Props {
   currentProject?: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  /** Is user identified (OAuth or team identity selected)? */
+  identified?: boolean;
+  identityId?: string | null;
 }
 
 export default function RepoSelector({
@@ -55,6 +69,8 @@ export default function RepoSelector({
   currentProject,
   collapsed,
   onToggleCollapse,
+  identified = false,
+  identityId,
 }: Props) {
   const navigate = useNavigate();
   const [urlInput, setUrlInput] = useState("");
@@ -62,16 +78,85 @@ export default function RepoSelector({
   const [recent, setRecent] = useState<RepoEntry[]>(() => loadList(LS_RECENT));
   const [pinned, setPinned] = useState<RepoEntry[]>(() => loadList(LS_PINNED));
   const inputRef = useRef<HTMLInputElement>(null);
+  const [serverMode, setServerMode] = useState(false);
+  const mergedRef = useRef(false);
 
-  // sync from localStorage when window regains focus (multi-tab)
+  // Load from server when identified, merge localStorage data once
   useEffect(() => {
-    const onFocus = () => {
+    if (!identified) {
+      setServerMode(false);
+      mergedRef.current = false;
+      // Reload from localStorage when not identified
       setRecent(loadList(LS_RECENT));
       setPinned(loadList(LS_PINNED));
+      return;
+    }
+
+    setServerMode(true);
+
+    // Check if there's localStorage data to merge-upload
+    const lsRecent = loadList(LS_RECENT);
+    const lsPinned = loadList(LS_PINNED);
+    const hasLocalData = lsRecent.length > 0 || lsPinned.length > 0;
+
+    if (hasLocalData && !mergedRef.current) {
+      mergedRef.current = true;
+      // Merge local data to server (server won't overwrite existing)
+      const items = [
+        ...lsPinned.map((e) => ({
+          provider: e.provider,
+          project: e.project,
+          pinned: true,
+          lastSeenAt: e.lastOpened,
+        })),
+        ...lsRecent.map((e) => ({
+          provider: e.provider,
+          project: e.project,
+          pinned: false,
+          lastSeenAt: e.lastOpened,
+        })),
+      ];
+      api
+        .updateUserPrefs({ action: "merge", items })
+        .then((result) => {
+          setPinned(prefsToEntries(result.pinned));
+          setRecent(prefsToEntries(result.recent));
+          // Clear localStorage after successful merge
+          localStorage.removeItem(LS_RECENT);
+          localStorage.removeItem(LS_PINNED);
+        })
+        .catch(() => {
+          // Fallback: just load from server
+          loadFromServer();
+        });
+    } else {
+      loadFromServer();
+    }
+  }, [identified, identityId]);
+
+  function loadFromServer() {
+    api
+      .getUserPrefs()
+      .then((result) => {
+        setPinned(prefsToEntries(result.pinned));
+        setRecent(prefsToEntries(result.recent));
+      })
+      .catch(() => {});
+  }
+
+  // sync from localStorage when window regains focus (multi-tab) — only in local mode
+  useEffect(() => {
+    const onFocus = () => {
+      if (serverMode) {
+        loadFromServer();
+      } else {
+        setRecent(loadList(LS_RECENT));
+        setPinned(loadList(LS_PINNED));
+      }
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, []);
+  }, [serverMode]);
 
   const currentKey = currentProvider && currentProject ? `${currentProvider}/${currentProject}` : null;
 
@@ -93,23 +178,79 @@ export default function RepoSelector({
     [navigate]
   );
 
-  const togglePin = useCallback((entry: RepoEntry) => {
-    setPinned((prev) => {
-      const key = repoKey(entry);
-      const exists = prev.some((p) => repoKey(p) === key);
-      const next = exists ? prev.filter((p) => repoKey(p) !== key) : [entry, ...prev];
-      saveList(LS_PINNED, next);
-      return next;
-    });
-  }, []);
+  const togglePin = useCallback(
+    (entry: RepoEntry) => {
+      if (serverMode) {
+        // Check current pin state
+        const isPinnedNow = pinned.some((p) => repoKey(p) === repoKey(entry));
+        if (isPinnedNow) {
+          // Unpin: upsert with pinned=false
+          api
+            .updateUserPrefs({
+              action: "upsert",
+              provider: entry.provider,
+              project: entry.project,
+              pinned: false,
+              lastSeenAt: entry.lastOpened,
+            })
+            .then((result) => {
+              setPinned(prefsToEntries(result.pinned));
+              setRecent(prefsToEntries(result.recent));
+            })
+            .catch(() => {});
+        } else {
+          // Pin
+          api
+            .updateUserPrefs({
+              action: "upsert",
+              provider: entry.provider,
+              project: entry.project,
+              pinned: true,
+              lastSeenAt: entry.lastOpened,
+            })
+            .then((result) => {
+              setPinned(prefsToEntries(result.pinned));
+              setRecent(prefsToEntries(result.recent));
+            })
+            .catch(() => {});
+        }
+      } else {
+        setPinned((prev) => {
+          const key = repoKey(entry);
+          const exists = prev.some((p) => repoKey(p) === key);
+          const next = exists ? prev.filter((p) => repoKey(p) !== key) : [entry, ...prev];
+          saveList(LS_PINNED, next);
+          return next;
+        });
+      }
+    },
+    [serverMode, pinned]
+  );
 
-  const removeRecent = useCallback((entry: RepoEntry) => {
-    setRecent((prev) => {
-      const next = prev.filter((r) => repoKey(r) !== repoKey(entry));
-      saveList(LS_RECENT, next);
-      return next;
-    });
-  }, []);
+  const removeRecent = useCallback(
+    (entry: RepoEntry) => {
+      if (serverMode) {
+        api
+          .updateUserPrefs({
+            action: "delete",
+            provider: entry.provider,
+            project: entry.project,
+          })
+          .then((result) => {
+            setPinned(prefsToEntries(result.pinned));
+            setRecent(prefsToEntries(result.recent));
+          })
+          .catch(() => {});
+      } else {
+        setRecent((prev) => {
+          const next = prev.filter((r) => repoKey(r) !== repoKey(entry));
+          saveList(LS_RECENT, next);
+          return next;
+        });
+      }
+    },
+    [serverMode]
+  );
 
   const isPinned = useCallback(
     (entry: RepoEntry) => pinned.some((p) => repoKey(p) === repoKey(entry)),

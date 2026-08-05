@@ -273,6 +273,119 @@ export function deleteRawGrant(id: string): void {
   db.prepare("DELETE FROM raw_grants WHERE id = ?").run(id);
 }
 
+// ── known_identities ──────────────────────────────────
+db.exec(`
+CREATE TABLE IF NOT EXISTS known_identities (
+  name          TEXT PRIMARY KEY,
+  email         TEXT NOT NULL DEFAULT '',
+  last_used_at  INTEGER NOT NULL,
+  use_count     INTEGER NOT NULL DEFAULT 1
+);
+`);
+
+export function upsertKnownIdentity(name: string, email: string): void {
+  db.prepare(
+    `INSERT INTO known_identities (name, email, last_used_at, use_count)
+     VALUES (?, ?, ?, 1)
+     ON CONFLICT(name) DO UPDATE SET
+       email = CASE WHEN excluded.email != '' THEN excluded.email ELSE known_identities.email END,
+       last_used_at = excluded.last_used_at,
+       use_count = known_identities.use_count + 1`
+  ).run(name, email, Date.now());
+}
+
+export interface KnownIdentityRow {
+  name: string;
+  email: string;
+  last_used_at: number;
+  use_count: number;
+}
+
+export function searchKnownIdentities(q: string, limit: number): KnownIdentityRow[] {
+  if (q) {
+    const pattern = `%${q}%`;
+    return db
+      .prepare(
+        "SELECT * FROM known_identities WHERE name LIKE ? COLLATE NOCASE ORDER BY use_count DESC, last_used_at DESC LIMIT ?"
+      )
+      .all(pattern, limit) as KnownIdentityRow[];
+  }
+  return db
+    .prepare("SELECT * FROM known_identities ORDER BY use_count DESC, last_used_at DESC LIMIT ?")
+    .all(limit) as KnownIdentityRow[];
+}
+
+// ── user_repo_prefs ───────────────────────────────────
+db.exec(`
+CREATE TABLE IF NOT EXISTS user_repo_prefs (
+  owner       TEXT NOT NULL,
+  provider    TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  pinned      INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (owner, provider, project)
+);
+`);
+
+export interface UserRepoPref {
+  provider: string;
+  project: string;
+  pinned: boolean;
+  lastSeenAt: number;
+}
+
+export function getUserRepoPrefs(owner: string): { pinned: UserRepoPref[]; recent: UserRepoPref[] } {
+  const rows = db
+    .prepare("SELECT provider, project, pinned, last_seen_at FROM user_repo_prefs WHERE owner = ? ORDER BY last_seen_at DESC")
+    .all(owner) as { provider: string; project: string; pinned: number; last_seen_at: number }[];
+  const pinned: UserRepoPref[] = [];
+  const recent: UserRepoPref[] = [];
+  for (const r of rows) {
+    const pref: UserRepoPref = { provider: r.provider, project: r.project, pinned: r.pinned === 1, lastSeenAt: r.last_seen_at };
+    if (r.pinned === 1) pinned.push(pref);
+    else if (recent.length < 8) recent.push(pref);
+  }
+  return { pinned, recent };
+}
+
+export function upsertUserRepoPref(
+  owner: string,
+  provider: string,
+  project: string,
+  pinned: boolean,
+  lastSeenAt: number,
+): void {
+  db.prepare(
+    `INSERT INTO user_repo_prefs (owner, provider, project, pinned, last_seen_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(owner, provider, project) DO UPDATE SET
+       pinned = excluded.pinned,
+       last_seen_at = CASE WHEN excluded.last_seen_at > user_repo_prefs.last_seen_at THEN excluded.last_seen_at ELSE user_repo_prefs.last_seen_at END`
+  ).run(owner, provider, project, pinned ? 1 : 0, lastSeenAt);
+}
+
+export function deleteUserRepoPref(owner: string, provider: string, project: string): void {
+  db.prepare("DELETE FROM user_repo_prefs WHERE owner = ? AND provider = ? AND project = ?").run(owner, provider, project);
+}
+
+/** Merge-import: only insert if not already existing for this owner */
+export function mergeUserRepoPrefs(
+  owner: string,
+  items: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[],
+): void {
+  const stmt = db.prepare(
+    `INSERT INTO user_repo_prefs (owner, provider, project, pinned, last_seen_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(owner, provider, project) DO NOTHING`
+  );
+  const tx = db.transaction(() => {
+    for (const item of items) {
+      stmt.run(owner, item.provider, item.project, item.pinned ? 1 : 0, item.lastSeenAt);
+    }
+  });
+  tx();
+}
+
 // ── user_prefs ─────────────────────────────────────────
 export interface LastRepo {
   provider: string;

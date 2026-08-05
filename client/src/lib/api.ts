@@ -62,6 +62,24 @@ export interface PublicDoc {
   items?: string[];
 }
 
+export interface IdentitySuggestion {
+  name: string;
+  email: string;
+  source: "roster" | "history";
+}
+
+export interface UserRepoPref {
+  provider: string;
+  project: string;
+  pinned: boolean;
+  lastSeenAt: number;
+}
+
+export interface UserPrefsResult {
+  pinned: UserRepoPref[];
+  recent: UserRepoPref[];
+}
+
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -86,6 +104,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ index }),
     }).then((r) => j<{ ok: boolean; selected: { index: number; name: string; email: string } | null }>(r)),
+  suggestIdentities: (q: string = "") =>
+    fetch(`/api/identities/suggest?q=${encodeURIComponent(q)}`).then((r) => j<IdentitySuggestion[]>(r)),
   repos: () => fetch("/api/repos").then((r) => j<RepoInfo[]>(r)),
   createRepo: (name: string, isPrivate: boolean) =>
     fetch("/api/repos", {
@@ -175,4 +195,18 @@ export const api = {
     fetch(`/api/public/${token}/file/${path.split("/").map(encodeURIComponent).join("/")}`).then((r) =>
       j<{ path: string; content: string }>(r)
     ),
+  getUserPrefs: () => fetch("/api/user-prefs").then((r) => j<UserPrefsResult>(r)),
+  updateUserPrefs: (body: {
+    action: "upsert" | "delete" | "merge";
+    provider?: string;
+    project?: string;
+    pinned?: boolean;
+    lastSeenAt?: number;
+    items?: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[];
+  }) =>
+    fetch("/api/user-prefs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => j<UserPrefsResult>(r)),
 };

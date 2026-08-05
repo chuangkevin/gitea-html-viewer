@@ -106,8 +106,12 @@ export default function Workspace() {
 
   const activeKind = activePath ? kindOf(activePath) : null;
 
-  // 個人登入或團隊模式選了身分，才有資格拿 private repo 的 raw grant
   const hasIdentity = Boolean(me?.login || me?.team?.selected);
+  const identityId = me?.login
+    ? `${me.provider}:${me.login}`
+    : me?.team?.selected
+    ? `ident:${me.team.selected.name}`
+    : null;
 
   useEffect(() => {
     if (!isPrivate || !hasIdentity || rawGrant) return;
@@ -924,6 +928,8 @@ export default function Workspace() {
             currentProject={projectPath}
             collapsed={repoSelectorCollapsed}
             onToggleCollapse={() => setRepoSelectorCollapsed((v) => !v)}
+            identified={hasIdentity}
+            identityId={identityId}
           />
           {hasRepo && isDragging && (
             <div
