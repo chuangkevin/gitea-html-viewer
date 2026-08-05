@@ -143,11 +143,29 @@ export default function Workspace() {
     filesRef.current = files;
   }, [files]);
 
+  const meRef = useRef<Me | null>(me);
+  useEffect(() => {
+    meRef.current = me;
+  }, [me]);
+
   useEffect(() => {
     if (activeKind !== "html" || !iframeRef.current) return;
     const iframe = iframeRef.current;
     const cleanup = attachBridge({
       iframe,
+      whoami: async () => {
+        let currentMe = meRef.current;
+        if (!currentMe) {
+          currentMe = await api.me().catch(() => null);
+        }
+        if (currentMe?.login) {
+          return { name: currentMe.login, source: "oauth" };
+        }
+        if (currentMe?.team?.selected?.name) {
+          return { name: currentMe.team.selected.name, source: "identity" };
+        }
+        return { name: "", source: "anonymous" };
+      },
       readFile: async (path: string) => {
         const file = await api.readFile(refPath, path);
         return file.content;

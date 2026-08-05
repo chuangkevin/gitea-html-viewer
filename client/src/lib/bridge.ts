@@ -6,12 +6,14 @@
  * - { type: 'nb:save', path: string, content: string }
  * - { type: 'nb:open', path: string }
  * - { type: 'nb:list', path: string, recursive?: boolean }
+ * - { type: 'nb:whoami' }
  *
  * Parent -> Iframe (回應/通知):
  * - { type: 'nb:ready', version: string }
  * - { type: 'nb:file', path: string, content: string }
  * - { type: 'nb:saved', path: string }
  * - { type: 'nb:file-list', path: string, files: Array<{ name: string; path: string; size?: number; isDir: boolean; depth?: number }> }
+ * - { type: 'nb:whoami-result', name: string, source: 'oauth' | 'identity' | 'anonymous' }
  * - { type: 'nb:error', message: string }
  */
 
@@ -24,6 +26,7 @@ export interface BridgeContext {
     path: string,
     recursive?: boolean
   ) => Promise<Array<{ name: string; path: string; size?: number; isDir: boolean; depth?: number }>>;
+  whoami: () => Promise<{ name: string; source: "oauth" | "identity" | "anonymous" }>;
 }
 
 /**
@@ -115,6 +118,16 @@ export function attachBridge(ctx: BridgeContext): () => void {
         const recursive = Boolean(data.recursive);
         const files = await ctx.listFiles(path, recursive);
         postReply({ type: "nb:file-list", path, files });
+      } else if (type === "nb:whoami") {
+        try {
+          const res = await ctx.whoami();
+          const name = typeof res?.name === "string" ? res.name : "";
+          const source =
+            res?.source === "oauth" || res?.source === "identity" ? res.source : "anonymous";
+          postReply({ type: "nb:whoami-result", name: source === "anonymous" ? "" : name, source });
+        } catch {
+          postReply({ type: "nb:whoami-result", name: "", source: "anonymous" });
+        }
       }
     } catch (err: any) {
       postReply({ type: "nb:error", message: err?.message || String(err) });
