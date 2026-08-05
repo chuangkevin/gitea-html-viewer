@@ -1,0 +1,91 @@
+# ==============================================================================
+# GitLab CI/CD Pipeline Configuration for note
+# ==============================================================================
+# 整體流程說明：
+# 1. check 階段：
+#    - 在 gitlab.com shared runner (Docker Executor, Node 22) 上並行執行。
+#    - check-client: 執行 client 端的依賴安裝、TypeScript 型態檢查與 Vite 打包驗證。
+#    - check-server: 執行 server 端的依賴安裝、TypeScript 型態檢查與編譯驗證。
+#    - 利用 package-lock.json 作為 Cache Key 提升安裝速度。
+#
+# 2. deploy 階段：
+#    - 限制僅在 push 至 main 分支時觸發。
+#    - 指定 tag: [dockerhost]，由部署在內網 docker-host (10.11.12.55) 上的
+#      GitLab Runner (Shell Executor) 執行。
+#    - 執行 git fetch & hard reset 至目標 Commit、啟動容器、進行 60 秒內健康檢查，
+#      並清理過期的 Docker Images。
+#
+# Runner 前提條件：
+# - docker-host 上必須已安裝 gitlab-runner 並加入 docker 群組。
+# - gitlab-runner 需完成註冊（tag: dockerhost, executor: shell）。
+# - gitlab-runner 對 /home/interagent/note 目錄具備讀寫權限。
+# ==============================================================================
+
+stages:
+  - check
+  - deploy
+
+default:
+  image: node:22
+
+check-client:
+  stage: check
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+      - client/node_modules/
+  script:
+    - cd client
+    - npm ci
+    - npm run typecheck
+    - npm run build
+
+check-server:
+  stage: check
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+      - server/node_modules/
+  script:
+    - cd server
+    - npm ci
+    - npm run typecheck
+    - npm run build
+
+deploy-dockerhost:
+  stage: deploy
+  tags:
+    - dockerhost
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  environment:
+    name: production
+    url: http://10.11.12.55:8790
+  script:
+    - cd /home/interagent/note
+    - git fetch origin && git reset --hard $CI_COMMIT_SHA
+    - docker compose up -d --build
+    - |
+      echo "=== 開始服務健康檢查 ==="
+      HEALTH_OK=0
+      for i in $(seq 1 12); do
+        if curl -fsS http://localhost:8790/ > /dev/null 2>&1; then
+          echo "健康檢查成功！(第 $i 次嘗試)"
+          HEALTH_OK=1
+          break
+        fi
+        echo "等待服務就緒... (第 $i/12 次嘗試，5 秒後重試)"
+        sleep 5
+      done
+      if [ $HEALTH_OK -eq 0 ]; then
+        echo "健康檢查失敗！顯示容器 note 最近 30 行 Log："
+        docker logs note --tail 30
+        exit 1
+      fi
+    - docker image prune -f

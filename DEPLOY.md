@@ -165,7 +165,60 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 - host `8790` → container `3210`。挑 8790 是因為 docker-host 現有服務（3210/5432/5678/6380/8001/8080/8300/8400 等）沒佔用它。
 - 上機前確認仍是空的：`ss -ltn | grep 8790`（沒輸出＝可用）。要改就改 `docker-compose.yml` 的 `"8790:3210"` 左邊。
 
-## 更新
+## CI/CD 自動部署
+
+### 1. 架構圖
+
+```
+[ Developer ] -- push main --> [ GitLab Repo ]
+                                     |
+                                     v
+                       +---------------------------+
+                       |   Stage: check            |
+                       | (gitlab.com shared runner)|
+                       | - check-client (build/ts) |
+                       | - check-server (build/ts) |
+                       +---------------------------+
+                                     | (Pass)
+                                     v
+                       +---------------------------+
+                       |   Stage: deploy           |
+                       | (docker-host runner)      |
+                       | - git fetch & reset       |
+                       | - docker compose up -d    |
+                       | - Health Check (curl)     |
+                       | - docker image prune      |
+                       +---------------------------+
+```
+
+### 2. 首次設定（三步驟）
+
+1. **GitLab 專案建 Project Runner 拿 Token**：
+   - 到 GitLab 專案 -> **Settings** -> **CI/CD** -> **Runners**。
+   - 點擊 **New project runner**，**Tags** 填寫 `dockerhost`。
+   - 建立後複製 project runner token（格式為 `glrt-xxxxxxxx`）。
+
+2. **docker-host 跑安裝腳本**：
+   - 登入 `docker-host`（`10.11.12.55`）切換至專案目錄。
+   - 帶入 Token 執行安裝與註冊腳本：
+     ```bash
+     REG_TOKEN="glrt-xxxxxxxxxxxx" sudo -E ./deploy/install-gitlab-runner.sh
+     ```
+
+3. **push 驗證 Pipeline**：
+   - 提交變更並 push 至 `main` 分支。
+   - 至 GitLab **Build** -> **Pipelines** 觀察 `check` 與 `deploy` 階段是否皆順利通過。
+
+### 3. 日常維護
+
+- **日常部署**：`push main 即部署`。包含分支 Merge Request 併入 `main` 或直接 push `main` 分支均會自動觸發完整 CI/CD 流程。
+- **故障排查**：
+  - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
+  - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
+
+## 手動部署 / 備援更新
+
+若 CI/CD 或 Runner 異常時，可手動登入 docker-host 執行以下指令作為備援：
 
 ```bash
 git pull && docker compose up -d --build
