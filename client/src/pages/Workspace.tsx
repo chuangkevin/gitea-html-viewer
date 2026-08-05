@@ -133,12 +133,8 @@ export default function Workspace() {
     const cleanup = attachBridge({
       iframe,
       readFile: async (path: string) => {
-        const url = `${rawBase}/${refPath}/${path.split("/").map(encodeURIComponent).join("/")}`;
-        const res = await fetch(url, { credentials: "same-origin" });
-        if (!res.ok) {
-          throw new Error(`讀取失敗（${res.status}）`);
-        }
-        return await res.text();
+        const file = await api.readFile(refPath, path);
+        return file.content;
       },
       saveFile: async (path: string, contentStr: string) => {
         const msg = `更新 ${path}（via 互動頁）`;
@@ -157,7 +153,7 @@ export default function Workspace() {
       },
     });
     return cleanup;
-  }, [activeKind, activePath, rawBase, refPath, sha, setParams]);
+  }, [activeKind, activePath, refPath, sha, setParams]);
 
   async function handleSave() {
     if (!activePath || !canWrite) return;
@@ -752,6 +748,9 @@ export default function Workspace() {
         <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
+        <span className="font-mono text-xs text-zinc-500">
+          {__APP_VERSION__}-{__BUILD_SHA__}
+        </span>
         <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>
         {readOnly && (
           <span

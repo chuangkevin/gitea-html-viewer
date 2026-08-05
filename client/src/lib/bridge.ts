@@ -25,6 +25,10 @@ function isValidPath(path: unknown): path is string {
  * attachBridge: 為 iframe sandbox HTML 預覽頁面掛載 postMessage 橋接器
  */
 export function attachBridge(ctx: BridgeContext): () => void {
+  const sendReady = () => {
+    ctx.iframe.contentWindow?.postMessage({ type: "nb:ready", version: __APP_VERSION__ }, "*");
+  };
+
   const handleMessage = async (e: MessageEvent) => {
     // 唯一信任依據是 e.source === ctx.iframe.contentWindow
     // （opaque origin 的 e.origin 是 'null'，不可用作來源驗證）
@@ -74,7 +78,11 @@ export function attachBridge(ctx: BridgeContext): () => void {
   };
 
   window.addEventListener("message", handleMessage);
+  sendReady();
+  ctx.iframe.addEventListener("load", sendReady);
+
   return () => {
     window.removeEventListener("message", handleMessage);
+    ctx.iframe.removeEventListener("load", sendReady);
   };
 }
