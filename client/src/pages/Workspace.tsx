@@ -6,6 +6,7 @@ import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import { kindOf } from "../components/Presenter";
+import { attachBridge } from "../lib/bridge";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
 
@@ -53,6 +54,7 @@ export default function Workspace() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const dragCounter = useRef(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -124,6 +126,38 @@ export default function Workspace() {
         else setError(String((e as Error).message || e));
       });
   }, [refPath, activePath, reloadKey]);
+
+  useEffect(() => {
+    if (activeKind !== "html" || !iframeRef.current) return;
+    const iframe = iframeRef.current;
+    const cleanup = attachBridge({
+      iframe,
+      readFile: async (path: string) => {
+        const url = `${rawBase}/${refPath}/${path.split("/").map(encodeURIComponent).join("/")}`;
+        const res = await fetch(url, { credentials: "same-origin" });
+        if (!res.ok) {
+          throw new Error(`讀取失敗（${res.status}）`);
+        }
+        return await res.text();
+      },
+      saveFile: async (path: string, contentStr: string) => {
+        const msg = `更新 ${path}（via 互動頁）`;
+        const targetSha = path === activePath ? sha : undefined;
+        const res = await api.saveFile(refPath, path, contentStr, targetSha, msg);
+        if (path === activePath) {
+          setSha(res.sha);
+          setContent(contentStr);
+          setSave("saved");
+          setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
+        }
+      },
+      openPath: (path: string) => {
+        setActiveFolder("");
+        setParams({ f: path });
+      },
+    });
+    return cleanup;
+  }, [activeKind, activePath, rawBase, refPath, sha, setParams]);
 
   async function handleSave() {
     if (!activePath || !canWrite) return;
@@ -1330,6 +1364,7 @@ export default function Workspace() {
                       </div>
                     </div>
                     <iframe
+                      ref={iframeRef}
                       key={activePath}
                       src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
                       /* ⚠️ 刻意不給 allow-same-origin：iframe 會是 opaque origin，能跑 JS 但碰不到 note 主站的 cookie / DOM */
