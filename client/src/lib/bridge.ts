@@ -5,13 +5,13 @@
  * - { type: 'nb:load', path: string }
  * - { type: 'nb:save', path: string, content: string }
  * - { type: 'nb:open', path: string }
- * - { type: 'nb:list', path: string }
+ * - { type: 'nb:list', path: string, recursive?: boolean }
  *
  * Parent -> Iframe (回應/通知):
  * - { type: 'nb:ready', version: string }
  * - { type: 'nb:file', path: string, content: string }
  * - { type: 'nb:saved', path: string }
- * - { type: 'nb:file-list', path: string, files: Array<{ name: string; path: string; size?: number; isDir: boolean }> }
+ * - { type: 'nb:file-list', path: string, files: Array<{ name: string; path: string; size?: number; isDir: boolean; depth?: number }> }
  * - { type: 'nb:error', message: string }
  */
 
@@ -20,7 +20,10 @@ export interface BridgeContext {
   readFile: (path: string) => Promise<string>;
   saveFile: (path: string, content: string) => Promise<void>;
   openPath: (path: string) => void;
-  listFiles: (path: string) => Promise<Array<{ name: string; path: string; size?: number; isDir: boolean }>>;
+  listFiles: (
+    path: string,
+    recursive?: boolean
+  ) => Promise<Array<{ name: string; path: string; size?: number; isDir: boolean; depth?: number }>>;
 }
 
 /**
@@ -109,7 +112,8 @@ export function attachBridge(ctx: BridgeContext): () => void {
           postReply({ type: "nb:error", message: `無效或不允許的資料夾路徑：${String(path)}` });
           return;
         }
-        const files = await ctx.listFiles(path);
+        const recursive = Boolean(data.recursive);
+        const files = await ctx.listFiles(path, recursive);
         postReply({ type: "nb:file-list", path, files });
       }
     } catch (err: any) {

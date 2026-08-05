@@ -167,7 +167,7 @@ export default function Workspace() {
         setActiveFolder("");
         setParams({ f: path });
       },
-      listFiles: async (targetPath: string) => {
+      listFiles: async (targetPath: string, recursive?: boolean) => {
         let fileList = filesRef.current;
         if (!fileList) {
           try {
@@ -182,33 +182,102 @@ export default function Workspace() {
         const cleanPath = normalized === "." ? "" : normalized;
         const prefix = cleanPath ? cleanPath + "/" : "";
 
-        const dirMap = new Map<string, { name: string; path: string; isDir: boolean }>();
+        if (!recursive) {
+          const dirMap = new Map<string, { name: string; path: string; isDir: boolean; depth: number }>();
+
+          for (const f of fileList) {
+            if (prefix === "" || f.startsWith(prefix)) {
+              const rel = prefix ? f.slice(prefix.length) : f;
+              if (!rel) continue;
+              const parts = rel.split("/");
+              if (parts.length === 1) {
+                const name = parts[0];
+                dirMap.set(f, { name, path: f, isDir: false, depth: 0 });
+              } else {
+                const subName = parts[0];
+                const subPath = cleanPath ? `${cleanPath}/${subName}` : subName;
+                if (!dirMap.has(subPath)) {
+                  dirMap.set(subPath, { name: subName, path: subPath, isDir: true, depth: 0 });
+                }
+              }
+            }
+          }
+
+          const result = Array.from(dirMap.values());
+          result.sort((a, b) => {
+            if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+            return a.name.localeCompare(b.name, undefined, { numeric: true });
+          });
+
+          return result;
+        }
+
+        interface TreeItem {
+          name: string;
+          path: string;
+          isDir: boolean;
+          depth: number;
+          children?: Map<string, TreeItem>;
+        }
+
+        const rootChildren = new Map<string, TreeItem>();
 
         for (const f of fileList) {
-          if (prefix === "" || f.startsWith(prefix)) {
-            const rel = prefix ? f.slice(prefix.length) : f;
-            if (!rel) continue;
-            const parts = rel.split("/");
-            if (parts.length === 1) {
-              const name = parts[0];
-              dirMap.set(f, { name, path: f, isDir: false });
-            } else {
-              const subName = parts[0];
-              const subPath = cleanPath ? `${cleanPath}/${subName}` : subName;
-              if (!dirMap.has(subPath)) {
-                dirMap.set(subPath, { name: subName, path: subPath, isDir: true });
-              }
+          if (prefix !== "" && !f.startsWith(prefix)) continue;
+          const rel = prefix ? f.slice(prefix.length) : f;
+          if (!rel) continue;
+          const parts = rel.split("/");
+
+          let currentMap = rootChildren;
+          let currentPathPrefix = cleanPath;
+
+          for (let i = 0; i < parts.length; i++) {
+            const partName = parts[i];
+            const isLast = i === parts.length - 1;
+            const itemPath = currentPathPrefix ? `${currentPathPrefix}/${partName}` : partName;
+            const isDir = !isLast;
+
+            let item = currentMap.get(partName);
+            if (!item) {
+              item = {
+                name: partName,
+                path: itemPath,
+                isDir,
+                depth: i,
+                children: isDir ? new Map() : undefined,
+              };
+              currentMap.set(partName, item);
+            }
+            if (isDir) {
+              currentMap = item.children!;
+              currentPathPrefix = itemPath;
             }
           }
         }
 
-        const result = Array.from(dirMap.values());
-        result.sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name, undefined, { numeric: true });
-        });
+        function flattenTree(map: Map<string, TreeItem>): Array<{ name: string; path: string; isDir: boolean; depth: number }> {
+          const nodes = Array.from(map.values());
+          nodes.sort((a, b) => {
+            if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+            return a.name.localeCompare(b.name, undefined, { numeric: true });
+          });
 
-        return result;
+          const res: Array<{ name: string; path: string; isDir: boolean; depth: number }> = [];
+          for (const node of nodes) {
+            res.push({
+              name: node.name,
+              path: node.path,
+              isDir: node.isDir,
+              depth: node.depth,
+            });
+            if (node.isDir && node.children) {
+              res.push(...flattenTree(node.children));
+            }
+          }
+          return res;
+        }
+
+        return flattenTree(rootChildren);
       },
     });
     return cleanup;
