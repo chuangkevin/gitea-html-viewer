@@ -218,6 +218,61 @@ export function revokeShare(login: string, token: string): boolean {
   return r.changes > 0;
 }
 
+// ── raw_grants ────────────────────────────────────────
+// 私有 repo 的短效 grant：存身分參照（sid / identName），不存 token 本身。
+// 查驗時即時解析出 token（比照 grantToken()），session 過期或成員移除 → grant 自動失效。
+db.exec(`
+CREATE TABLE IF NOT EXISTS raw_grants (
+  id          TEXT PRIMARY KEY,
+  provider    TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  sid         TEXT,
+  ident_name  TEXT,
+  expires_at  INTEGER NOT NULL
+);
+`);
+
+export interface RawGrantRow {
+  id: string;
+  provider: string;
+  project: string;
+  sid: string | null;
+  ident_name: string | null;
+  expires_at: number;
+}
+
+export function purgeExpiredGrants(): void {
+  db.prepare("DELETE FROM raw_grants WHERE expires_at < ?").run(Date.now());
+}
+
+export function createRawGrant(
+  id: string,
+  provider: string,
+  project: string,
+  sid: string | null,
+  identName: string | null,
+  expiresAt: number,
+): void {
+  purgeExpiredGrants();
+  db.prepare(
+    "INSERT INTO raw_grants (id, provider, project, sid, ident_name, expires_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(id, provider, project, sid, identName, expiresAt);
+}
+
+export function getRawGrant(id: string): RawGrantRow | null {
+  const row = db.prepare("SELECT * FROM raw_grants WHERE id = ?").get(id) as RawGrantRow | undefined;
+  if (!row) return null;
+  if (row.expires_at < Date.now()) {
+    db.prepare("DELETE FROM raw_grants WHERE id = ?").run(id);
+    return null;
+  }
+  return row;
+}
+
+export function deleteRawGrant(id: string): void {
+  db.prepare("DELETE FROM raw_grants WHERE id = ?").run(id);
+}
+
 // ── user_prefs ─────────────────────────────────────────
 export interface LastRepo {
   provider: string;

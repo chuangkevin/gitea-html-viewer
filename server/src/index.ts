@@ -18,7 +18,10 @@ import {
   decrypt,
   setLastRepo,
   getLastRepo,
+  createRawGrant,
+  getRawGrant,
   type Session,
+  type RawGrantRow,
 } from "./db.js";
 import {
   AccessMode,
@@ -537,23 +540,26 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
 // 改發短效 grant 放在路徑裡，相對路徑資產自然繼承授權。
 // grant 只記「用誰的身分」（session id 或成員名字），token 每次現查——
 // 成員被移出清單或 session 過期，既有 grant 就自動失效。
-interface RawGrant {
-  provider: ProviderName;
-  project: string;
-  sid: string | null;
-  identName: string | null;
-  exp: number;
-}
-const rawGrants = new Map<string, RawGrant>();
+// grant 資料持久化於 SQLite raw_grants 表。
 
-/** grant → 目前可用的 token；身分已消失時回 null。 */
-function grantToken(g: RawGrant): string | null {
+/** grant row → 目前可用的 token；身分已消失時回 null。 */
+function grantToken(g: RawGrantRow): string | null {
   if (g.sid) return getSession(g.sid)?.token ?? null;
-  if (g.identName) {
-    const m = identities().find((x) => x.name === g.identName && x.provider === g.provider);
+  if (g.ident_name) {
+    const m = identities().find((x) => x.name === g.ident_name && x.provider === g.provider);
     return m ? m.token : null;
   }
   return null;
+}
+
+/**
+ * 共用 grant 驗證：查 DB、比對 provider/project、檢查過期，
+ * 通過回傳可用 token，否則 null。
+ */
+function resolveGrant(grantId: string, provider: ProviderName, project: string): string | null {
+  const g = getRawGrant(grantId);
+  if (!g || g.provider !== provider || g.project !== project) return null;
+  return grantToken(g);
 }
 
 app.post("/api/raw-grant", async (req, res) => {
@@ -574,31 +580,26 @@ app.post("/api/raw-grant", async (req, res) => {
     handleError(res, e);
     return;
   }
-  for (const [k, v] of rawGrants) if (v.exp < Date.now()) rawGrants.delete(k);
   const grant = crypto.randomBytes(12).toString("base64url");
   const s = req.nbSession ?? null;
-  rawGrants.set(grant, {
+  createRawGrant(
+    grant,
     provider,
-    project: repo,
-    sid: s && s.provider === provider ? s.sid : null,
-    identName: actor.author?.name ?? null,
-    exp: Date.now() + 6 * 3600e3,
-  });
+    repo,
+    s && s.provider === provider ? s.sid : null,
+    actor.author?.name ?? null,
+    Date.now() + 6 * 3600e3,
+  );
   res.json({ grant });
 });
 
 app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
-  const g = rawGrants.get(req.params.grant);
   try {
     const provider = routeProvider(req);
     const project = projectParam(req);
-    if (!g || g.provider !== provider || g.project !== project || g.exp < Date.now()) {
-      res.status(401).json({ error: "grant_invalid" });
-      return;
-    }
-    const token = grantToken(g);
+    const token = resolveGrant(req.params.grant, provider, project);
     if (!token) {
-      res.status(401).json({ error: "grant_session_expired" });
+      res.status(401).json({ error: "grant_invalid" });
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
@@ -607,7 +608,7 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
     sendRaw(res, filePath, buf, download);
   } catch (e) {
     if (e instanceof ProviderError) {
-      res.status(e.status === 404 ? 404 : 502).end();
+      res.status(e.status === 404 ? 404 : 500).end();
       return;
     }
     res.status(500).end();
@@ -743,11 +744,20 @@ app.get("/site/:provider/:project", async (req, res) => {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    const actor = actorFor(req, provider, project);
+
+    // 優先嘗試 grant query：分享連結帶 ?grant=xxx 可在無 session 時授權
+    let grantToken: string | null = null;
+    if (typeof req.query.grant === "string" && req.query.grant) {
+      grantToken = resolveGrant(req.query.grant, provider, project);
+    }
+
+    const actor = grantToken
+      ? { token: grantToken, authed: true } as Actor
+      : actorFor(req, provider, project);
     const info = await p.getRepo(actor.token, project);
     if (info.private && !actor.authed) {
-      res.status(401).json({ error: "login_required" });
-      return;
+      const err = new ProviderError(403, "login_required");
+      throw err;
     }
 
     const f = typeof req.query.f === "string" ? req.query.f : undefined;
@@ -844,10 +854,28 @@ app.get("/site/:provider/:project", async (req, res) => {
     res.send(pageHtml);
   } catch (e) {
     if (e instanceof ProviderError) {
-      res.status(e.status === 404 ? 404 : 502).end();
+      if (e.status === 404) {
+        res.status(404).end();
+        return;
+      }
+      if (e.status === 401 || e.status === 403) {
+        res.status(403).setHeader("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>需要授權</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#18181b;color:#e4e4e7}div{text-align:center;max-width:420px;padding:2rem}h1{font-size:1.25rem;margin-bottom:.75rem}p{color:#a1a1aa;font-size:.875rem;line-height:1.6}a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}</style>
+</head><body><div><h1>這份文件需要授權</h1><p>請先登入，或透過有效的分享連結開啟。</p><p><a href="/">← 回首頁</a></p></div></body></html>`);
+        return;
+      }
+      // 其餘 provider 錯誤
+      res.status(500).setHeader("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>伺服器錯誤</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#18181b;color:#e4e4e7}div{text-align:center;max-width:420px;padding:2rem}h1{font-size:1.25rem;margin-bottom:.75rem}p{color:#a1a1aa;font-size:.875rem;line-height:1.6}a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}</style>
+</head><body><div><h1>伺服器發生錯誤</h1><p>請稍後再試，或聯繫管理員。</p><p><a href="/">← 回首頁</a></p></div></body></html>`);
       return;
     }
-    res.status(500).end();
+    res.status(500).setHeader("Content-Type", "text/html; charset=utf-8").send(`<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>伺服器錯誤</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#18181b;color:#e4e4e7}div{text-align:center;max-width:420px;padding:2rem}h1{font-size:1.25rem;margin-bottom:.75rem}p{color:#a1a1aa;font-size:.875rem;line-height:1.6}a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}</style>
+</head><body><div><h1>伺服器發生錯誤</h1><p>請稍後再試，或聯繫管理員。</p><p><a href="/">← 回首頁</a></p></div></body></html>`);
   }
 });
 

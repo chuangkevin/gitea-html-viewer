@@ -845,14 +845,18 @@ export default function Workspace() {
         {me && !me.login && me.team?.enabled && (
           <IdentityPicker team={me.team} onChange={handleIdentityChange} />
         )}
-        {/* 右上角：未登入顯示登入鈕（要編輯就從這裡進，依目前 repo 來源） */}
+        {/* 右上角：未登入顯示登入鈕（依目前 repo 來源） */}
         {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
           <a
             href={loginUrl}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            className={
+              me.team?.enabled
+                ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
+                : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            }
           >
             <ProviderIcon provider={provider} className="h-4 w-4" />
-            登入以編輯
+            登入
           </a>
         )}
         {me?.login && (
