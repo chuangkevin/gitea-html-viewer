@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { OAuthTokens } from "./providers.js";
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), "../data");
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -35,6 +36,13 @@ CREATE TABLE IF NOT EXISTS repo_access (
   updated_by  TEXT,
   PRIMARY KEY (provider, project)
 );
+CREATE TABLE IF NOT EXISTS user_prefs (
+  owner       TEXT PRIMARY KEY,
+  provider    TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  file        TEXT,
+  updated_at  INTEGER NOT NULL
+);
 `);
 
 // 既有部署的漸進式 migration
@@ -43,8 +51,11 @@ if (!shareCols.includes("kind")) db.exec("ALTER TABLE shares ADD COLUMN kind TEX
 if (!shareCols.includes("paths")) db.exec("ALTER TABLE shares ADD COLUMN paths TEXT");
 // 多 provider：舊資料一律視為 github
 if (!shareCols.includes("provider")) db.exec("ALTER TABLE shares ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
+
 const sessionCols = (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
 if (!sessionCols.includes("provider")) db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
+if (!sessionCols.includes("refresh_enc")) db.exec("ALTER TABLE sessions ADD COLUMN refresh_enc TEXT");
+if (!sessionCols.includes("expires_at")) db.exec("ALTER TABLE sessions ADD COLUMN expires_at INTEGER");
 
 // ── token 加密（at rest）────────────────────────────────
 // SECRET 未設定時自動產生並存檔，重啟後 session 仍可解。
@@ -82,38 +93,72 @@ export interface Session {
   avatar_url: string | null;
   token: string;
   provider: string;
+  refreshToken: string | null;
+  expiresAt: number | null;
 }
 
 export function createSession(
   login: string,
   avatarUrl: string | null,
-  accessToken: string,
+  tokens: OAuthTokens,
   provider: string
 ): string {
   const sid = crypto.randomBytes(24).toString("hex");
+  const refreshEnc = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+  const expiresAt = tokens.expiresAt ?? null;
   db.prepare(
-    "INSERT INTO sessions (sid, login, avatar_url, token_enc, created_at, provider) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(sid, login, avatarUrl, encrypt(accessToken), Date.now(), provider);
+    "INSERT INTO sessions (sid, login, avatar_url, token_enc, created_at, provider, refresh_enc, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(sid, login, avatarUrl, encrypt(tokens.accessToken), Date.now(), provider, refreshEnc, expiresAt);
   return sid;
 }
 
 export function getSession(sid: string | undefined): Session | null {
   if (!sid) return null;
   const row = db.prepare("SELECT * FROM sessions WHERE sid = ?").get(sid) as
-    | { sid: string; login: string; avatar_url: string | null; token_enc: string; provider?: string }
+    | {
+        sid: string;
+        login: string;
+        avatar_url: string | null;
+        token_enc: string;
+        provider?: string;
+        refresh_enc?: string | null;
+        expires_at?: number | null;
+      }
     | undefined;
   if (!row) return null;
   try {
+    let refreshToken: string | null = null;
+    if (row.refresh_enc) {
+      try {
+        refreshToken = decrypt(row.refresh_enc);
+      } catch {
+        refreshToken = null;
+      }
+    }
     return {
       sid: row.sid,
       login: row.login,
       avatar_url: row.avatar_url,
       token: decrypt(row.token_enc),
       provider: row.provider || "github",
+      refreshToken,
+      expiresAt: row.expires_at ?? null,
     };
   } catch {
     return null;
   }
+}
+
+export function updateSessionTokens(sid: string, tokens: OAuthTokens): void {
+  const tokenEnc = encrypt(tokens.accessToken);
+  const refreshEnc = tokens.refreshToken ? encrypt(tokens.refreshToken) : null;
+  const expiresAt = tokens.expiresAt ?? null;
+  db.prepare("UPDATE sessions SET token_enc = ?, refresh_enc = ?, expires_at = ? WHERE sid = ?").run(
+    tokenEnc,
+    refreshEnc,
+    expiresAt,
+    sid
+  );
 }
 
 export function deleteSession(sid: string): void {
@@ -172,3 +217,25 @@ export function revokeShare(login: string, token: string): boolean {
   const r = db.prepare("UPDATE shares SET revoked = 1 WHERE token = ? AND owner_login = ?").run(token, login);
   return r.changes > 0;
 }
+
+// ── user_prefs ─────────────────────────────────────────
+export interface LastRepo {
+  provider: string;
+  project: string;
+  file: string | null;
+}
+
+export function setLastRepo(owner: string, provider: string, project: string, file: string | null): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO user_prefs (owner, provider, project, file, updated_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(owner, provider, project, file, Date.now());
+}
+
+export function getLastRepo(owner: string): LastRepo | null {
+  const row = db.prepare("SELECT provider, project, file FROM user_prefs WHERE owner = ?").get(owner) as
+    | { provider: string; project: string; file: string | null }
+    | undefined;
+  if (!row) return null;
+  return { provider: row.provider, project: row.project, file: row.file };
+}
+

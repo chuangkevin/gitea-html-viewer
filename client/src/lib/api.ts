@@ -149,6 +149,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider, repo }),
     }).then((r) => j<{ grant: string }>(r)),
+  setLastRepo: (provider: string, project: string, file?: string) =>
+    fetch("/api/prefs/last-repo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, project, file }),
+    }).then((r) => j<{ ok: boolean }>(r)),
   shareSet: (repo: string, paths: string[], title?: string) =>
     fetch("/api/share", {
       method: "POST",

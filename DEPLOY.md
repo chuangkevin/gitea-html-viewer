@@ -67,8 +67,8 @@ cp .env.example .env
 - **作法 B（進階 / 比較乾淨）：使用 Project Access Token**
   ⚠️ **gitlab.com 的 Free 方案沒有這個功能（需 Premium/Ultimate）；如果建不出來就改用作法 A。**（自架 GitLab 才是 Free 方案就能用）
 
-  若使用付費方案或自架 GitLab，可以直接使用文件專案（`interagent-io/interagent-bible`）的 Project Access Token：
-  1. 前往文件 repo `interagent-io/interagent-bible` → **Settings** → **Access Tokens** 產生一組 Project Access Token。
+  若使用付費方案或自架 GitLab，可以直接使用文件專案（`interagent-io/global-doc`）的 Project Access Token：
+  1. 前往文件 repo `interagent-io/global-doc` → **Settings** → **Access Tokens** 產生一組 Project Access Token。
   2. **Role** 選 `Developer`（含）以上，**Scopes** 必須勾選 `api`（說明：`note` 是透過 GitLab REST API v4 進行寫檔與 commit，而非傳統 Git over HTTP，因此 `write_repository` 權限不足，必須勾選 `api`）。
   3. **共用機制**：同一把 Project Access Token 可以設定給 `identities.json` 中的多位成員。因為後端（`server/src/gitlab.ts` 的 `writeFile`）寫檔時會帶入 `identities.json` 設定的 `name` 與 `email` 作為 `author_name` / `author_email`，即使全員共用同一把 token，commit 依然會精確掛在各自的人名與 email 名下。
   4. **缺點與風險**：共用 token 代表共用寫入權限，若該 token 被撤銷則全體共用成員會同時失效；且前端選取名字僅為識別而非身分驗證，內網中任何人皆可切換選取任意名字發起 commit（冒名風險）。
@@ -137,7 +137,7 @@ commit 的 author 會是該成員的名字 + email（committer 則是 token 所�
 ### 首頁預設落地（選配）
 
 `DEFAULT_REPO` 設了，開首頁「/」就直接導到該 repo 的 `DEFAULT_FILE`；
-compose 預設值是 `gitlab/interagent-io%2Finteragent-bible` + `README.md`（預設文件專案為 `interagent-io/interagent-bible`）。
+compose 預設值是 `gitlab/interagent-io%2Fglobal-doc` + `README.md`（預設文件專案為 `interagent-io/global-doc`）。
 格式是 `<provider>/<URL-encode 過的 projectPath>`（GitLab 巢狀群組的 `/` 要寫成 `%2F`）。
 想回原本首頁：`.env` 填 `DEFAULT_REPO=`（空值）關掉，或直接開 `/?home=1`。
 
@@ -174,5 +174,5 @@ git pull && docker compose up -d --build
 ## 資料
 
 - `./data`（bind mount）：SQLite（sessions + 分享 token）與 `.secret`。備份就備份這個目錄。
-- 文件本體不在這裡——都在使用者各自的 GitLab/GitHub repo（預設文件專案為 `interagent-io/interagent-bible`）。
+- 文件本體不在這裡——都在使用者各自的 GitLab/GitHub repo（預設文件專案為 `interagent-io/global-doc`）。
 

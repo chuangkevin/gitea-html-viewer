@@ -45,6 +45,13 @@ export interface CommitAuthor {
   email: string;
 }
 
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+  /** epoch ms；沒有就是不會過期 */
+  expiresAt?: number;
+}
+
 export interface Provider {
   name: ProviderName;
 
@@ -52,7 +59,9 @@ export interface Provider {
   /** 使用者授權頁網址（把使用者導去 provider 登入）。 */
   authorizeUrl(clientId: string, redirectUri: string, state: string): string;
   /** 用授權碼換 access token。 */
-  exchangeCode(clientId: string, clientSecret: string, code: string, redirectUri: string): Promise<string>;
+  exchangeCode(clientId: string, clientSecret: string, code: string, redirectUri: string): Promise<OAuthTokens>;
+  /** 用 refresh token 換新 token。 */
+  refreshTokens?(clientId: string, clientSecret: string, refreshToken: string, redirectUri?: string): Promise<OAuthTokens>;
 
   // ── 內容 ──
   getUser(token: string): Promise<ProviderUser>;
@@ -142,3 +151,62 @@ function cleanGitLabPath(rest: string): string | null {
   if (parts.length < 2) return null; // 至少 group/project
   return parts.join("/");
 }
+
+/**
+ * 把使用者貼進來的任何形式正規化成 projectPath。
+ * 接受：https://gitlab.com/interagent-io/global-doc.git、gitlab.com/interagent-io/global-doc、
+ *       interagent-io/global-doc、結尾多餘的 / 或 .git、/-/tree/main/... 之類的尾巴
+ * 認不出 host 時用 fallbackProvider。
+ */
+export function normalizeProjectInput(
+  raw: string,
+  fallbackProvider: ProviderName
+): { provider: ProviderName; projectPath: string } | null {
+  let s = raw.trim();
+  if (!s) return null;
+
+  s = s.replace(/^https?:\/\//i, "");
+
+  let provider: ProviderName;
+  let path = s;
+
+  const gitlabMatch = path.match(/^(gitlab\.com|gitlab\.[^/]+)\/(.*)$/i);
+  const githubMatch = path.match(/^(github\.com)\/(.*)$/i);
+
+  if (gitlabMatch) {
+    provider = "gitlab";
+    path = gitlabMatch[2];
+  } else if (githubMatch) {
+    provider = "github";
+    path = githubMatch[2];
+  } else {
+    provider = fallbackProvider;
+  }
+
+  // 砍掉 `/-/tree/…`、`/-/blob/…`、`/-/…`、`/tree/…`、`/blob/…` 之後的所有東西
+  const dashIndex = path.indexOf("/-/");
+  if (dashIndex !== -1) {
+    path = path.slice(0, dashIndex);
+  } else {
+    const treeMatch = path.match(/\/(tree|blob)($|\/)/i);
+    if (treeMatch && treeMatch.index !== undefined) {
+      path = path.slice(0, treeMatch.index);
+    }
+  }
+
+  // 砍掉結尾的 / 與 .git
+  while (path.endsWith("/") || path.endsWith(".git")) {
+    if (path.endsWith("/")) {
+      path = path.slice(0, -1);
+    } else if (path.endsWith(".git")) {
+      path = path.slice(0, -4);
+    }
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length < 2) return null;
+
+  const projectPath = parts.join("/");
+  return { provider, projectPath };
+}
+

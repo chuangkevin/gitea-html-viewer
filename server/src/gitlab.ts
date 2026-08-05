@@ -7,7 +7,7 @@
  *   - 列檔 tree 是分頁的（每頁上限 100，靠 x-next-page 續抓）
  *   - 寫檔不需要舊 sha：更新用 PUT、建立用 POST，帶 branch + commit_message
  */
-import type { Provider, ProviderUser, RepoMeta, RepoFile } from "./providers.js";
+import type { Provider, ProviderUser, RepoMeta, RepoFile, OAuthTokens } from "./providers.js";
 import { ProviderError } from "./providers.js";
 
 const HOST = "https://gitlab.com";
@@ -92,9 +92,34 @@ export const gitlab: Provider = {
         redirect_uri: redirectUri,
       }),
     });
-    const data = (await res.json()) as { access_token?: string; error_description?: string };
+    const data = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error_description?: string };
     if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token exchange failed");
-    return data.access_token;
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
+    };
+  },
+
+  async refreshTokens(clientId, clientSecret, refreshToken, redirectUri) {
+    const res = await fetch(`${HOST}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: "refresh_token",
+        redirect_uri: redirectUri,
+      }),
+    });
+    const data = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error_description?: string };
+    if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token refresh failed");
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresAt: Date.now() + (data.expires_in ?? 7200) * 1000,
+    };
   },
 
   async getUser(token) {

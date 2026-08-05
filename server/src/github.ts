@@ -68,7 +68,7 @@ export const github: Provider = {
     });
     const data = (await res.json()) as { access_token?: string; error_description?: string };
     if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token exchange failed");
-    return data.access_token;
+    return { accessToken: data.access_token };
   },
 
   async getUser(token) {

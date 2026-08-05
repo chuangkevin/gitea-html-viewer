@@ -8,6 +8,37 @@ const MODE_OPTIONS: { value: AccessMode; label: string }[] = [
   { value: "admin", label: "只有 admin 能編" },
 ];
 
+export function normalizeProjectInput(
+  raw: string,
+  fallbackProvider: string
+): { provider: string; project: string } {
+  let str = raw.trim();
+  if (!str) {
+    return { provider: fallbackProvider, project: "" };
+  }
+
+  // 砍掉開頭的 https:// 或 http://
+  str = str.replace(/^https?:\/\//i, "");
+
+  // 判斷 provider
+  let provider = fallbackProvider;
+  if (/^gitlab\.com\//i.test(str)) {
+    provider = "gitlab";
+    str = str.replace(/^gitlab\.com\//i, "");
+  } else if (/^github\.com\//i.test(str)) {
+    provider = "github";
+    str = str.replace(/^github\.com\//i, "");
+  }
+
+  // 砍掉 /-/tree/...、/-/blob/...、/tree/...、/blob/... 及其後面的東西
+  str = str.replace(/\/(?:-\/)?(?:tree|blob)(?:[\/\?#].*)?$/i, "");
+
+  // 砍掉結尾的 .git 與 /
+  str = str.replace(/(\.git)?\/+$/i, "").replace(/\.git$/i, "");
+
+  return { provider, project: str };
+}
+
 export default function Admin() {
   const [state, setState] = useState<AdminState | null>(null);
   const [keyInput, setKeyInput] = useState("");
@@ -18,6 +49,17 @@ export default function Admin() {
   const [newProvider, setNewProvider] = useState<"github" | "gitlab">("gitlab");
   const [newProject, setNewProject] = useState("");
   const [newMode, setNewMode] = useState<AccessMode>("open");
+
+  function handleBlurProject() {
+    if (!newProject.trim()) return;
+    const normalized = normalizeProjectInput(newProject, newProvider);
+    setNewProject(normalized.project);
+    if (normalized.provider === "github" || normalized.provider === "gitlab") {
+      if (normalized.provider !== newProvider) {
+        setNewProvider(normalized.provider as "github" | "gitlab");
+      }
+    }
+  }
 
   const loadState = useCallback(() => {
     setActionError("");
@@ -72,10 +114,15 @@ export default function Admin() {
 
   async function handleAddEntry(e: React.FormEvent) {
     e.preventDefault();
-    const p = newProject.trim();
+    const normalized = normalizeProjectInput(newProject, newProvider);
+    const p = normalized.project;
+    const providerToSend =
+      normalized.provider === "github" || normalized.provider === "gitlab"
+        ? normalized.provider
+        : newProvider;
     if (!p) return;
     try {
-      const r = await api.setRepoAccess(newProvider, p, newMode);
+      const r = await api.setRepoAccess(providerToSend, p, newMode);
       setState((prev) => (prev ? { ...prev, entries: r.entries } : prev));
       setNewProject("");
     } catch (e) {
@@ -202,6 +249,7 @@ export default function Admin() {
                     type="text"
                     value={newProject}
                     onChange={(e) => setNewProject(e.target.value)}
+                    onBlur={handleBlurProject}
                     placeholder="interagent-io/interagent-bible"
                     className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                   />

@@ -59,33 +59,43 @@ export default function Home() {
         <div className="font-mono font-bold text-lg">
           note<span className="text-sky-400">-bridge</span>
         </div>
-        {/* 右上角：登入／使用者 */}
-        {me?.login ? (
-          <div className="flex items-center gap-3 text-sm text-zinc-400">
-            {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-6 w-6 rounded-full" />}
-            <span>{me.login}</span>
-            {me.provider && <span className="text-xs text-zinc-600">({providerLabel(me.provider)})</span>}
-            <button
-              className="text-zinc-500 hover:text-zinc-200"
-              onClick={() => api.logout().then(() => location.reload())}
+        <div className="flex items-center gap-3">
+          {me?.admin?.enabled && (
+            <Link
+              to="/admin"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+              title="管理控制台"
             >
-              登出
-            </button>
-          </div>
-        ) : me ? (
-          <div className="flex items-center gap-2">
-            {loginProviders.map((p) => (
-              <a
-                key={p}
-                href={`/api/auth/login?provider=${p}`}
-                className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+              ⚙️ 管理
+            </Link>
+          )}
+          {me?.login ? (
+            <div className="flex items-center gap-3 text-sm text-zinc-400">
+              {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-6 w-6 rounded-full" />}
+              <span>{me.login}</span>
+              {me.provider && <span className="text-xs text-zinc-600">({providerLabel(me.provider)})</span>}
+              <button
+                className="text-zinc-500 hover:text-zinc-200"
+                onClick={() => api.logout().then(() => location.reload())}
               >
-                <ProviderIcon provider={p} className="h-4 w-4" />
-                {providerLabel(p)}
-              </a>
-            ))}
-          </div>
-        ) : null}
+                登出
+              </button>
+            </div>
+          ) : me ? (
+            <div className="flex items-center gap-2">
+              {loginProviders.map((p) => (
+                <a
+                  key={p}
+                  href={`/api/auth/login?provider=${p}`}
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+                >
+                  <ProviderIcon provider={p} className="h-4 w-4" />
+                  {providerLabel(p)}
+                </a>
+              ))}
+            </div>
+          ) : null}
+        </div>
       </header>
 
       <main className="flex-1 max-w-3xl w-full mx-auto px-6 py-12 space-y-10">

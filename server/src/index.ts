@@ -7,6 +7,7 @@ import {
   createSession,
   getSession,
   deleteSession,
+  updateSessionTokens,
   createShare,
   createShareSet,
   getShare,
@@ -14,6 +15,8 @@ import {
   revokeShare,
   encrypt,
   decrypt,
+  setLastRepo,
+  getLastRepo,
   type Session,
 } from "./db.js";
 import {
@@ -23,6 +26,7 @@ import {
   setMode,
   removeEntry,
   listEntries,
+  hasEntry,
   openToken,
   openTokenReady,
   defaultGuestAuthor,
@@ -31,6 +35,7 @@ import {
   registerProvider,
   getProvider,
   isProviderName,
+  normalizeProjectInput,
   ProviderError,
   type ProviderName,
   type CommitAuthor,
@@ -47,6 +52,32 @@ import {
 
 registerProvider(github);
 registerProvider(gitlab);
+
+function migrateRepoAccess(): void {
+  const entries = listEntries();
+  let fixedCount = 0;
+  for (const entry of entries) {
+    const norm = normalizeProjectInput(entry.project, entry.provider as ProviderName);
+    if (!norm) {
+      console.warn(`[migration] repo_access 有無法解析的列: ${entry.provider}/${entry.project}`);
+      continue;
+    }
+    if (norm.projectPath !== entry.project || norm.provider !== entry.provider) {
+      if (hasEntry(norm.provider, norm.projectPath)) {
+        removeEntry(entry.provider as ProviderName, entry.project);
+      } else {
+        setMode(norm.provider, norm.projectPath, entry.mode, entry.updatedBy ?? "migration");
+        removeEntry(entry.provider as ProviderName, entry.project);
+      }
+      fixedCount++;
+    }
+  }
+  if (fixedCount > 0) {
+    console.log(`[migration] repo_access 正規化：${fixedCount} 列已修正`);
+  }
+}
+
+migrateRepoAccess();
 
 process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
@@ -83,13 +114,50 @@ const COOKIE = "nb_sid";
 const IDENT_COOKIE = "nb_ident"; // 團隊模式：只存「選了哪位成員」，不存 token
 const REDIRECT_URI = `${BASE_URL}/api/auth/callback`;
 
+async function resolveLiveSession(req: express.Request): Promise<Session | null> {
+  const s = getSession(req.cookies?.[COOKIE]);
+  if (!s) return null;
+  // 提前 120 秒視為過期，避免踩線
+  if (!s.expiresAt || Date.now() < s.expiresAt - 120_000) return s;
+  const p = getProvider(s.provider as ProviderName);
+  const conf = OAUTH[s.provider as ProviderName];
+  if (!s.refreshToken || !p.refreshTokens || !conf?.clientId) {
+    deleteSession(s.sid);            // 沒得 refresh → 當作登出，前端會顯示登入鈕
+    return null;
+  }
+  try {
+    const t = await p.refreshTokens(conf.clientId, conf.clientSecret, s.refreshToken, REDIRECT_URI);
+    updateSessionTokens(s.sid, t);
+    console.log(`[auth] refreshed ${s.provider} token for ${s.login}`);  // ⚠️ 只印 login，不可印 token
+    return getSession(s.sid);
+  } catch {
+    deleteSession(s.sid);
+    return null;
+  }
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    nbSession?: Session | null;
+  }
+}
+
+app.use(async (req, _res, next) => {
+  try {
+    req.nbSession = await resolveLiveSession(req);
+  } catch {
+    req.nbSession = null;
+  }
+  next();
+});
+
 // 部署健康檢查（CI 用；不需認證）
 app.get("/healthz", (_req, res) => {
   res.json({ ok: true, github: oauthReady("github"), gitlab: oauthReady("gitlab") });
 });
 
 function requireAuth(req: express.Request, res: express.Response): Session | null {
-  const s = getSession(req.cookies?.[COOKIE]);
+  const s = req.nbSession ?? null;
   if (!s) {
     res.status(401).json({ error: "not_authenticated" });
     return null;
@@ -137,9 +205,9 @@ app.get("/api/auth/callback", async (req, res) => {
     }
     const provider = getProvider(providerName);
     const conf = OAUTH[providerName];
-    const token = await provider.exchangeCode(conf.clientId, conf.clientSecret, code, REDIRECT_URI);
-    const user = await provider.getUser(token);
-    const sid = createSession(user.login, user.avatarUrl, token, providerName);
+    const tokens = await provider.exchangeCode(conf.clientId, conf.clientSecret, code, REDIRECT_URI);
+    const user = await provider.getUser(tokens.accessToken);
+    const sid = createSession(user.login, user.avatarUrl, tokens, providerName);
     res.cookie(COOKIE, sid, {
       httpOnly: true,
       sameSite: "lax",
@@ -201,7 +269,7 @@ app.get("/api/me", (req, res) => {
   const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab") };
   const team = teamInfo(req);
   const admin = { enabled: Boolean(process.env.ADMIN_KEY), is: isAdmin(req) };
-  const s = getSession(req.cookies?.[COOKIE]);
+  const s = req.nbSession ?? null;
   if (!s) {
     res.json({ login: null, providers, team, admin });
     return;
@@ -244,7 +312,7 @@ function guestAuthor(req: express.Request): CommitAuthor {
 }
 
 function isAdmin(req: express.Request): boolean {
-  const s = getSession(req.cookies?.[COOKIE]);
+  const s = req.nbSession ?? null;
   if (s && process.env.ADMIN_LOGINS) {
     const allowedLogins = process.env.ADMIN_LOGINS.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
     if (allowedLogins.includes(s.login.toLowerCase())) {
@@ -274,7 +342,7 @@ function requireAdmin(req: express.Request, res: express.Response): boolean {
 }
 
 function actorFor(req: express.Request, provider: ProviderName, project?: string): Actor {
-  const s = getSession(req.cookies?.[COOKIE]);
+  const s = req.nbSession ?? null;
   if (s && s.provider === provider) return { token: s.token, authed: true };
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
   if (sel && sel.identity.provider === provider) {
@@ -493,7 +561,7 @@ app.post("/api/raw-grant", async (req, res) => {
   }
   for (const [k, v] of rawGrants) if (v.exp < Date.now()) rawGrants.delete(k);
   const grant = crypto.randomBytes(12).toString("base64url");
-  const s = getSession(req.cookies?.[COOKIE]);
+  const s = req.nbSession ?? null;
   rawGrants.set(grant, {
     provider,
     project: repo,
@@ -574,6 +642,10 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     }
     const p = getProvider(provider);
     const info = await p.getRepo(actor.token, project); // 取預設分支（GitLab 寫入需要）
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
     const commitMsg = message || `docs: update ${filePath} via note-bridge`;
     const result = await p.writeFile(
       actor.token,
@@ -663,7 +735,12 @@ app.put("/api/admin/repos", (req, res) => {
     res.status(400).json({ error: "invalid parameters" });
     return;
   }
-  const s = getSession(req.cookies?.[COOKIE]);
+  const norm = normalizeProjectInput(project, provider as ProviderName);
+  if (!norm) {
+    res.status(400).json({ error: "invalid_project" });
+    return;
+  }
+  const s = req.nbSession ?? null;
   let by = "admin_key";
   if (s && process.env.ADMIN_LOGINS) {
     const allowed = process.env.ADMIN_LOGINS.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
@@ -671,7 +748,7 @@ app.put("/api/admin/repos", (req, res) => {
       by = s.login;
     }
   }
-  setMode(provider as ProviderName, project, mode, by);
+  setMode(norm.provider, norm.projectPath, mode, by);
   res.json({ ok: true, entries: listEntries() });
 });
 
@@ -682,9 +759,45 @@ app.delete("/api/admin/repos", (req, res) => {
     res.status(400).json({ error: "invalid parameters" });
     return;
   }
-  removeEntry(provider as ProviderName, project);
+  const norm = normalizeProjectInput(project, provider as ProviderName);
+  if (!norm) {
+    res.status(400).json({ error: "invalid_project" });
+    return;
+  }
+  removeEntry(norm.provider, norm.projectPath);
   res.json({ ok: true, entries: listEntries() });
 });
+
+// ── prefs ──────────────────────────────────────────────
+app.post("/api/prefs/last-repo", (req, res) => {
+  const { provider, project, file } = req.body as { provider?: string; project?: string; file?: string | null };
+  if (!provider || !isProviderName(provider) || typeof project !== "string" || !project.trim()) {
+    res.status(400).json({ error: "invalid parameters" });
+    return;
+  }
+  const norm = normalizeProjectInput(project, provider as ProviderName);
+  if (!norm) {
+    res.status(400).json({ error: "invalid_project" });
+    return;
+  }
+  const filePath = typeof file === "string" && file.trim() ? file.trim() : null;
+
+  const s = req.nbSession ?? getSession(req.cookies?.[COOKIE]);
+  if (s) {
+    setLastRepo(`${s.provider}:${s.login}`, norm.provider, norm.projectPath, filePath);
+  }
+
+  const payload = { provider: norm.provider, project: norm.projectPath, file: filePath };
+  res.cookie("nb_last", encodeURIComponent(JSON.stringify(payload)), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: BASE_URL.startsWith("https"),
+    maxAge: 180 * 24 * 3600 * 1000,
+  });
+
+  res.json({ ok: true });
+});
+
 
 // ── shares ─────────────────────────────────────────────
 app.post("/api/share", async (req, res) => {
@@ -737,6 +850,7 @@ function resolveShare(req: express.Request, res: express.Response) {
     res.status(404).json({ error: "share_not_found" });
     return null;
   }
+  // TODO: 分享連結在擁有者 token 過期後會失效（維持現有行為）
   const owner = getSession(share.owner_sid);
   if (!owner) {
     res.status(410).json({ error: "share_owner_session_expired" });
@@ -815,19 +929,54 @@ app.get("/api/public/:token/raw/*", async (req, res) => {
 });
 
 // ── 首頁預設落地 ───────────────────────────────────────
-// DEFAULT_REPO 設了就把「/」直接導到該 repo 的預設檔案，沒設維持原本首頁。
-// 值格式：<provider>/<URL-encode 過的 projectPath>
-//   例：gitlab/interagent-io%2Finteragent-bible
+// 優先序：
+// 1. 登入者在 user_prefs 的紀錄
+// 2. cookie nb_last
+// 3. DEFAULT_REPO / DEFAULT_FILE（維持現有行為）
 // 帶 query 的「/」（?login=unconfigured、或想看原本首頁時用 /?home=1）不導轉。
 const DEFAULT_REPO = process.env.DEFAULT_REPO || "";
 const DEFAULT_FILE = process.env.DEFAULT_FILE || "README.md";
 app.get("/", (req, res, next) => {
-  if (!DEFAULT_REPO || Object.keys(req.query).length > 0) {
+  if (Object.keys(req.query).length > 0) {
     next();
     return;
   }
-  res.redirect(`/edit/${DEFAULT_REPO}${DEFAULT_FILE ? `?f=${encodeURIComponent(DEFAULT_FILE)}` : ""}`);
+
+  // 1. 登入者在 user_prefs 的紀錄
+  const s = req.nbSession ?? getSession(req.cookies?.[COOKIE]);
+  if (s) {
+    const last = getLastRepo(`${s.provider}:${s.login}`);
+    if (last) {
+      const fStr = last.file ? `?f=${encodeURIComponent(last.file)}` : "";
+      res.redirect(`/edit/${encodeURIComponent(last.provider)}/${encodeURIComponent(last.project)}${fStr}`);
+      return;
+    }
+  }
+
+  // 2. cookie nb_last
+  if (req.cookies?.nb_last) {
+    try {
+      const raw = decodeURIComponent(req.cookies.nb_last);
+      const data = JSON.parse(raw) as { provider?: string; project?: string; file?: string | null };
+      if (data && typeof data.provider === "string" && typeof data.project === "string" && data.project) {
+        const fStr = typeof data.file === "string" && data.file ? `?f=${encodeURIComponent(data.file)}` : "";
+        res.redirect(`/edit/${encodeURIComponent(data.provider)}/${encodeURIComponent(data.project)}${fStr}`);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3. DEFAULT_REPO / DEFAULT_FILE（維持現有行為）
+  if (DEFAULT_REPO) {
+    res.redirect(`/edit/${DEFAULT_REPO}${DEFAULT_FILE ? `?f=${encodeURIComponent(DEFAULT_FILE)}` : ""}`);
+    return;
+  }
+
+  next();
 });
+
 
 // ── SPA（production）───────────────────────────────────
 const clientDist = path.resolve(process.cwd(), "../client/dist");

@@ -36,6 +36,15 @@ export function removeEntry(provider: ProviderName, project: string): void {
   db.prepare("DELETE FROM repo_access WHERE provider = ? AND LOWER(project) = LOWER(?)").run(provider, p);
 }
 
+export function hasEntry(provider: ProviderName, project: string): boolean {
+  const p = (project || "").trim();
+  if (!p) return false;
+  const row = db
+    .prepare("SELECT 1 FROM repo_access WHERE provider = ? AND LOWER(project) = LOWER(?)")
+    .get(provider, p);
+  return Boolean(row);
+}
+
 export function listEntries(): {
   provider: string;
   project: string;

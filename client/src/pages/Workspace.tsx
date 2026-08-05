@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
-import { renderMarkdown } from "../lib/markdown";
+import { renderMarkdown, type LinkContext } from "../lib/markdown";
 import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
@@ -79,6 +79,12 @@ export default function Workspace() {
   }, [refPath, reloadKey]);
 
   useEffect(loadFiles, [loadFiles]);
+
+  useEffect(() => {
+    if (files !== null) {
+      api.setLastRepo(provider, projectPath, activePath).catch(() => {});
+    }
+  }, [provider, projectPath, activePath, files]);
 
   const activeKind = activePath ? kindOf(activePath) : null;
 
@@ -182,7 +188,189 @@ export default function Workspace() {
 
   const readOnly = !canWrite;
   const effectiveView = readOnly ? "preview" : view;
-  const html = useMemo(() => renderMarkdown(content), [content]);
+
+  const linkContext = useMemo<LinkContext>(
+    () => ({
+      provider,
+      project: projectPath,
+      currentPath: activePath,
+      files: files || [],
+    }),
+    [provider, projectPath, activePath, files]
+  );
+  const html = useMemo(() => renderMarkdown(content, linkContext), [content, linkContext]);
+
+  const handlePreviewClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest("a");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href) return;
+      if (anchor.target === "_blank" || anchor.getAttribute("target") === "_blank") return;
+      if (href.startsWith("/edit/")) {
+        e.preventDefault();
+        navigate(href);
+      }
+    },
+    [navigate]
+  );
+
+  const dirParam = params.get("dir");
+  const cleanDir = useMemo(() => (dirParam || "").replace(/^\/+|\/+$/g, ""), [dirParam]);
+  const dirViewItems = useMemo(() => {
+    if (!params.has("dir") || !files) return { subfolders: [], directFiles: [] };
+    const prefix = cleanDir ? cleanDir + "/" : "";
+    const subfoldersSet = new Set<string>();
+    const directFiles: string[] = [];
+
+    for (const f of files) {
+      if (prefix === "" || f.startsWith(prefix)) {
+        const rel = prefix ? f.slice(prefix.length) : f;
+        if (!rel) continue;
+        const parts = rel.split("/");
+        if (parts.length === 1) {
+          directFiles.push(f);
+        } else {
+          const subName = parts[0];
+          const subPath = cleanDir ? `${cleanDir}/${subName}` : subName;
+          subfoldersSet.add(subPath);
+        }
+      }
+    }
+    return {
+      subfolders: Array.from(subfoldersSet).sort(),
+      directFiles: directFiles.sort(),
+    };
+  }, [params, cleanDir, files]);
+
+  type MentionItem = {
+    type: "file" | "dir";
+    path: string;
+    label: string;
+  };
+
+  const mentionCandidates = useMemo(() => {
+    if (!files) return [];
+    const dirs = new Set<string>();
+    const list: MentionItem[] = [];
+
+    for (const f of files) {
+      const parts = f.split("/");
+      let acc = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc ? `${acc}/${parts[i]}` : parts[i];
+        dirs.add(acc);
+      }
+    }
+
+    for (const d of Array.from(dirs).sort()) {
+      list.push({ type: "dir", path: d, label: `${d}/` });
+    }
+    for (const f of [...files].sort()) {
+      list.push({ type: "file", path: f, label: f });
+    }
+
+    return list;
+  }, [files]);
+
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+
+  const filteredMentions = useMemo(() => {
+    if (mentionQuery === null) return [];
+    const q = mentionQuery.toLowerCase();
+    return mentionCandidates.filter((item) => item.path.toLowerCase().includes(q)).slice(0, 12);
+  }, [mentionCandidates, mentionQuery]);
+
+  useEffect(() => {
+    if (mentionIndex >= filteredMentions.length && filteredMentions.length > 0) {
+      setMentionIndex(filteredMentions.length - 1);
+    }
+  }, [filteredMentions.length, mentionIndex]);
+
+  const updateMentionTrigger = useCallback((val: string, cursorPos: number) => {
+    const textBefore = val.slice(0, cursorPos);
+    const match = textBefore.match(/(?:^|\s)@([^\s]*)$/);
+    if (match) {
+      setMentionQuery(match[1]);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  }, []);
+
+  const selectMention = useCallback(
+    (item: MentionItem) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+
+      const val = editor.value;
+      const cursorPos = editor.selectionStart;
+      const textBefore = val.slice(0, cursorPos);
+      const match = textBefore.match(/(?:^|\s)@([^\s]*)$/);
+      if (!match) return;
+
+      const atPos = match.index! + match[0].indexOf("@");
+
+      let replacement = "";
+      if (item.type === "dir") {
+        const folderName = item.path.split("/").pop() || item.path;
+        replacement = `[${folderName}/](/${item.path}/)`;
+      } else {
+        const fileName = item.path.split("/").pop() || item.path;
+        const nameNoExt = fileName.replace(/\.[^/.]+$/, "");
+        replacement = `[${nameNoExt}](/${item.path})`;
+      }
+
+      const newContent = val.slice(0, atPos) + replacement + val.slice(cursorPos);
+      const newCursorPos = atPos + replacement.length;
+
+      setContent(newContent);
+      setSave("dirty");
+      setMentionQuery(null);
+
+      setTimeout(() => {
+        if (editorRef.current) {
+          editorRef.current.focus();
+          editorRef.current.setSelectionRange(newCursorPos, newCursorPos);
+        }
+      }, 0);
+    },
+    []
+  );
+
+  const handleTextareaKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (mentionQuery !== null && filteredMentions.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMentionIndex((i) => (i + 1) % filteredMentions.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length);
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          const safeIndex = Math.max(0, Math.min(mentionIndex, filteredMentions.length - 1));
+          const item = filteredMentions[safeIndex];
+          if (item) {
+            selectMention(item);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setMentionQuery(null);
+          return;
+        }
+      }
+    },
+    [mentionQuery, filteredMentions, mentionIndex, selectMention]
+  );
 
   // ── 分割檢視：編輯區與預覽區依捲動比例雙向同步 ──
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -343,10 +531,10 @@ export default function Workspace() {
           </span>
         )}
         {/* Admin 連結 */}
-        {me?.admin?.is && (
+        {me?.admin?.enabled && (
           <Link
             to="/admin"
-            className="inline-flex items-center gap-1 text-xs border border-zinc-700 text-zinc-400 hover:text-white px-2 py-1 rounded transition"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
             title="管理控制台"
           >
             ⚙️ 管理
@@ -457,7 +645,58 @@ export default function Workspace() {
         </aside>
 
         {/* 編輯／預覽 */}
-        {activeFolder ? (
+        {params.has("dir") ? (
+          <div className="flex-1 overflow-auto p-6 max-w-3xl mx-auto w-full">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-4">
+              <h2 className="text-xl font-bold font-mono text-zinc-100 flex items-center gap-2">
+                📁 {cleanDir || "根目錄"}
+              </h2>
+              {cleanDir && (
+                <button
+                  onClick={() => {
+                    const parentDir = cleanDir.split("/").slice(0, -1).join("/");
+                    setParams({ dir: parentDir });
+                  }}
+                  className="text-sm border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white px-3 py-1.5 rounded flex items-center gap-1"
+                >
+                  ⬆️ 上一層
+                </button>
+              )}
+            </div>
+
+            <div className="divide-y divide-zinc-900 border border-zinc-800 rounded-lg overflow-hidden bg-zinc-950">
+              {dirViewItems.subfolders.map((sf) => {
+                const folderName = sf.split("/").pop() || sf;
+                return (
+                  <button
+                    key={sf}
+                    onClick={() => setParams({ dir: sf })}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
+                  >
+                    <span>📁</span>
+                    <span className="font-semibold">{folderName}/</span>
+                  </button>
+                );
+              })}
+              {dirViewItems.directFiles.map((df) => {
+                const fileName = df.split("/").pop() || df;
+                return (
+                  <button
+                    key={df}
+                    onClick={() => setParams({ f: df })}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
+                  >
+                    <span>📄</span>
+                    <span>{fileName}</span>
+                  </button>
+                );
+              })}
+              {dirViewItems.subfolders.length === 0 && dirViewItems.directFiles.length === 0 && (
+                <div className="p-6 text-center text-zinc-500 text-sm">此資料夾是空的</div>
+              )}
+            </div>
+          </div>
+        ) : activeFolder ? (
           <div className="flex-1 grid place-items-center text-center px-6">
             <div className="space-y-3">
               <p className="text-3xl">📂</p>
@@ -498,7 +737,7 @@ export default function Workspace() {
             {content}
           </pre>
         ) : (
-          <div className="flex-1 flex min-w-0">
+          <div className="flex-1 flex min-w-0 relative">
             {effectiveView !== "preview" && (
               <textarea
                 ref={editorRef}
@@ -506,16 +745,52 @@ export default function Workspace() {
                 onChange={(e) => {
                   setContent(e.target.value);
                   setSave("dirty");
+                  updateMentionTrigger(e.target.value, e.target.selectionStart);
                 }}
+                onSelect={(e) => {
+                  updateMentionTrigger(e.currentTarget.value, e.currentTarget.selectionStart);
+                }}
+                onKeyUp={(e) => {
+                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                    updateMentionTrigger(e.currentTarget.value, e.currentTarget.selectionStart);
+                  }
+                }}
+                onKeyDown={handleTextareaKeyDown}
                 onScroll={() => syncScroll(editorRef.current, previewRef.current)}
                 spellCheck={false}
                 className={`${effectiveView === "split" ? "w-1/2" : "w-full"} resize-none bg-zinc-950 p-5 font-mono text-base leading-7 outline-none border-r border-zinc-900`}
               />
             )}
+            {mentionQuery !== null && filteredMentions.length > 0 && (
+              <div className="absolute left-6 top-14 z-50 w-80 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
+                <div className="px-3 py-1.5 text-xs text-zinc-400 border-b border-zinc-800 font-mono flex justify-between">
+                  <span>@ 自動完成 ({filteredMentions.length})</span>
+                  <span>↑↓ 移動 · Enter/Tab 選取</span>
+                </div>
+                {filteredMentions.map((item, idx) => (
+                  <button
+                    key={`${item.type}:${item.path}`}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectMention(item);
+                    }}
+                    onMouseEnter={() => setMentionIndex(idx)}
+                    className={`w-full text-left px-3 py-2 text-sm font-mono flex items-center gap-2 transition-colors ${
+                      idx === mentionIndex ? "bg-sky-900/60 text-white" : "text-zinc-300 hover:bg-zinc-800"
+                    }`}
+                  >
+                    <span className="text-base">{item.type === "dir" ? "📁" : "📄"}</span>
+                    <span className="truncate flex-1">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {effectiveView !== "edit" && (
               <div
                 ref={previewRef}
                 onScroll={() => syncScroll(previewRef.current, editorRef.current)}
+                onClick={handlePreviewClick}
                 className={`${effectiveView === "split" ? "w-1/2" : "w-full"} overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto" : ""}`}
                 dangerouslySetInnerHTML={{ __html: html }}
               />
