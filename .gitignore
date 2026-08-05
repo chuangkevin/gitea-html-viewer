@@ -8,3 +8,4 @@ data/
 # 部署主機專用，刻意不進 git
 docker-compose.override.yml
 .rollback-*
+client/.build-sha

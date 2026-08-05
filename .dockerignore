@@ -9,6 +9,7 @@ server/node_modules
 # 前後端打包編譯產物（避免宿主機舊建置產物污染 build context，Dockerfile 內會自行 build）
 client/dist
 server/dist
+!client/.build-sha
 
 # 本地與持久化資料目錄
 data

@@ -81,6 +81,9 @@ deploy-dockerhost:
     # 因 runner 非 root 身份，不保留擁有者/群組（使用 -rlptD 替代 -a，排除 -o/-g），強行保留會導致 chgrp 失敗
     - rsync -rlptD --delete --exclude='.env' --exclude='.env.*' --exclude='data/' --exclude='set-note-token.sh' --exclude='docker-compose.override.yml*' "$CI_PROJECT_DIR/" "$DEPLOY_DIR/"
     - echo "Deploying Commit SHA $CI_COMMIT_SHA ($CI_COMMIT_SHORT_SHA)"
+    # 將 Commit SHA 寫入 client/.build-sha 檔案傳遞給前端 build context
+    # 說明：Docker build arg (ARG -> ENV -> vite) 鏈實測在 Compose 傳遞不可靠，改用實體檔案傳遞可直接打包進 context 供 Vite 穩定讀取
+    - echo "$CI_COMMIT_SHORT_SHA" > "$DEPLOY_DIR/client/.build-sha"
     - cd "$DEPLOY_DIR"
     - |
       # 防護檢查：防止 docker-compose 檔案將 host 的 dist 掛載進容器覆蓋 CI 建好的 image
