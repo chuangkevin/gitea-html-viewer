@@ -3,23 +3,14 @@
 # GitLab Runner 安裝與註冊腳本 (docker-host 專用)
 # ==============================================================================
 # 前置步驟 (取得 GitLab Project Runner Token)：
-# 1. 前往 GitLab 專案 -> Settings -> CI/CD -> Runners
-# 2. 點擊 "New project runner"
-# 3. Tags 填寫: dockerhost
-# 4. 點擊 "Create runner" 後複製取得之 project runner token (格式如 glrt-xxxxxxxx)
-# 5. 在 docker-host 執行此腳本 (需 root / sudo 權限)：
+# 1. 在 GitLab 專案 Settings → CI/CD → Runners → New project runner，Tags 欄填 dockerhost，建立後複製 glrt- 開頭 token
+# 2. 在 docker-host 執行此腳本 (需 root / sudo 權限)：
 #    REG_TOKEN="glrt-xxxxxxxxxxxx" sudo -E ./deploy/install-gitlab-runner.sh
 # ==============================================================================
 
 set -euo pipefail
 
 REG_TOKEN="${REG_TOKEN:-}"
-
-if [ -z "$REG_TOKEN" ]; then
-  echo "錯誤: 未提供 REG_TOKEN 環境變數。"
-  echo "使用範例: REG_TOKEN=\"glrt-your-token\" sudo -E $0"
-  exit 1
-fi
 
 echo "=== 1. 檢查並安裝 GitLab Runner ==="
 if command -v gitlab-runner &> /dev/null; then
@@ -40,13 +31,26 @@ else
 fi
 
 echo "=== 3. 註冊 GitLab Runner ==="
-sudo gitlab-runner register \
-  --non-interactive \
-  --url "https://gitlab.com" \
-  --token "$REG_TOKEN" \
-  --executor "shell" \
-  --description "docker-host-note" \
-  --tag-list "dockerhost"
+# 注意：tag 在 GitLab 網頁建立 runner 時填（本專案用 dockerhost），
+# 新版 token 流程不可在 CLI 指定 tag 等保留參數，否則 register 會 FATAL。
+if command -v gitlab-runner &>/dev/null && ( sudo gitlab-runner list 2>&1 | grep -q "docker-host-note" || ( [ -f /etc/gitlab-runner/config.toml ] && grep -q 'name = "docker-host-note"' /etc/gitlab-runner/config.toml ) ); then
+  echo "Runner 'docker-host-note' 已存在，跳過註冊步驟。"
+else
+  if [ -z "$REG_TOKEN" ]; then
+    echo "錯誤: 未提供 REG_TOKEN 環境變數。"
+    echo "使用範例: REG_TOKEN=\"glrt-your-token\" sudo -E $0"
+    exit 1
+  fi
+
+  sudo gitlab-runner register \
+    --non-interactive \
+    --url "https://gitlab.com" \
+    --token "$REG_TOKEN" \
+    --executor "shell" \
+    --description "docker-host-note"
+  echo "GitLab Runner 註冊完成。"
+fi
+# 說明：tag 在 GitLab 網頁建立 runner 時填（本專案用 dockerhost），新版 token 流程不可在 CLI 指定，否則 register 會 FATAL。
 
 echo "=== 4. 設定目錄權限說明 ==="
 # Shell Executor 執行時需要對部署目錄 /home/interagent/note 有讀寫權限。

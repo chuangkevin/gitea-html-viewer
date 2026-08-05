@@ -195,7 +195,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 
 1. **GitLab 專案建 Project Runner 拿 Token**：
    - 到 GitLab 專案 -> **Settings** -> **CI/CD** -> **Runners**。
-   - 點擊 **New project runner**，**Tags** 填寫 `dockerhost`。
+   - 點擊 **New project runner**，**Tags** 欄填寫 `dockerhost`（tag 在 GitLab 網頁建立 runner 時填）。
    - 建立後複製 project runner token（格式為 `glrt-xxxxxxxx`）。
 
 2. **docker-host 跑安裝腳本**：
@@ -215,6 +215,10 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 - **故障排查**：
   - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
   - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
+
+### 4. 新專案要接上這台 runner
+
+該專案建 project runner（tag 填 `dockerhost`）→ 在 docker-host 重跑本腳本（會跳過已安裝步驟）→ 該專案 `.gitlab-ci.yml` 的 deploy job 掛 `tags: [dockerhost]`。
 
 ## 手動部署 / 備援更新
 
