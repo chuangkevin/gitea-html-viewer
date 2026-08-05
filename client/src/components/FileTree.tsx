@@ -62,7 +62,29 @@ export function fileIcon(name: string): string {
   if (ext === "css") return "🎨";
   if (["js", "mjs", "ts", "jsx", "tsx"].includes(ext)) return "⚙️";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return "🖼️";
+  if (ext === "pdf") return "📕";
+  if (["zip", "tar", "gz", "7z", "rar"].includes(ext)) return "📦";
   return "📄";
+}
+
+function highlightMatch(text: string, query: string) {
+  if (!query) return text;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`(${escaped})`, "gi");
+  const parts = text.split(regex);
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === query.toLowerCase() ? (
+          <span key={i} className="bg-sky-800/60 text-sky-200 rounded px-0.5 font-semibold">
+            {part}
+          </span>
+        ) : (
+          part
+        )
+      )}
+    </>
+  );
 }
 
 interface Props {
@@ -88,6 +110,13 @@ export default function FileTree({
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const matchingPaths = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    return paths.filter((p) => p.toLowerCase().includes(q));
+  }, [paths, searchQuery]);
 
   // 開啟中的檔案：自動展開其所有上層資料夾
   useEffect(() => {
@@ -177,5 +206,64 @@ export default function FileTree({
 
   // 樹本體不吃 hooks 之外的東西，直接渲染
   const containerRef = useRef<HTMLDivElement>(null);
-  return <div ref={containerRef}>{renderNodes(tree, 0)}</div>;
+  return (
+    <div ref={containerRef} className="space-y-2">
+      <div className="relative">
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="搜尋檔名 / 路徑…"
+          className="w-full rounded bg-zinc-900 border border-zinc-800 pl-2 pr-7 py-1.5 text-xs outline-none focus:border-sky-600 font-mono text-zinc-200 placeholder:text-zinc-600"
+        />
+        {searchQuery && (
+          <button
+            onClick={() => setSearchQuery("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 text-xs"
+            title="清除"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {searchQuery.trim() ? (
+        <div className="space-y-1">
+          {matchingPaths.length === 0 ? (
+            <p className="text-xs text-zinc-500 py-2 font-mono">無符合搜尋項</p>
+          ) : (
+            <>
+              <ul className="space-y-0.5">
+                {matchingPaths.slice(0, 50).map((p) => {
+                  const isSelected = p === activePath;
+                  const fileName = p.split("/").pop() || p;
+                  return (
+                    <li key={p}>
+                      <div
+                        onClick={() => onSelectFile(p)}
+                        title={p}
+                        className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono cursor-pointer select-none truncate ${
+                          isSelected ? "bg-sky-950 text-sky-300" : "text-zinc-400 hover:bg-zinc-900"
+                        }`}
+                      >
+                        <span className="shrink-0 text-xs">{fileIcon(fileName)}</span>
+                        <span className="truncate">{highlightMatch(p, searchQuery.trim())}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+              {matchingPaths.length > 50 && (
+                <p className="text-xs text-zinc-500 font-mono pt-1 px-1">
+                  還有 {matchingPaths.length - 50} 筆…
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      ) : (
+        renderNodes(tree, 0)
+      )}
+    </div>
+  );
 }

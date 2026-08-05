@@ -123,13 +123,14 @@ export const github: Provider = {
     return Buffer.from(await res.arrayBuffer());
   },
 
-  async writeFile(token, projectPath, filePath, content, message, sha, _branch) {
-    // GitHub contents API 更新既有檔需要帶舊 sha；寫入預設分支。
+  async writeFile(token, projectPath, filePath, content, message, sha, _branch, _author, isBase64) {
+    // GitHub contents API 本來就吃 base64，isBase64 為 true 時直接把傳進來的字串當 content、不要再 encode 一次
+    const encodedContent = isBase64 ? content : Buffer.from(content, "utf8").toString("base64");
     const data = await gh<{ content: { sha: string } }>(token, `/repos/${projectPath}/contents/${encodePath(filePath)}`, {
       method: "PUT",
       body: JSON.stringify({
         message,
-        content: Buffer.from(content, "utf8").toString("base64"),
+        content: encodedContent,
         ...(sha ? { sha } : {}),
       }),
     });

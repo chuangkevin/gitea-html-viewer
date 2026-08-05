@@ -197,13 +197,14 @@ export const gitlab: Provider = {
     return Buffer.from(await res.arrayBuffer());
   },
 
-  async writeFile(token, projectPath, filePath, content, message, _sha, branch, author) {
+  async writeFile(token, projectPath, filePath, content, message, _sha, branch, author, isBase64) {
     const url = `/projects/${pid(projectPath)}/repository/files/${encFile(filePath)}`;
     // 團隊模式：token 是某個人的，但 commit 的 author 要記成該成員
     // （committer 仍是 token 帳號，這是 GitLab API 的行為）。
+    const encodedContent = isBase64 ? content : Buffer.from(content, "utf8").toString("base64");
     const body = JSON.stringify({
       branch,
-      content: Buffer.from(content, "utf8").toString("base64"),
+      content: encodedContent,
       encoding: "base64",
       commit_message: message,
       ...(author?.name ? { author_name: author.name } : {}),

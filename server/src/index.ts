@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
+import { marked } from "marked";
 import {
   createSession,
   getSession,
@@ -84,7 +85,7 @@ process.on("unhandledRejection", (err) => {
 });
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "30mb" }));
 app.use(cookieParser());
 
 const PORT = Number(process.env.PORT || 3210);
@@ -403,14 +404,16 @@ app.post("/api/repos", async (req, res) => {
 
 // ── files ──────────────────────────────────────────────
 const MIME: Record<string, string> = {
+  pdf: "application/pdf",
   html: "text/html; charset=utf-8",
   htm: "text/html; charset=utf-8",
-  css: "text/css; charset=utf-8",
-  js: "text/javascript; charset=utf-8",
-  mjs: "text/javascript; charset=utf-8",
-  json: "application/json; charset=utf-8",
+  css: "text/css",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  json: "application/json",
   md: "text/markdown; charset=utf-8",
   txt: "text/plain; charset=utf-8",
+  csv: "text/csv",
   svg: "image/svg+xml",
   png: "image/png",
   jpg: "image/jpeg",
@@ -420,18 +423,29 @@ const MIME: Record<string, string> = {
   ico: "image/x-icon",
   woff: "font/woff",
   woff2: "font/woff2",
+  zip: "application/zip",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 };
 function mimeFor(p: string): string {
   const ext = p.split(".").pop()?.toLowerCase() ?? "";
   return MIME[ext] ?? "application/octet-stream";
 }
 
-function sendRaw(res: express.Response, filePath: string, buf: Buffer): void {
+function sendRaw(res: express.Response, filePath: string, buf: Buffer, asAttachment?: boolean): void {
   const mime = mimeFor(filePath);
   res.setHeader("Content-Type", mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (mime.startsWith("text/html")) {
     res.setHeader("Content-Security-Policy", "sandbox allow-scripts");
+  }
+  if (asAttachment) {
+    const name = path.basename(filePath) || "file";
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`
+    );
   }
   res.send(buf);
 }
@@ -508,7 +522,8 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
     const buf = await p.readFileRaw(actor.token, project, filePath);
-    sendRaw(res, filePath, buf);
+    const download = req.query.download !== undefined && req.query.download !== "0" && req.query.download !== "false";
+    sendRaw(res, filePath, buf, download);
   } catch (e) {
     if (e instanceof ProviderError) {
       res.status(e.status === 404 ? 404 : 502).end();
@@ -588,7 +603,245 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
     const buf = await getProvider(provider).readFileRaw(token, project, filePath);
-    sendRaw(res, filePath, buf);
+    const download = req.query.download !== undefined && req.query.download !== "0" && req.query.download !== "false";
+    sendRaw(res, filePath, buf, download);
+  } catch (e) {
+    if (e instanceof ProviderError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
+  }
+});
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderSitePage(title: string, bodyHtml: string): string {
+  return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --fg: #c9d1d9;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --accent: #58a6ff;
+      --muted: #8b949e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background-color: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      margin: 0;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 46rem;
+      margin: 0 auto;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1, h2, h3, h4, h5, h6 {
+      color: #f0f6fc;
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+    h1 { border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+    h2 { border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+    hr {
+      height: 0.25em;
+      padding: 0;
+      margin: 2.5rem 0;
+      background-color: var(--border);
+      border: 0;
+    }
+    pre {
+      background-color: var(--code-bg);
+      border-radius: 6px;
+      padding: 1rem;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+    }
+    code {
+      background-color: var(--code-bg);
+      padding: 0.2em 0.4em;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+      font-size: 85%;
+    }
+    pre code {
+      background-color: transparent;
+      padding: 0;
+      border-radius: 0;
+    }
+    blockquote {
+      margin: 0;
+      padding: 0 1em;
+      color: var(--muted);
+      border-left: 0.25em solid var(--border);
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1rem 0;
+    }
+    table th, table td {
+      padding: 6px 13px;
+      border: 1px solid var(--border);
+    }
+    table tr:nth-child(2n) {
+      background-color: #161b22;
+    }
+    img { max-width: 100%; height: auto; }
+    .doc-section { margin-bottom: 2rem; }
+    .doc-header {
+      font-size: 1.1rem;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+      background: #161b22;
+      padding: 0.4rem 0.8rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      margin-bottom: 1.5rem;
+    }
+    .footer-notice {
+      margin-top: 3rem;
+      padding: 1rem;
+      text-align: center;
+      color: var(--muted);
+      border-top: 1px dashed var(--border);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    ${bodyHtml}
+  </div>
+</body>
+</html>`;
+}
+
+// GET /site/:provider/:project —— 分享為獨立網站
+app.get("/site/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const p = getProvider(provider);
+    const project = projectParam(req);
+    const actor = actorFor(req, provider, project);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required" });
+      return;
+    }
+
+    const f = typeof req.query.f === "string" ? req.query.f : undefined;
+    const dir = typeof req.query.dir === "string" ? req.query.dir : undefined;
+
+    if (!f && dir === undefined) {
+      res.status(400).json({ error: "missing f or dir parameter" });
+      return;
+    }
+
+    if (f) {
+      const ext = path.extname(f).toLowerCase();
+      if (ext === ".html" || ext === ".htm") {
+        const buf = await p.readFileRaw(actor.token, project, f);
+        let html = buf.toString("utf8");
+        const dirName = path.dirname(f).replace(/\\/g, "/");
+        const folderPath = dirName === "." || dirName === "" ? "" : dirName + "/";
+        const baseHref = `/raw/${provider}/${encodeURIComponent(project)}/${folderPath}`;
+
+        if (/<head\b[^>]*>/i.test(html)) {
+          html = html.replace(/(<head\b[^>]*>)/i, `$1\n  <base href="${baseHref}">`);
+        } else {
+          html = `<base href="${baseHref}">\n` + html;
+        }
+
+        // Note: Content-Security-Policy: sandbox is intentionally omitted to allow JS execution for standalone site view.
+        // Trust model: Internal / self-hosted usage where repository contents are treated as trusted.
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(html);
+        return;
+      }
+
+      if (ext === ".md") {
+        const repoFile = await p.readFile(actor.token, project, f);
+        // Note: Server-side markdown rendering for /site router does not sanitize HTML.
+        // Trust model: Repository contents are trusted for internal usage.
+        const contentHtml = await marked.parse(repoFile.content);
+        const pageTitle = f.split("/").pop() || project;
+        const pageHtml = renderSitePage(pageTitle, contentHtml);
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(pageHtml);
+        return;
+      }
+
+      // 其他副檔名：302 轉到 /raw/<provider>/<project>/<f>
+      const encodedF = f.split("/").map(encodeURIComponent).join("/");
+      res.redirect(302, `/raw/${provider}/${encodeURIComponent(project)}/${encodedF}`);
+      return;
+    }
+
+    // query dir=<資料夾路徑>（沒有 f 時）
+    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const targetDir = (dir || "").trim().replace(/^\/+|\/+$/g, "");
+    const mdFiles = files
+      .filter((file) => {
+        if (!file.path.toLowerCase().endsWith(".md")) return false;
+        if (!targetDir || targetDir === ".") return true;
+        return file.path.startsWith(targetDir + "/");
+      })
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    const sliceFiles = mdFiles.slice(0, 50);
+    const renderedParts: string[] = [];
+
+    for (let i = 0; i < sliceFiles.length; i++) {
+      const file = sliceFiles[i];
+      const repoFile = await p.readFile(actor.token, project, file.path);
+      // Note: Server-side markdown rendering for /site router does not sanitize HTML.
+      // Trust model: Repository contents are trusted for internal usage.
+      const fileHtml = await marked.parse(repoFile.content);
+      const relPath =
+        targetDir && targetDir !== "." && file.path.startsWith(targetDir + "/")
+          ? file.path.slice(targetDir.length + 1)
+          : file.path;
+
+      let section = "";
+      if (i > 0) {
+        section += `<hr>\n`;
+      }
+      section += `<div class="doc-section">\n`;
+      section += `  <div class="doc-header">${escapeHtml(relPath)}</div>\n`;
+      section += fileHtml + `\n</div>`;
+      renderedParts.push(section);
+    }
+
+    if (mdFiles.length > 50) {
+      renderedParts.push(`<div class="footer-notice">僅顯示前 50 份</div>`);
+    }
+
+    const pageTitle = targetDir || project;
+    const bodyHtml = renderedParts.join("\n");
+    const pageHtml = renderSitePage(pageTitle, bodyHtml);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(pageHtml);
   } catch (e) {
     if (e instanceof ProviderError) {
       res.status(e.status === 404 ? 404 : 502).end();
@@ -631,15 +884,44 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     }
 
     const filePath = (req.params as Record<string, string>)[0] || "";
-    if (!filePath.toLowerCase().endsWith(".md")) {
-      res.status(400).json({ error: "note-bridge 只管理 .md 檔" });
+
+    // 檔名安全檢查
+    if (filePath.startsWith("/") || filePath.includes("\\") || filePath.includes("..")) {
+      res.status(400).json({ error: "invalid_path" });
       return;
     }
-    const { content, sha, message } = req.body as { content?: string; sha?: string; message?: string };
-    if (typeof content !== "string") {
+
+    const { content, contentBase64, sha, message } = req.body as {
+      content?: string;
+      contentBase64?: string;
+      sha?: string;
+      message?: string;
+    };
+
+    let writeContent: string;
+    let isBase64 = false;
+
+    if (typeof contentBase64 === "string") {
+      writeContent = contentBase64;
+      isBase64 = true;
+    } else if (typeof content === "string") {
+      writeContent = content;
+      isBase64 = false;
+    } else {
       res.status(400).json({ error: "content required" });
       return;
     }
+
+    const MAX_SIZE = 20 * 1024 * 1024;
+    const byteLength = isBase64
+      ? Buffer.from(writeContent, "base64").byteLength
+      : Buffer.byteLength(writeContent, "utf8");
+
+    if (byteLength > MAX_SIZE) {
+      res.status(413).json({ error: "file_too_large" });
+      return;
+    }
+
     const p = getProvider(provider);
     const info = await p.getRepo(actor.token, project); // 取預設分支（GitLab 寫入需要）
     if (!info.canPush) {
@@ -651,11 +933,12 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       actor.token,
       project,
       filePath,
-      content,
+      writeContent,
       commitMsg,
       sha,
       info.defaultBranch,
-      actor.author // 團隊模式 / open guest 才有；個人登入時 undefined = 用 token 帳號
+      actor.author, // 團隊模式 / open guest 才有；個人登入時 undefined = 用 token 帳號
+      isBase64
     );
     res.json(result);
   } catch (e) {

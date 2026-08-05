@@ -65,7 +65,10 @@ export interface PublicDoc {
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || `HTTP ${res.status}`);
+    const err = new Error(body.error || `HTTP ${res.status}`);
+    (err as any).status = res.status;
+    (err as any).code = body.error;
+    throw err;
   }
   return (await res.json()) as T;
 }
@@ -104,11 +107,17 @@ export const api = {
     ),
   readFile: (ref: string, path: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
-  saveFile: (ref: string, path: string, content: string, sha?: string) =>
+  saveFile: (ref: string, path: string, content: string, sha?: string, message?: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, sha }),
+      body: JSON.stringify({ content, sha, message }),
+    }).then((r) => j<{ sha: string }>(r)),
+  uploadFile: (ref: string, path: string, contentBase64: string, message?: string) =>
+    fetch(`/api/file/${ref}/${encFilePath(path)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentBase64, message }),
     }).then((r) => j<{ sha: string }>(r)),
   setGuestName: (name: string) =>
     fetch("/api/guest-name", {

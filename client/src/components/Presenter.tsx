@@ -6,14 +6,27 @@ import { fileIcon } from "./FileTree";
  *  sandbox iframe（獨立分享網站）、圖片直接顯示、其他以原始碼呈現。
  *  loadText 拿 md/原始碼內容，rawUrl 給 iframe / 圖片 src。 */
 
-export type ItemKind = "md" | "html" | "image" | "text";
+export type ItemKind = "md" | "html" | "image" | "pdf" | "text" | "other";
+
+const TEXT_EXTENSIONS = new Set([
+  "txt", "json", "csv", "yml", "yaml", "log",
+  "js", "mjs", "cjs", "ts", "jsx", "tsx",
+  "css", "scss", "less", "sass",
+  "py", "sh", "bash", "zsh", "fish",
+  "go", "rs", "c", "cpp", "h", "hpp", "cc", "cxx",
+  "java", "kt", "kts", "rb", "php", "sql", "xml", "toml", "env",
+  "gitignore", "dockerfile", "diff", "patch", "ini", "conf", "config", "properties", "mdx"
+]);
 
 export function kindOf(path: string): ItemKind {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const fileName = path.split("/").pop() || "";
+  const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() ?? "" : "";
   if (ext === "md") return "md";
   if (ext === "html" || ext === "htm") return "html";
   if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return "image";
-  return "text";
+  if (ext === "pdf") return "pdf";
+  if (TEXT_EXTENSIONS.has(ext) || !ext) return "text";
+  return "other";
 }
 
 interface Props {
@@ -52,7 +65,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
   }, [title]);
 
   useEffect(() => {
-    if (!path || kind === "html" || kind === "image" || texts[path] !== undefined) return;
+    if (!path || kind === "html" || kind === "image" || kind === "pdf" || kind === "other" || texts[path] !== undefined) return;
     loadText(path)
       .then((c) => setTexts((t) => ({ ...t, [path]: c })))
       .catch((e) => setError(String((e as Error).message || e)));
@@ -86,6 +99,13 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
           <div className="h-full grid place-items-center p-6 overflow-auto">
             <img src={rawUrl(path)} alt={path} className="max-w-full max-h-full" />
           </div>
+        ) : kind === "pdf" ? (
+          <iframe
+            key={path}
+            src={`${rawUrl(path)}#view=FitH`}
+            className="w-full h-full border-0 bg-white"
+            title={path}
+          />
         ) : text === undefined ? (
           <div className="h-full grid place-items-center text-zinc-600">載入中…</div>
         ) : kind === "md" ? (

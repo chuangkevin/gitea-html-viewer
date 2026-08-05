@@ -44,6 +44,15 @@ export default function Workspace() {
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
   const [reloadKey, setReloadKey] = useState(0); // 換身分後強制重讀檔案樹與檔案內容
+  const [dirViewMode, setDirViewMode] = useState<"continuous" | "list">("continuous");
+  const [folderMdContents, setFolderMdContents] = useState<Record<string, string>>({});
+  const [loadedCount, setLoadedCount] = useState(0);
+  const [isFolderLoading, setIsFolderLoading] = useState(false);
+  const [copiedShare, setCopiedShare] = useState(false);
+  const [copiedSite, setCopiedSite] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const dragCounter = useRef(0);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -102,7 +111,8 @@ export default function Workspace() {
     if (!activePath) return;
     setSave("clean");
     setShareUrl(null);
-    if (kindOf(activePath) === "html" || kindOf(activePath) === "image") return;
+    const k = kindOf(activePath);
+    if (k !== "md" && k !== "text" && k !== "html") return;
     api
       .readFile(refPath, activePath)
       .then((f) => {
@@ -218,6 +228,154 @@ export default function Workspace() {
 
   const dirParam = params.get("dir");
   const cleanDir = useMemo(() => (dirParam || "").replace(/^\/+|\/+$/g, ""), [dirParam]);
+
+  const targetUploadDir = useMemo(() => {
+    if (params.has("dir")) return cleanDir;
+    if (activePath && activePath.includes("/")) {
+      return activePath.split("/").slice(0, -1).join("/");
+    }
+    return "";
+  }, [params, cleanDir, activePath]);
+
+  const targetDirLabel = targetUploadDir ? targetUploadDir : "根目錄";
+
+  const getCurrentDirContext = useCallback(() => {
+    if (params.has("dir")) return cleanDir;
+    if (activeFolder) return activeFolder;
+    if (activePath && activePath.includes("/")) {
+      return activePath.split("/").slice(0, -1).join("/");
+    }
+    return "";
+  }, [params, cleanDir, activeFolder, activePath]);
+
+  async function handleCreateFolder() {
+    if (!canWrite) return;
+    const input = window.prompt("請輸入資料夾名稱／路徑（例如 docs/2026/q3）：");
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setError("資料夾名稱不可為空");
+      return;
+    }
+    if (trimmed.includes("..")) {
+      setError("資料夾路徑不可包含 ..");
+      return;
+    }
+    if (trimmed.startsWith("/")) {
+      setError("資料夾路徑不可以 / 開頭");
+      return;
+    }
+    if (trimmed.replace(/\//g, "").trim() === "") {
+      setError("資料夾名稱不可只有斜線");
+      return;
+    }
+
+    const baseDir = getCurrentDirContext();
+    let folderPath = trimmed.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+    if (baseDir && !folderPath.startsWith(baseDir + "/") && folderPath !== baseDir) {
+      folderPath = `${baseDir}/${folderPath}`;
+    }
+
+    const folderLeaf = folderPath.split("/").pop() || folderPath;
+    const newFilePath = `${folderPath}/README.md`;
+    const contentStr = `# ${folderLeaf}\n`;
+    const commitMsg = `docs: 新增資料夾 ${folderPath}`;
+
+    try {
+      await api.saveFile(refPath, newFilePath, contentStr, undefined, commitMsg);
+      await loadFiles();
+      setParams({ f: newFilePath });
+    } catch (err: any) {
+      setError(String(err.message || err));
+    }
+  }
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current++;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current--;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    dragCounter.current = 0;
+
+    if (!canWrite) {
+      setError("唯讀，無法上傳");
+      return;
+    }
+
+    const droppedFiles = Array.from(e.dataTransfer.files || []);
+    if (droppedFiles.length === 0) return;
+
+    const failures: string[] = [];
+    let lastUploadedPath = "";
+
+    for (let i = 0; i < droppedFiles.length; i++) {
+      const file = droppedFiles[i];
+      const cleanFileName = file.name.replace(/\\/g, "-");
+      const filePath = targetUploadDir ? `${targetUploadDir}/${cleanFileName}` : cleanFileName;
+
+      setUploadProgress(`上傳中 ${i + 1} / ${droppedFiles.length}：${cleanFileName}`);
+
+      try {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = reader.result as string;
+            const b64 = res.includes(",") ? res.split(",")[1] : res;
+            resolve(b64);
+          };
+          reader.onerror = (err) => reject(err);
+          reader.readAsDataURL(file);
+        });
+
+        const message = `docs: 上傳 ${cleanFileName}`;
+        await api.uploadFile(refPath, filePath, base64, message);
+        lastUploadedPath = filePath;
+      } catch (err: any) {
+        let msg = err.message || "上傳失敗";
+        if (err.status === 413 || err.code === "file_too_large" || err.message === "file_too_large") {
+          msg = "檔案超過 20MB 上限";
+        } else if (err.status === 401 || err.status === 403) {
+          msg = "沒有寫入權限，請先登入或選身分";
+        }
+        failures.push(`${cleanFileName}: ${msg}`);
+      }
+    }
+
+    setUploadProgress(null);
+    await loadFiles();
+
+    if (droppedFiles.length === 1 && failures.length === 0 && lastUploadedPath) {
+      setParams({ f: lastUploadedPath });
+    }
+
+    if (failures.length > 0) {
+      setError(`以下檔案上傳失敗：\n${failures.join("\n")}`);
+    }
+  };
+
   const dirViewItems = useMemo(() => {
     if (!params.has("dir") || !files) return { subfolders: [], directFiles: [] };
     const prefix = cleanDir ? cleanDir + "/" : "";
@@ -243,6 +401,127 @@ export default function Workspace() {
       directFiles: directFiles.sort(),
     };
   }, [params, cleanDir, files]);
+
+  const targetPrefix = cleanDir ? cleanDir + "/" : "";
+  const matchingMdFiles = useMemo(() => {
+    if (!files || !params.has("dir")) return [];
+    return files
+      .filter((f) => {
+        if (!f.toLowerCase().endsWith(".md")) return false;
+        if (!cleanDir) return true;
+        return f.startsWith(targetPrefix);
+      })
+      .sort((a, b) => a.localeCompare(b));
+  }, [files, params, cleanDir, targetPrefix]);
+
+  const maxFiles = 50;
+  const cappedMdFiles = useMemo(() => matchingMdFiles.slice(0, maxFiles), [matchingMdFiles]);
+  const isCapped = matchingMdFiles.length > maxFiles;
+
+  useEffect(() => {
+    if (!params.has("dir") || cappedMdFiles.length === 0) {
+      setFolderMdContents({});
+      setLoadedCount(0);
+      setIsFolderLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsFolderLoading(true);
+    setFolderMdContents({});
+    setLoadedCount(0);
+
+    async function loadAll() {
+      const total = cappedMdFiles.length;
+      const contentsMap: Record<string, string> = {};
+
+      const initialBatchSize = Math.min(5, total);
+      const initialFiles = cappedMdFiles.slice(0, initialBatchSize);
+
+      await Promise.all(
+        initialFiles.map(async (filePath) => {
+          try {
+            const res = await api.readFile(refPath, filePath);
+            if (!cancelled) {
+              contentsMap[filePath] = res.content;
+            }
+          } catch {
+            if (!cancelled) {
+              contentsMap[filePath] = `*無法載入檔案: ${filePath}*`;
+            }
+          }
+        })
+      );
+
+      if (cancelled) return;
+      setFolderMdContents({ ...contentsMap });
+      setLoadedCount(initialBatchSize);
+
+      for (let i = initialBatchSize; i < total; i++) {
+        if (cancelled) return;
+        const filePath = cappedMdFiles[i];
+        try {
+          const res = await api.readFile(refPath, filePath);
+          if (!cancelled) {
+            contentsMap[filePath] = res.content;
+            setFolderMdContents({ ...contentsMap });
+            setLoadedCount(i + 1);
+          }
+        } catch {
+          if (!cancelled) {
+            contentsMap[filePath] = `*無法載入檔案: ${filePath}*`;
+            setFolderMdContents({ ...contentsMap });
+            setLoadedCount(i + 1);
+          }
+        }
+      }
+
+      if (!cancelled) {
+        setIsFolderLoading(false);
+      }
+    }
+
+    void loadAll();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params, cleanDir, cappedMdFiles, refPath, reloadKey]);
+
+  async function copyTextToClipboard(text: string): Promise<boolean> {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // fallback to prompt
+      }
+    }
+    prompt("請複製以下連結：", text);
+    return true;
+  }
+
+  function handleCopyShare() {
+    const paramStr = params.has("dir")
+      ? `?dir=${encodeURIComponent(cleanDir)}`
+      : `?f=${encodeURIComponent(activePath)}`;
+    const url = `${window.location.origin}/edit/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
+    void copyTextToClipboard(url).then(() => {
+      setCopiedShare(true);
+      setTimeout(() => setCopiedShare(false), 2000);
+    });
+  }
+
+  function handleCopySite() {
+    const paramStr = params.has("dir")
+      ? `?dir=${encodeURIComponent(cleanDir)}`
+      : `?f=${encodeURIComponent(activePath)}`;
+    const url = `${window.location.origin}/site/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
+    void copyTextToClipboard(url).then(() => {
+      setCopiedSite(true);
+      setTimeout(() => setCopiedSite(false), 2000);
+    });
+  }
 
   type MentionItem = {
     type: "file" | "dir";
@@ -453,7 +732,7 @@ export default function Workspace() {
           </span>
         )}
         <div className="flex-1" />
-        {activePath && activeKind === "md" && !readOnly && (
+        {activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
           <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
@@ -474,7 +753,25 @@ export default function Workspace() {
             🎞️ 簡報
           </button>
         )}
-        {activePath && activeKind === "md" && canWrite && (
+        {(activePath || params.has("dir")) && (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleCopyShare}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="分享＝在 note 裡開啟"
+            >
+              {copiedShare ? "已複製 ✓" : "🔗 分享"}
+            </button>
+            <button
+              onClick={handleCopySite}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="獨立網站＝乾淨的網頁、沒有 note 介面"
+            >
+              {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
+            </button>
+          </div>
+        )}
+        {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
           <>
             {/* 分享連結的內容是用「分享者的 session」持續拉取，團隊身分沒有 session，
                 所以分享功能仍只開給個人 OAuth 登入者 */}
@@ -483,7 +780,7 @@ export default function Workspace() {
                 onClick={handleShare}
                 className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
               >
-                分享
+                分享 Token
               </button>
             )}
             <button
@@ -558,14 +855,40 @@ export default function Workspace() {
       )}
       {error && (
         <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-sm text-red-300 flex">
-          <span className="flex-1">{error}</span>
+          <span className="flex-1 whitespace-pre-wrap">{error}</span>
           <button onClick={() => setError("")}>✕</button>
+        </div>
+      )}
+      {uploadProgress && (
+        <div className="border-b border-sky-900/50 bg-sky-950/60 px-4 py-2 text-sm text-sky-200 flex items-center gap-2 font-mono">
+          <span className="animate-pulse">⏳</span>
+          <span>{uploadProgress}</span>
         </div>
       )}
 
       <div className="flex-1 flex min-h-0">
         {/* 檔案樹 */}
-        <aside className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block">
+        <aside
+          className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block relative"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragging && (
+            <div
+              className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-4 text-center backdrop-blur-sm pointer-events-none ${
+                canWrite
+                  ? "border-sky-500 bg-sky-950/80 text-sky-200"
+                  : "border-red-500 bg-red-950/80 text-red-200"
+              }`}
+            >
+              <div className="text-3xl mb-1">{canWrite ? "📥" : "🔒"}</div>
+              <div className="font-mono text-xs font-semibold">
+                {canWrite ? `放開以上傳到 ${targetDirLabel}` : "唯讀，無法上傳"}
+              </div>
+            </div>
+          )}
           {canWrite && (
             <div className="flex gap-1.5 mb-3">
               <input
@@ -578,8 +901,16 @@ export default function Workspace() {
               <button
                 onClick={handleCreate}
                 className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700"
+                title="新增檔案"
               >
                 ＋
+              </button>
+              <button
+                onClick={handleCreateFolder}
+                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 font-mono text-xs flex items-center justify-center whitespace-nowrap"
+                title="新增資料夾"
+              >
+                📁+
               </button>
             </div>
           )}
@@ -610,12 +941,15 @@ export default function Workspace() {
             <FileTree
               paths={files}
               activePath={activePath}
-              activeFolder={activeFolder}
+              activeFolder={params.has("dir") ? cleanDir : activeFolder}
               onSelectFile={(f) => {
                 setActiveFolder("");
                 setParams({ f });
               }}
-              onSelectFolder={setActiveFolder}
+              onSelectFolder={(dir) => {
+                setActiveFolder(dir);
+                setParams({ dir });
+              }}
               presentMode={presentMode}
               checked={checked}
               onCheckedChange={setChecked}
@@ -645,56 +979,181 @@ export default function Workspace() {
         </aside>
 
         {/* 編輯／預覽 */}
-        {params.has("dir") ? (
+        <main
+          className="flex-1 flex flex-col min-w-0 min-h-0 relative overflow-hidden"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragging && (
+            <div
+              className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-6 text-center backdrop-blur-sm pointer-events-none ${
+                canWrite
+                  ? "border-sky-500 bg-sky-950/80 text-sky-200"
+                  : "border-red-500 bg-red-950/80 text-red-200"
+              }`}
+            >
+              <div className="text-5xl mb-3">{canWrite ? "📥" : "🔒"}</div>
+              <div className="font-mono text-base font-semibold">
+                {canWrite ? `放開以上傳到 ${targetDirLabel}` : "唯讀，無法上傳"}
+              </div>
+            </div>
+          )}
+          {params.has("dir") ? (
           <div className="flex-1 overflow-auto p-6 max-w-3xl mx-auto w-full">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-4">
-              <h2 className="text-xl font-bold font-mono text-zinc-100 flex items-center gap-2">
-                📁 {cleanDir || "根目錄"}
-              </h2>
-              {cleanDir && (
-                <button
-                  onClick={() => {
-                    const parentDir = cleanDir.split("/").slice(0, -1).join("/");
-                    setParams({ dir: parentDir });
-                  }}
-                  className="text-sm border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white px-3 py-1.5 rounded flex items-center gap-1"
-                >
-                  ⬆️ 上一層
-                </button>
-              )}
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-6">
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl font-bold font-mono text-zinc-100 flex items-center gap-2">
+                  📁 {cleanDir || "根目錄"}
+                </h2>
+                {matchingMdFiles.length > 0 && dirViewMode === "continuous" && (
+                  isFolderLoading ? (
+                    <span className="text-xs text-amber-400 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded font-mono">
+                      載入中 …（已載入 {loadedCount} / {cappedMdFiles.length} 份）
+                    </span>
+                  ) : (
+                    <span className="text-xs text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded font-mono">
+                      已載入 {loadedCount} / {cappedMdFiles.length} 份
+                    </span>
+                  )
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {cleanDir && (
+                  <button
+                    onClick={() => {
+                      const parentDir = cleanDir.split("/").slice(0, -1).join("/");
+                      setParams({ dir: parentDir });
+                    }}
+                    className="text-sm border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white px-3 py-1.5 rounded flex items-center gap-1"
+                  >
+                    ⬆️ 上一層
+                  </button>
+                )}
+                {matchingMdFiles.length > 0 && (
+                  <button
+                    onClick={() => setDirViewMode((m) => (m === "continuous" ? "list" : "continuous"))}
+                    className="text-sm border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white px-3 py-1.5 rounded flex items-center gap-1"
+                  >
+                    {dirViewMode === "continuous" ? "📋 切換為清單" : "📖 切換為連續閱讀"}
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="divide-y divide-zinc-900 border border-zinc-800 rounded-lg overflow-hidden bg-zinc-950">
-              {dirViewItems.subfolders.map((sf) => {
-                const folderName = sf.split("/").pop() || sf;
-                return (
-                  <button
-                    key={sf}
-                    onClick={() => setParams({ dir: sf })}
-                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
-                  >
-                    <span>📁</span>
-                    <span className="font-semibold">{folderName}/</span>
-                  </button>
-                );
-              })}
-              {dirViewItems.directFiles.map((df) => {
-                const fileName = df.split("/").pop() || df;
-                return (
-                  <button
-                    key={df}
-                    onClick={() => setParams({ f: df })}
-                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
-                  >
-                    <span>📄</span>
-                    <span>{fileName}</span>
-                  </button>
-                );
-              })}
-              {dirViewItems.subfolders.length === 0 && dirViewItems.directFiles.length === 0 && (
-                <div className="p-6 text-center text-zinc-500 text-sm">此資料夾是空的</div>
-              )}
-            </div>
+            {matchingMdFiles.length === 0 ? (
+              <div>
+                <div className="p-4 mb-4 rounded bg-amber-950/40 border border-amber-800/50 text-amber-300 text-sm">
+                  這個資料夾沒有可閱讀的 .md
+                </div>
+                <div className="divide-y divide-zinc-900 border border-zinc-800 rounded-lg overflow-hidden bg-zinc-950">
+                  {dirViewItems.subfolders.map((sf) => {
+                    const folderName = sf.split("/").pop() || sf;
+                    return (
+                      <button
+                        key={sf}
+                        onClick={() => setParams({ dir: sf })}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
+                      >
+                        <span>📁</span>
+                        <span className="font-semibold">{folderName}/</span>
+                      </button>
+                    );
+                  })}
+                  {dirViewItems.directFiles.map((df) => {
+                    const fileName = df.split("/").pop() || df;
+                    return (
+                      <button
+                        key={df}
+                        onClick={() => setParams({ f: df })}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
+                      >
+                        <span>📄</span>
+                        <span>{fileName}</span>
+                      </button>
+                    );
+                  })}
+                  {dirViewItems.subfolders.length === 0 && dirViewItems.directFiles.length === 0 && (
+                    <div className="p-6 text-center text-zinc-500 text-sm">此資料夾是空的</div>
+                  )}
+                </div>
+              </div>
+            ) : dirViewMode === "list" ? (
+              <div className="divide-y divide-zinc-900 border border-zinc-800 rounded-lg overflow-hidden bg-zinc-950">
+                {dirViewItems.subfolders.map((sf) => {
+                  const folderName = sf.split("/").pop() || sf;
+                  return (
+                    <button
+                      key={sf}
+                      onClick={() => setParams({ dir: sf })}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
+                    >
+                      <span>📁</span>
+                      <span className="font-semibold">{folderName}/</span>
+                    </button>
+                  );
+                })}
+                {dirViewItems.directFiles.map((df) => {
+                  const fileName = df.split("/").pop() || df;
+                  return (
+                    <button
+                      key={df}
+                      onClick={() => setParams({ f: df })}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
+                    >
+                      <span>📄</span>
+                      <span>{fileName}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="space-y-8">
+                {cappedMdFiles.map((p, idx) => {
+                  const rawMd = folderMdContents[p];
+                  if (rawMd === undefined) {
+                    return (
+                      <div key={p} className="p-4 border border-zinc-800/60 rounded bg-zinc-950/40 text-xs text-zinc-500 font-mono">
+                        📄 {p} (載入中…)
+                      </div>
+                    );
+                  }
+                  const itemLinkCtx: LinkContext = {
+                    provider,
+                    project: projectPath,
+                    currentPath: p,
+                    files: files || [],
+                  };
+                  const itemHtml = renderMarkdown(rawMd, itemLinkCtx);
+                  return (
+                    <div key={p} className="mb-8">
+                      {idx > 0 && <hr className="my-8 border-zinc-800" />}
+                      <div className="flex items-center gap-2 border-b border-zinc-800 pb-2 mb-4">
+                        <span className="text-zinc-500 text-sm font-mono">📄</span>
+                        <button
+                          onClick={() => setParams({ f: p })}
+                          className="text-base font-semibold font-mono text-sky-400 hover:underline hover:text-sky-300 text-left"
+                          title="點擊切換至單檔閱讀"
+                        >
+                          {p}
+                        </button>
+                      </div>
+                      <article
+                        className="doc max-w-none"
+                        onClick={handlePreviewClick}
+                        dangerouslySetInnerHTML={{ __html: itemHtml }}
+                      />
+                    </div>
+                  );
+                })}
+                {isCapped && (
+                  <div className="mt-8 p-4 text-center border-t border-zinc-800 text-xs text-zinc-500 font-mono">
+                    （已達 50 份檔案上限，其餘檔案未載入）
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : activeFolder ? (
           <div className="flex-1 grid place-items-center text-center px-6">
@@ -715,27 +1174,87 @@ export default function Workspace() {
           <div className="flex-1 grid place-items-center text-zinc-600 text-base">
             從左側選擇檔案{canWrite ? "，或建立新檔" : ""}
           </div>
-        ) : activeKind === "html" ? (
-          // 獨立分享網站預覽:sandbox iframe,相對 css/js 由 /raw 供應
-          <iframe
-            key={activePath}
-            src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
-            sandbox="allow-scripts"
-            className="flex-1 bg-white"
-            title={activePath}
-          />
-        ) : activeKind === "image" ? (
-          <div className="flex-1 grid place-items-center p-6 overflow-auto">
-            <img
-              src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
-              alt={activePath}
-              className="max-w-full max-h-full"
+        ) : activeKind === "pdf" ? (
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="border-b border-zinc-800 px-4 py-2 flex items-center justify-between bg-zinc-950/50 shrink-0">
+              <span className="font-mono text-sm text-zinc-300 truncate">📕 {activePath}</span>
+              <a
+                href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                download
+                className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
+              >
+                ⬇️ 下載
+              </a>
+            </div>
+            <iframe
+              src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}#view=FitH`}
+              className="w-full flex-1 border-0 bg-white"
+              title={activePath}
             />
           </div>
+        ) : activeKind === "image" ? (
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="border-b border-zinc-800 px-4 py-2 flex items-center justify-between bg-zinc-950/50 shrink-0">
+              <span className="font-mono text-sm text-zinc-300 truncate">🖼️ {activePath}</span>
+              <a
+                href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                download
+                className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
+              >
+                ⬇️ 下載
+              </a>
+            </div>
+            <div className="flex-1 grid place-items-center p-6 overflow-auto bg-zinc-950/30">
+              <img
+                src={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+                alt={activePath}
+                className="max-w-full max-h-full object-contain"
+              />
+            </div>
+          </div>
+        ) : activeKind === "other" ? (
+          <div className="flex-1 grid place-items-center p-6">
+            <div className="border border-zinc-800 bg-zinc-950 p-8 rounded-xl max-w-md w-full text-center space-y-4 shadow-xl">
+              <div className="text-5xl">📦</div>
+              <div className="font-mono font-semibold text-lg text-zinc-100 truncate" title={activePath}>
+                {activePath.split("/").pop()}
+              </div>
+              <div className="font-mono text-xs text-zinc-500 truncate">{activePath}</div>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <a
+                  href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                  download
+                  className="w-full sm:w-auto rounded-lg bg-sky-600 px-5 py-2 text-sm font-semibold text-white hover:bg-sky-500 flex items-center justify-center gap-1.5"
+                >
+                  ⬇️ 下載
+                </a>
+                <a
+                  href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:w-auto rounded-lg border border-zinc-700 px-5 py-2 text-sm text-zinc-300 hover:border-zinc-500 hover:text-white flex items-center justify-center gap-1.5"
+                >
+                  在新分頁開啟 ↗
+                </a>
+              </div>
+            </div>
+          </div>
         ) : activeKind === "text" ? (
-          <pre className="flex-1 overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
-            {content}
-          </pre>
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="border-b border-zinc-800 px-4 py-2 flex items-center justify-between bg-zinc-950/50 shrink-0">
+              <span className="font-mono text-sm text-zinc-300 truncate">📄 {activePath}</span>
+              <a
+                href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                download
+                className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
+              >
+                ⬇️ 下載
+              </a>
+            </div>
+            <pre className="flex-1 overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
+              {content}
+            </pre>
+          </div>
         ) : (
           <div className="flex-1 flex min-w-0 relative">
             {effectiveView !== "preview" && (
@@ -787,16 +1306,52 @@ export default function Workspace() {
               </div>
             )}
             {effectiveView !== "edit" && (
-              <div
-                ref={previewRef}
-                onScroll={() => syncScroll(previewRef.current, editorRef.current)}
-                onClick={handlePreviewClick}
-                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto" : ""}`}
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
+              <div className={`${effectiveView === "split" ? "w-1/2" : "w-full"} flex flex-col min-h-0 overflow-hidden`}>
+                {activeKind === "html" ? (
+                  <div className="flex-1 flex flex-col min-h-0">
+                    <div className="border-b border-zinc-800 px-4 py-2 flex items-center justify-between bg-zinc-950/50 shrink-0">
+                      <span className="font-mono text-sm text-zinc-300 truncate">🌐 {activePath}</span>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={`${rawBase}/${refPath}/${activePath.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                          download
+                          className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
+                        >
+                          ⬇️ 下載
+                        </a>
+                        <a
+                          href={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
+                        >
+                          在新分頁開啟獨立網站 ↗
+                        </a>
+                      </div>
+                    </div>
+                    <iframe
+                      key={activePath}
+                      src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                      /* ⚠️ 刻意不給 allow-same-origin：iframe 會是 opaque origin，能跑 JS 但碰不到 note 主站的 cookie / DOM */
+                      sandbox="allow-scripts allow-popups allow-forms allow-modals"
+                      className="w-full flex-1 border-0 bg-white"
+                      title={activePath}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    ref={previewRef}
+                    onScroll={() => syncScroll(previewRef.current, editorRef.current)}
+                    onClick={handlePreviewClick}
+                    className={`flex-1 overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto w-full" : ""}`}
+                    dangerouslySetInnerHTML={{ __html: html }}
+                  />
+                )}
+              </div>
             )}
           </div>
         )}
+        </main>
       </div>
     </div>
   );

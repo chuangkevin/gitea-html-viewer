@@ -80,7 +80,8 @@ export interface Provider {
     message: string,
     sha: string | undefined,
     branch: string,
-    author?: CommitAuthor
+    author?: CommitAuthor,
+    isBase64?: boolean
   ): Promise<{ sha: string }>;
 }
 
