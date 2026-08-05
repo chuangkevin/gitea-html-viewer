@@ -53,11 +53,14 @@ import {
 import { github } from "./github.js";
 import { gitlab } from "./gitlab.js";
 import {
-  identities,
-  teamEnabled,
-  publicIdentities,
-  resolveSelection,
   encodeSelection,
+  fullIdentities,
+  fullRoster,
+  identities,
+  publicIdentities,
+  resolveIdentityToken,
+  resolveSelection,
+  teamEnabled,
 } from "./identities.js";
 
 registerProvider(github);
@@ -247,8 +250,8 @@ app.post("/api/auth/logout", (req, res) => {
 function teamInfo(req: express.Request) {
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
   return {
-    enabled: teamEnabled(),
-    members: publicIdentities(),
+    enabled: fullRoster().length > 0,
+    members: fullRoster(),
     selected: sel ? { index: sel.index, name: sel.identity.name, email: sel.identity.email } : null,
   };
 }
@@ -256,7 +259,7 @@ function teamInfo(req: express.Request) {
 // 選身分：只把「第幾位成員 + 名字」寫進 cookie，token 留在 server。
 // index 傳 null（或非法值）＝清除選擇，回到唯讀。
 app.post("/api/identity", (req, res) => {
-  const list = identities();
+  const list = fullIdentities();
   if (list.length === 0) {
     res.status(404).json({ error: "team_mode_disabled" });
     return;
@@ -282,15 +285,17 @@ app.get("/api/identities/suggest", (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const limit = 20;
 
-  // roster 來源：data/identities.json 正式成員
-  const roster = publicIdentities();
+  // roster 來源：data/identities.json 正式成員（完整名冊）
+  const roster = fullRoster();
   const rosterFiltered = q
     ? roster.filter((m) => m.name.toLowerCase().includes(q.toLowerCase()))
     : roster;
+  const sharedTokenAvailable = fullIdentities().some((m) => m.token.trim().length > 0);
   const rosterResults = rosterFiltered.map((m) => ({
     name: m.name,
     email: m.email,
     source: "roster" as const,
+    hasToken: (m.hasOwnToken ?? false) || sharedTokenAvailable,
   }));
 
   // history 來源：known_identities 累積
@@ -447,7 +452,7 @@ function actorFor(req: express.Request, provider: ProviderName, project?: string
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
   if (sel && sel.identity.provider === provider) {
     return {
-      token: sel.identity.token,
+      token: resolveIdentityToken(sel.identity),
       authed: true,
       author: { name: sel.identity.name, email: sel.identity.email },
     };
@@ -642,8 +647,8 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
 function grantToken(g: RawGrantRow): string | null {
   if (g.sid) return getSession(g.sid)?.token ?? null;
   if (g.ident_name) {
-    const m = identities().find((x) => x.name === g.ident_name && x.provider === g.provider);
-    return m ? m.token : null;
+    const m = fullIdentities().find((x) => x.name === g.ident_name && x.provider === g.provider);
+    return m ? resolveIdentityToken(m) : null;
   }
   return null;
 }

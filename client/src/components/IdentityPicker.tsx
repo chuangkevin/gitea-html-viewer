@@ -199,38 +199,47 @@ export default function IdentityPicker({
           team.selected ? "border-zinc-700 text-zinc-200" : "border-sky-700 text-sky-300"
         }`}
       />
-      {open && suggestions.length > 0 && (
+      {open && (
         <ul
           ref={listRef}
           id="identity-listbox"
           role="listbox"
           className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
         >
-          {suggestions.map((s, i) => (
-            <li
-              key={`${s.name}-${s.source}`}
-              role="option"
-              aria-selected={i === activeIdx}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => void pickSuggestion(s)}
-              onMouseEnter={() => setActiveIdx(i)}
-              className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm ${
-                i === activeIdx
-                  ? "bg-sky-900/60 text-white"
-                  : "text-zinc-300 hover:bg-zinc-800"
-              }`}
-            >
-              <span className="truncate">{s.name}</span>
-              {s.email && (
-                <span className="text-xs text-zinc-500 truncate">{s.email}</span>
-              )}
-              {s.source === "roster" && (
-                <span className="ml-auto shrink-0 rounded bg-sky-900/50 px-1.5 py-0.5 text-[10px] text-sky-400 font-medium">
-                  成員
-                </span>
-              )}
+          {suggestions.length === 0 ? (
+            <li className="px-3 py-2 text-xs text-zinc-400 italic">
+              尚無可選成員，直接輸入你的名字即可
             </li>
-          ))}
+          ) : (
+            suggestions.map((s, i) => (
+              <li
+                key={`${s.name}-${s.source}`}
+                role="option"
+                aria-selected={i === activeIdx}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void pickSuggestion(s)}
+                onMouseEnter={() => setActiveIdx(i)}
+                className={`flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm ${
+                  i === activeIdx
+                    ? "bg-sky-900/60 text-white"
+                    : "text-zinc-300 hover:bg-zinc-800"
+                }`}
+              >
+                <span className="truncate">{s.name}</span>
+                {s.email && (
+                  <span className="text-xs text-zinc-500 truncate">{s.email}</span>
+                )}
+                {s.hasToken === false && (
+                  <span className="text-xs text-zinc-500 truncate">未設定 token</span>
+                )}
+                {s.source === "roster" && (
+                  <span className="ml-auto shrink-0 rounded bg-sky-900/50 px-1.5 py-0.5 text-[10px] text-sky-400 font-medium">
+                    成員
+                  </span>
+                )}
+              </li>
+            ))
+          )}
         </ul>
       )}
     </div>

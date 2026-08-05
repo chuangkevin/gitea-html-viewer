@@ -66,6 +66,7 @@ export interface IdentitySuggestion {
   name: string;
   email: string;
   source: "roster" | "history";
+  hasToken?: boolean;
 }
 
 export interface UserRepoPref {
