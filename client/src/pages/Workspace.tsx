@@ -138,6 +138,11 @@ export default function Workspace() {
       });
   }, [refPath, activePath, reloadKey]);
 
+  const filesRef = useRef<string[] | null>(files);
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
+
   useEffect(() => {
     if (activeKind !== "html" || !iframeRef.current) return;
     const iframe = iframeRef.current;
@@ -161,6 +166,49 @@ export default function Workspace() {
       openPath: (path: string) => {
         setActiveFolder("");
         setParams({ f: path });
+      },
+      listFiles: async (targetPath: string) => {
+        let fileList = filesRef.current;
+        if (!fileList) {
+          try {
+            const r = await api.files(refPath);
+            fileList = r.files.map((f) => f.path);
+          } catch {
+            return [];
+          }
+        }
+
+        const normalized = targetPath.trim().replace(/^\/+|\/+$/g, "");
+        const cleanPath = normalized === "." ? "" : normalized;
+        const prefix = cleanPath ? cleanPath + "/" : "";
+
+        const dirMap = new Map<string, { name: string; path: string; isDir: boolean }>();
+
+        for (const f of fileList) {
+          if (prefix === "" || f.startsWith(prefix)) {
+            const rel = prefix ? f.slice(prefix.length) : f;
+            if (!rel) continue;
+            const parts = rel.split("/");
+            if (parts.length === 1) {
+              const name = parts[0];
+              dirMap.set(f, { name, path: f, isDir: false });
+            } else {
+              const subName = parts[0];
+              const subPath = cleanPath ? `${cleanPath}/${subName}` : subName;
+              if (!dirMap.has(subPath)) {
+                dirMap.set(subPath, { name: subName, path: subPath, isDir: true });
+              }
+            }
+          }
+        }
+
+        const result = Array.from(dirMap.values());
+        result.sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name, undefined, { numeric: true });
+        });
+
+        return result;
       },
     });
     return cleanup;

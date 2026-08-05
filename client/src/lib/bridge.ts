@@ -1,12 +1,30 @@
+/**
+ * postMessage 橋接器 (iframe ↔ parent) 訊息協定說明：
+ *
+ * Iframe -> Parent (請求):
+ * - { type: 'nb:load', path: string }
+ * - { type: 'nb:save', path: string, content: string }
+ * - { type: 'nb:open', path: string }
+ * - { type: 'nb:list', path: string }
+ *
+ * Parent -> Iframe (回應/通知):
+ * - { type: 'nb:ready', version: string }
+ * - { type: 'nb:file', path: string, content: string }
+ * - { type: 'nb:saved', path: string }
+ * - { type: 'nb:file-list', path: string, files: Array<{ name: string; path: string; size?: number; isDir: boolean }> }
+ * - { type: 'nb:error', message: string }
+ */
+
 export interface BridgeContext {
   iframe: HTMLIFrameElement;
   readFile: (path: string) => Promise<string>;
   saveFile: (path: string, content: string) => Promise<void>;
   openPath: (path: string) => void;
+  listFiles: (path: string) => Promise<Array<{ name: string; path: string; size?: number; isDir: boolean }>>;
 }
 
 /**
- * 驗證請求路徑安全性與合法性：
+ * 驗證檔案路徑安全性與合法性：
  * - 必須為字串、非空且長度小於 500 字元
  * - 不得以 '/' 開頭
  * - 不得包含 '..' 或反斜線 '\'
@@ -18,6 +36,21 @@ function isValidPath(path: unknown): path is string {
   if (path.startsWith("/")) return false;
   if (path.includes("..") || path.includes("\\")) return false;
   if (!path.toLowerCase().endsWith(".md")) return false;
+  return true;
+}
+
+/**
+ * 驗證資料夾路徑安全性與合法性：
+ * - 必須為字串、非空且長度小於 500 字元
+ * - 不得以 '/' 開頭
+ * - 不得包含 '..' 或反斜線 '\'
+ * - 資料夾路徑不套用 '.md' 副檔名限制
+ */
+function isValidFolderPath(path: unknown): path is string {
+  if (typeof path !== "string") return false;
+  if (path.length === 0 || path.length >= 500) return false;
+  if (path.startsWith("/")) return false;
+  if (path.includes("..") || path.includes("\\")) return false;
   return true;
 }
 
@@ -71,6 +104,13 @@ export function attachBridge(ctx: BridgeContext): () => void {
           return;
         }
         ctx.openPath(path);
+      } else if (type === "nb:list") {
+        if (!isValidFolderPath(path)) {
+          postReply({ type: "nb:error", message: `無效或不允許的資料夾路徑：${String(path)}` });
+          return;
+        }
+        const files = await ctx.listFiles(path);
+        postReply({ type: "nb:file-list", path, files });
       }
     } catch (err: any) {
       postReply({ type: "nb:error", message: err?.message || String(err) });
