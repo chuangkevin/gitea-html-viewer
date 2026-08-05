@@ -12,7 +12,7 @@
 #    - 限制僅在 push 至 main 分支時觸發。
 #    - 指定 tag: [dockerhost]，由部署在內網 docker-host (10.11.12.55) 上的
 #      GitLab Runner (Shell Executor) 執行。
-#    - 執行 git fetch & hard reset 至目標 Commit、啟動容器、進行 60 秒內健康檢查，
+#    - 執行 rsync 同步 CI 的 Commit 內容至部署目錄、啟動容器、進行 60 秒內健康檢查，
 #      並清理過期的 Docker Images。
 #
 # Runner 前提條件：
@@ -62,14 +62,25 @@ deploy-dockerhost:
   stage: deploy
   tags:
     - dockerhost
+  variables:
+    DEPLOY_DIR: /home/interagent/note
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   environment:
     name: production
     url: http://10.11.12.55:8790
   script:
-    - cd /home/interagent/note
-    - git fetch origin && git reset --hard $CI_COMMIT_SHA
+    - set -euo pipefail
+    # 不在部署目錄使用 git：部署目錄 (DEPLOY_DIR) 擁有者為 interagent，而 GitLab Runner 以 gitlab-runner 身分執行，
+    # 若在部署目錄使用 git 會觸發 "fatal: detected dubious ownership"，導致程式碼無法更新且靜默回報成功。
+    # Runner 執行 job 時已將目標 commit checkout 至 $CI_PROJECT_DIR，直接用 rsync 同步至部署目錄。
+    - mkdir -p "$DEPLOY_DIR"
+    # rsync --delete 說明：
+    # --delete 的目的是清掉宿主機上的舊建置產物殘留（例如 client/dist、server/dist），避免污染 Context。
+    # 透過 --exclude 確保宿主機既有檔案 (.env, .env.*, data/, set-note-token.sh, docker-compose.override.yml*) 不被刪除或覆蓋。
+    - rsync -a --delete --exclude='.env' --exclude='.env.*' --exclude='data/' --exclude='set-note-token.sh' --exclude='docker-compose.override.yml*' "$CI_PROJECT_DIR/" "$DEPLOY_DIR/"
+    - echo "Deploying Commit SHA $CI_COMMIT_SHA ($CI_COMMIT_SHORT_SHA)"
+    - cd "$DEPLOY_DIR"
     - |
       # 防護檢查：防止 docker-compose 檔案將 host 的 dist 掛載進容器覆蓋 CI 建好的 image
       # 背景：若 Compose 檔將 host 路徑掛載至容器內的 /app/client/dist 或 /app/server/dist，

@@ -1,0 +1,25 @@
+# Git 版本控制目錄
+.git
+
+# Node.js 依賴套件目錄（由 Dockerfile 多階段建置自行安裝，避免宿主機依賴影響）
+node_modules
+client/node_modules
+server/node_modules
+
+# 前後端打包編譯產物（避免宿主機舊建置產物污染 build context，Dockerfile 內會自行 build）
+client/dist
+server/dist
+
+# 本地與持久化資料目錄
+data
+
+# 環境變數設定檔與備份（避免敏感資訊寫入 Docker 鏡像）
+.env
+.env.*
+
+# 服務日誌與備份/滾回檔案
+*.log
+.rollback-*
+
+# 本地 Docker Compose 覆蓋設定檔
+docker-compose.override.yml*

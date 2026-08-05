@@ -170,6 +170,8 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 
 ## CI/CD 自動部署
 
+**部署機制**：GitLab Runner 執行 deploy job 時，已先在 Runner 端 checkout 最新 Commit (`$CI_PROJECT_DIR`)，接著透過 `rsync -a --delete` 同步至部署目錄 (`/home/interagent/note`)，同步時自動保留宿主機的 `.env` 與 `.env.*` 備份、`data/` 目錄、`set-note-token.sh` 與 `docker-compose.override.yml*`，最後執行 Docker Compose 重建與啟動容器。
+
 ### 1. 架構圖
 
 ```
@@ -187,7 +189,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
                        +---------------------------+
                        |   Stage: deploy           |
                        | (docker-host runner)      |
-                       | - git fetch & reset       |
+                       | - rsync 到部署目錄        |
                        | - docker compose up -d    |
                        | - Health Check (curl)     |
                        | - docker image prune      |
@@ -218,6 +220,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 - **故障排查**：
   - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
   - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
+  - **pipeline 綠燈但服務跑的是舊 code（dubious ownership）**：部署目錄用 git 更新，但目錄擁有者 (`interagent`) 與 runner 執行身分 (`gitlab-runner`) 不一致，git 回 `fatal: detected dubious ownership` 而靜默失敗。處置：已改為 rsync 同步，不再依賴部署目錄的 git。
   - **deploy job 出現 cd: Permission denied**：若 deploy job 第一行指令出現 `bash: cd: /home/interagent/note: Permission denied`，代表 gitlab-runner 使用者對部署目錄或其上層目錄缺乏通行/存取權限。重跑安裝腳本 `sudo -E ./deploy/install-gitlab-runner.sh` 即可自動調整權限修復。
   - **pipeline 全綠但服務畫面沒更新、新功能沒生效**：原因為 compose override 把 host 的 dist 掛進容器覆蓋 image 產物。處置：把 override 改名為 `.disabled` 或移除 dist 掛載後 `docker compose up -d --force-recreate`；CI 現已自動偵測此情況並讓 pipeline 失敗。
 
