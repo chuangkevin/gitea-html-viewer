@@ -5,6 +5,7 @@ import { renderMarkdown, type LinkContext } from "../lib/markdown";
 import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
+import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 
@@ -18,11 +19,15 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
  * 在 header 選「你是誰」即可用該成員的 token 讀寫，commit 記在該成員名下。
  */
 export default function Workspace() {
-  const { provider = "github", project = "" } = useParams();
+  const params_ = useParams();
+  const provider = params_.provider || "";
+  const project = params_.project || "";
+  const hasRepo = Boolean(provider && project);
   const navigate = useNavigate();
   const projectPath = project; // react-router 已解碼；GitLab 可含巢狀群組
   const refPath = `${provider}/${encodeURIComponent(projectPath)}`; // 路由/API 用
   const repoLeaf = projectPath.split("/").pop() || projectPath;
+  const [repoSelectorCollapsed, setRepoSelectorCollapsed] = useState(false);
   const [params, setParams] = useSearchParams();
   const activePath = params.get("f") || "";
 
@@ -73,6 +78,7 @@ export default function Workspace() {
   }, [refreshMe]);
 
   const loadFiles = useCallback(() => {
+    if (!hasRepo) return;
     setNeedLogin(false);
     api
       .files(refPath)
@@ -82,20 +88,21 @@ export default function Workspace() {
         setIsPrivate(r.private);
         if (r.access) setAccessMode(r.access);
         if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
+        touchRecent(provider, projectPath);
       })
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [refPath, reloadKey]);
+  }, [refPath, reloadKey, hasRepo, provider, projectPath]);
 
   useEffect(loadFiles, [loadFiles]);
 
   useEffect(() => {
-    if (files !== null) {
+    if (files !== null && hasRepo) {
       api.setLastRepo(provider, projectPath, activePath).catch(() => {});
     }
-  }, [provider, projectPath, activePath, files]);
+  }, [provider, projectPath, activePath, files, hasRepo]);
 
   const activeKind = activePath ? kindOf(activePath) : null;
 
@@ -734,7 +741,7 @@ export default function Workspace() {
           )}
           <div>
             <Link to="/" className="text-sm text-zinc-500 hover:text-zinc-300">
-              ← 回首頁
+              ← 回工作區
             </Link>
           </div>
         </div>
@@ -748,10 +755,10 @@ export default function Workspace() {
         <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-xs text-zinc-500">
+        <span className="font-mono text-[10px] text-zinc-600">
           {__APP_VERSION__}-{__BUILD_SHA__}
         </span>
-        <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>
+        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>}
         {readOnly && (
           <span
             className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
@@ -765,7 +772,7 @@ export default function Workspace() {
           </span>
         )}
         <div className="flex-1" />
-        {activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
+        {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
           <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
@@ -904,7 +911,7 @@ export default function Workspace() {
       )}
 
       <div className="flex-1 flex min-h-0">
-        {/* 檔案樹 */}
+        {/* 左側欄 */}
         <aside
           className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block relative"
           onDragEnter={handleDragEnter}
@@ -912,7 +919,13 @@ export default function Workspace() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {isDragging && (
+          <RepoSelector
+            currentProvider={provider}
+            currentProject={projectPath}
+            collapsed={repoSelectorCollapsed}
+            onToggleCollapse={() => setRepoSelectorCollapsed((v) => !v)}
+          />
+          {hasRepo && isDragging && (
             <div
               className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-4 text-center backdrop-blur-sm pointer-events-none ${
                 canWrite
@@ -926,7 +939,7 @@ export default function Workspace() {
               </div>
             </div>
           )}
-          {canWrite && (
+          {hasRepo && canWrite && (
             <div className="flex gap-1.5 mb-3">
               <input
                 value={newFile}
@@ -951,7 +964,7 @@ export default function Workspace() {
               </button>
             </div>
           )}
-          <div className="flex items-center justify-between mb-2">
+          {hasRepo && <div className="flex items-center justify-between mb-2">
             <span className="text-xs uppercase tracking-wider text-zinc-600">檔案</span>
             <button
               onClick={() => {
@@ -967,8 +980,8 @@ export default function Workspace() {
             >
               🎬 展示模式
             </button>
-          </div>
-          {!files ? (
+          </div>}
+          {!hasRepo ? null : !files ? (
             <p className="text-sm text-zinc-600">載入中…</p>
           ) : files.length === 0 ? (
             <p className="text-sm text-zinc-600">
@@ -992,7 +1005,7 @@ export default function Workspace() {
               onCheckedChange={setChecked}
             />
           )}
-          {presentMode && (
+          {hasRepo && presentMode && (
             <div className="sticky bottom-0 mt-3 -mx-3 border-t border-zinc-800 bg-zinc-950/95 px-3 py-2 space-y-1.5">
               <p className="text-xs text-zinc-500">已勾選 {checkedInOrder.length} 個檔案（依資料夾排序播放）</p>
               <button
@@ -1023,7 +1036,7 @@ export default function Workspace() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {isDragging && (
+          {hasRepo && isDragging && (
             <div
               className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-6 text-center backdrop-blur-sm pointer-events-none ${
                 canWrite
@@ -1037,7 +1050,14 @@ export default function Workspace() {
               </div>
             </div>
           )}
-          {params.has("dir") ? (
+          {!hasRepo ? (
+            <div className="flex-1 grid place-items-center text-center px-6">
+              <div className="space-y-4">
+                <p className="text-xl text-zinc-500">📂</p>
+                <p className="text-zinc-500 text-base">貼上 repo 網址或從左側選擇</p>
+              </div>
+            </div>
+          ) : params.has("dir") ? (
           <div className="flex-1 overflow-auto p-6 max-w-3xl mx-auto w-full">
             <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-6">
               <div className="flex items-center gap-3">
