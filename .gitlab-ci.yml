@@ -78,7 +78,8 @@ deploy-dockerhost:
     # rsync --delete 說明：
     # --delete 的目的是清掉宿主機上的舊建置產物殘留（例如 client/dist、server/dist），避免污染 Context。
     # 透過 --exclude 確保宿主機既有檔案 (.env, .env.*, data/, set-note-token.sh, docker-compose.override.yml*) 不被刪除或覆蓋。
-    - rsync -a --delete --exclude='.env' --exclude='.env.*' --exclude='data/' --exclude='set-note-token.sh' --exclude='docker-compose.override.yml*' "$CI_PROJECT_DIR/" "$DEPLOY_DIR/"
+    # 因 runner 非 root 身份，不保留擁有者/群組（使用 -rlptD 替代 -a，排除 -o/-g），強行保留會導致 chgrp 失敗
+    - rsync -rlptD --delete --exclude='.env' --exclude='.env.*' --exclude='data/' --exclude='set-note-token.sh' --exclude='docker-compose.override.yml*' "$CI_PROJECT_DIR/" "$DEPLOY_DIR/"
     - echo "Deploying Commit SHA $CI_COMMIT_SHA ($CI_COMMIT_SHORT_SHA)"
     - cd "$DEPLOY_DIR"
     - |
