@@ -29,6 +29,15 @@ services:
       # 首頁預設落地：「/」直接導到這個 repo 的 DEFAULT_FILE（清空即回原本首頁）
       - DEFAULT_REPO=${DEFAULT_REPO-gitlab/interagent-io%2Finteragent-bible}
       - DEFAULT_FILE=${DEFAULT_FILE-README.md}
+      # 免登入「公開可編」白名單 repo 寫入權限共用 token
+      - GITHUB_OPEN_TOKEN=${GITHUB_OPEN_TOKEN:-}
+      - GITLAB_OPEN_TOKEN=${GITLAB_OPEN_TOKEN:-}
+      - NOTE_OPEN_AUTHOR_NAME=${NOTE_OPEN_AUTHOR_NAME:-}
+      - NOTE_OPEN_AUTHOR_EMAIL=${NOTE_OPEN_AUTHOR_EMAIL:-}
+      # Admin 控制台與 OAuth 白名單
+      - ADMIN_KEY=${ADMIN_KEY:-}
+      - ADMIN_LOGINS=${ADMIN_LOGINS:-}
       - DATA_DIR=/data
     volumes:
       - ./data:/data
+

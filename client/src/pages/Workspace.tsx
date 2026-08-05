@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Me } from "../lib/api";
+import { api, type AccessMode, type Me } from "../lib/api";
 import { renderMarkdown } from "../lib/markdown";
 import { ProviderIcon, providerLabel } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
@@ -28,6 +28,8 @@ export default function Workspace() {
   const [me, setMe] = useState<Me | null>(null);
   const [files, setFiles] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
+  const [accessMode, setAccessMode] = useState<AccessMode>("login");
+  const [guestName, setGuestName] = useState("");
   const [needLogin, setNeedLogin] = useState(false);
   const [content, setContent] = useState("");
   const [sha, setSha] = useState<string | undefined>();
@@ -67,6 +69,8 @@ export default function Workspace() {
         setFiles(r.files.map((f) => f.path));
         setCanWrite(r.canWrite);
         setIsPrivate(r.private);
+        if (r.access) setAccessMode(r.access);
+        if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
       })
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
@@ -303,6 +307,21 @@ export default function Workspace() {
             </button>
           </>
         )}
+        {/* 免登入 open 模式：顯示署名輸入框（訪客 commit author 名字） */}
+        {accessMode === "open" && me && !me.login && !me.team?.selected && (
+          <input
+            type="text"
+            defaultValue={guestName}
+            placeholder="你是誰？（選填，會寫進 commit）"
+            onBlur={(e) => void api.setGuestName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              }
+            }}
+            className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
+          />
+        )}
         {/* 團隊模式：不必個人 OAuth，選「你是誰」就用該成員的 token 讀寫 */}
         {me && !me.login && me.team?.enabled && (
           <IdentityPicker team={me.team} onChange={handleIdentityChange} />
@@ -322,6 +341,16 @@ export default function Workspace() {
             {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
             {me.login}
           </span>
+        )}
+        {/* Admin 連結 */}
+        {me?.admin?.is && (
+          <Link
+            to="/admin"
+            className="inline-flex items-center gap-1 text-xs border border-zinc-700 text-zinc-400 hover:text-white px-2 py-1 rounded transition"
+            title="管理控制台"
+          >
+            ⚙️ 管理
+          </Link>
         )}
       </header>
 

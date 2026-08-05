@@ -17,6 +17,24 @@ export interface Me {
   provider?: string;
   providers?: { github: boolean; gitlab: boolean };
   team?: TeamInfo;
+  admin?: { enabled: boolean; is: boolean };
+}
+
+export type AccessMode = "open" | "login" | "admin";
+
+export interface AdminEntry {
+  provider: string;
+  project: string;
+  mode: AccessMode;
+  updatedAt: number;
+  updatedBy: string | null;
+}
+
+export interface AdminState {
+  adminEnabled: boolean;
+  isAdmin: boolean;
+  openTokenReady?: { github: boolean; gitlab: boolean };
+  entries?: AdminEntry[];
 }
 
 export interface RepoInfo {
@@ -75,7 +93,14 @@ export const api = {
   // ref = `<provider>/<encodeURIComponent(projectPath)>`
   files: (ref: string) =>
     fetch(`/api/files/${ref}`).then((r) =>
-      j<{ branch: string; private: boolean; canWrite: boolean; files: { path: string }[] }>(r)
+      j<{
+        branch: string;
+        private: boolean;
+        canWrite: boolean;
+        access: AccessMode;
+        guestName: string | null;
+        files: { path: string }[];
+      }>(r)
     ),
   readFile: (ref: string, path: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
@@ -85,6 +110,32 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, sha }),
     }).then((r) => j<{ sha: string }>(r)),
+  setGuestName: (name: string) =>
+    fetch("/api/guest-name", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }).then((r) => j<{ ok: boolean; name: string | null }>(r)),
+  adminState: () => fetch("/api/admin/state").then((r) => j<AdminState>(r)),
+  adminLogin: (key: string) =>
+    fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    }).then((r) => j<{ ok: boolean }>(r)),
+  adminLogout: () => fetch("/api/admin/logout", { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
+  setRepoAccess: (provider: string, project: string, mode: AccessMode) =>
+    fetch("/api/admin/repos", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, project, mode }),
+    }).then((r) => j<{ ok: boolean; entries: AdminEntry[] }>(r)),
+  deleteRepoAccess: (provider: string, project: string) =>
+    fetch("/api/admin/repos", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, project }),
+    }).then((r) => j<{ ok: boolean; entries: AdminEntry[] }>(r)),
   // repo = projectPath（server 依 session 決定 provider）
   share: (repo: string, path: string, title?: string) =>
     fetch("/api/share", {

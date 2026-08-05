@@ -8,6 +8,7 @@ import SharePage from "./pages/SharePage";
 import SlidesPage from "./pages/SlidesPage";
 import DirectSlidesPage from "./pages/DirectSlidesPage";
 import PresentPage from "./pages/PresentPage";
+import Admin from "./pages/Admin";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
@@ -19,6 +20,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <Route path="/s/:token/slides" element={<SlidesPage />} />
         <Route path="/p/:provider/:project/*" element={<DirectSlidesPage />} />
         <Route path="/present/:provider/:project" element={<PresentPage />} />
+        <Route path="/admin" element={<Admin />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>

@@ -2,5 +2,9 @@ node_modules/
 dist/
 data/
 .env
+.env.bak*
 .DS_Store
 *.log
+# 部署主機專用，刻意不進 git
+docker-compose.override.yml
+.rollback-*

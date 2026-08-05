@@ -40,7 +40,7 @@ cp .env.example .env
       之後上 NPM domain 要**改成正式網址並回來更新這裡與 `.env` 的 BASE_URL**）
 2. 把拿到的 Application ID / Secret 填進 `.env`：
    ```
-   BASE_URL=http://<docker-host-ip>:8790      # 上 domain 後改成 https://note.<你的內網域>
+   BASE_URL=http://<docker-host-ip>:8790      # 上 domain 後改成 https://note.ia
    GITLAB_CLIENT_ID=...
    GITLAB_CLIENT_SECRET=...
    ```
@@ -48,38 +48,57 @@ cp .env.example .env
 > GitHub 也想開就一併填 `GITHUB_CLIENT_ID/SECRET`；不填就只顯示 GitLab 登入。
 > `SECRET` 不填會自動產生存在 `data/.secret`（換機器要保留 `data/` 才能沿用既有 session/分享）。
 
+> **💡 OAuth Callback 失敗排查**：
+> 若 `docker logs note` 出現 `authorization grant is invalid ... does not match the redirection URI` 錯誤，代表 GitLab OAuth Application 的 Redirect URI 與目前 `.env` 的 `BASE_URL` 不一致。例如 `BASE_URL` 改成 `https://note.ia` 之後，必須回 GitLab 應用設定（`https://gitlab.com/-/profile/applications`）將 Redirect URI 一併修改為 `https://note.ia/api/auth/callback`。
+
 ### 團隊模式：多 token、一人一組（選配）
 
 不想每個人都去跑 OAuth，但又要 commit 記在正確的人頭上時用這個：
 每位成員一組自己的 GitLab token，配上他的名字 + email。
 
-**啟用步驟**
+#### 1. Token 來源（二選一）
 
-1. 每位成員各自到 GitLab 產一組 Personal Access Token
-   （`https://gitlab.com/-/user_settings/personal_access_tokens`，scope 勾 `api`；
-   要能存檔就必須有寫入權限）。
-2. 在 docker-host 上建 `/home/interagent/note/data/identities.json`
-   （`data/` 已經掛進容器，也已在 `.gitignore` 裡，不會被 commit）：
+- **作法 A（最推薦 / 全方案通用）：個人 Personal Access Token**
+  每位成員各自到 GitLab 產一組 Personal Access Token
+  （`https://gitlab.com/-/user_settings/personal_access_tokens`，Scope 勾 `api`；要能存檔就必須有寫入權限）。
 
-   ```json
-   [
-     { "name": "王小明", "email": "ming@interagent.io", "token": "glpat-xxxxxxxxxxxx" },
-     { "name": "李小華", "email": "hua@interagent.io",  "token": "glpat-yyyyyyyyyyyy" },
-     { "name": "Kevin",  "email": "kevin@interagent.io", "token": "glpat-zzzzzzzzzzzz" }
-   ]
-   ```
+  > **💡 共用一把 PAT 也可以**：若部分成員沒有 GitLab 帳號或不想各自設定，也可以由一位具有文件 repo Developer（含）以上權限的成員（例如 Kevin），或另開一個專用的「文書機器人」GitLab 帳號，產一把 Scope 勾 `api` 的 PAT，填給 `identities.json` 上的多位成員共用；commit author 仍會依 `identities.json` 的 `name` / `email` 分別記名。缺點同樣是共用寫入權限、撤銷則全體同時失效。
 
-   `provider` 可省略，預設 `gitlab`（要用 GitHub token 就加 `"provider": "github"`）。
-3. `chmod 600 data/identities.json`（裡面是 token）。
-4. 存檔即生效——server 看 mtime 自動重載，**不用 rebuild 也不用重啟**。
-   不想用檔案的話，也可以改設環境變數 `NOTE_IDENTITIES`（同樣的 JSON 陣列），
-   但改一次要重啟容器。兩者都沒有 = 團隊模式未啟用，行為跟原本完全一樣。
+- **作法 B（進階 / 比較乾淨）：使用 Project Access Token**
+  ⚠️ **gitlab.com 的 Free 方案沒有這個功能（需 Premium/Ultimate）；如果建不出來就改用作法 A。**（自架 GitLab 才是 Free 方案就能用）
 
-**怎麼用**：開任一 repo，右上角出現「👤 你是誰？」下拉，選自己的名字就能編輯、存檔；
+  若使用付費方案或自架 GitLab，可以直接使用文件專案（`interagent-io/interagent-bible`）的 Project Access Token：
+  1. 前往文件 repo `interagent-io/interagent-bible` → **Settings** → **Access Tokens** 產生一組 Project Access Token。
+  2. **Role** 選 `Developer`（含）以上，**Scopes** 必須勾選 `api`（說明：`note` 是透過 GitLab REST API v4 進行寫檔與 commit，而非傳統 Git over HTTP，因此 `write_repository` 權限不足，必須勾選 `api`）。
+  3. **共用機制**：同一把 Project Access Token 可以設定給 `identities.json` 中的多位成員。因為後端（`server/src/gitlab.ts` 的 `writeFile`）寫檔時會帶入 `identities.json` 設定的 `name` 與 `email` 作為 `author_name` / `author_email`，即使全員共用同一把 token，commit 依然會精確掛在各自的人名與 email 名下。
+  4. **缺點與風險**：共用 token 代表共用寫入權限，若該 token 被撤銷則全體共用成員會同時失效；且前端選取名字僅為識別而非身分驗證，內網中任何人皆可切換選取任意名字發起 commit（冒名風險）。
+
+#### 2. 設定 `identities.json`（docker-host 上的實際位置與寫入方式）
+
+- **檔案位置**：容器內 `/data/identities.json`，在 docker-host 上對應至 `/home/interagent/note/data/identities.json`。因為 `data/` 目錄屬於 root 擁有，一般使用者無法直接編輯該檔案。
+- **使用 Helper Script 寫入**：
+  docker-host 上已備有輔助腳本 `/home/interagent/note/set-note-token.sh`：
+  - 執行 `./set-note-token.sh` 後會進入互動式輸入，貼上 Token（輸入時不回顯、不會寫入 shell history），腳本會自動建立/更新三位成員的設定檔。
+  - 執行 `./set-note-token.sh --show` 可以查看目前設定的成員名單與狀態（Token 內容會自動打碼遮蔽）。
+- **手動建立範例**（若以 root 或 sudo 權限編輯）：
+  ```json
+  [
+    { "name": "王小明", "email": "ming@interagent.io", "token": "glpat-xxxxxxxxxxxx" },
+    { "name": "李小華", "email": "hua@interagent.io",  "token": "glpat-yyyyyyyyyyyy" },
+    { "name": "Kevin",  "email": "kevin@interagent.io", "token": "glpat-zzzzzzzzzzzz" }
+  ]
+  ```
+  `provider` 可省略，預設 `gitlab`（要用 GitHub token 就加 `"provider": "github"`）。
+- **自動重載**：存檔後 server 會依檔案修改時間（mtime）自動偵測並重新載入，**不用 rebuild 也不用重啟容器**。
+  若不想使用檔案，也可以改設環境變數 `NOTE_IDENTITIES`（JSON 陣列字串），但每次修改需重啟容器。兩者皆未設定即表示團隊模式未啟用。
+
+#### 3. 怎麼用
+
+開任一 repo，右上角出現「👤 你是誰？」下拉選單，選自己的名字就能編輯與存檔；
 commit 的 author 會是該成員的名字 + email（committer 則是 token 所屬的 GitLab 帳號，
 所以 GitLab 上會顯示成「A 代 B 提交」）。沒選身分維持唯讀，隨時可以重選。
 
-**⚠️ 安全須知**
+#### 4. ⚠️ 安全須知
 
 - **選名字不是身分驗證**。沒有密碼、沒有任何檢查，能開到這個網站的人都可以選任何一個
   名字、用那個人的 token 寫 repo，也就是可以冒名 commit。這個模式的假設是
@@ -92,10 +111,33 @@ commit 的 author 會是該成員的名字 + email（committer 則是 token 所�
   瀏覽器 cookie 只存「第幾位成員 + 名字」，且是 httpOnly + SameSite=Lax。
 - 分享連結（公開分享）仍然只開給個人 OAuth 登入者，團隊身分沒有這個功能。
 
+### repo 存取模式（admin 白名單）
+
+管理員可將特定的 repository 設定為三種存取模式之一：
+1. **免登入公開可編 (`open`)**：任何人開啟該 repo 網頁不必登入即可直接編輯並寫回 commit。
+2. **要登入才能編 (`login`)**：預設行為。未登入者為唯讀模式，需登入個人 OAuth 或選取團隊身分方能編輯。
+3. **只有 admin 能編 (`admin`)**：僅有管理員身分的使用者可以寫入，其餘使用者即使登入也為唯讀。
+
+#### 1. 管理員登入與 `/admin` 管理頁
+- **設定 ADMIN_KEY**：在 `.env` 中設定 `ADMIN_KEY=your_secret_admin_password` 後重啟容器。
+- **存取管理頁**：前往 `/admin` 網址，輸入 `ADMIN_KEY` 密碼即可進入控制台新增或切換 repo 的存取模式。
+- **OAuth 管理員白名單（選配）**：亦可在 `.env` 中設定 `ADMIN_LOGINS=username1,username2`，指定的使用者透過個人 OAuth 登入後將自動具備管理員權限。
+
+#### 2. 設定免登入共用 Token（`GITHUB_OPEN_TOKEN` / `GITLAB_OPEN_TOKEN`）
+- 若有 repo 被標記為「免登入公開可編 (`open`)」，必須在 `.env` 中設定對應 provider 的共用寫入 Token：
+  - **GitLab**：填寫 `GITLAB_OPEN_TOKEN`。需為 GitLab Personal Access Token（PAT），**Scope 勾選 `api`**，且該 Token 所屬帳號需對目標 repo 具備 **Developer**（含）以上寫入權限。
+    - *注意*：gitlab.com 的 Free 方案無法對專案建立 Project Access Token（僅 Premium/Ultimate 或自架支援），請一律使用 Personal Access Token。
+  - **GitHub**：填寫 `GITHUB_OPEN_TOKEN`。需具備 repository 寫入權限（Fine-grained PAT 勾選 Contents read/write，或 Classic PAT 勾選 repo）。
+- 可設定 `NOTE_OPEN_AUTHOR_NAME`（預設 `note 訪客`）與 `NOTE_OPEN_AUTHOR_EMAIL`（預設 `note@interagent.io`）作為免登入訪客 commit 時的預設作者；訪客亦可在網頁頂端署名欄填寫自己的稱呼。
+
+#### 3. ⚠️ 安全與風險提醒
+- **免登入公開可編 = 內網／能連到本站的任何人皆可編輯與提交 commit**。請僅對內部 trusted 專案開啟此模式。
+- 共用 Token (`GITLAB_OPEN_TOKEN` / `GITHUB_OPEN_TOKEN`) 具備 repo 的權限，請妥善保管，**絕不可洩漏、寫入 log 或提交至 repository**。
+
 ### 首頁預設落地（選配）
 
 `DEFAULT_REPO` 設了，開首頁「/」就直接導到該 repo 的 `DEFAULT_FILE`；
-compose 預設值是 `gitlab/interagent-io%2Finteragent-bible` + `README.md`。
+compose 預設值是 `gitlab/interagent-io%2Finteragent-bible` + `README.md`（預設文件專案為 `interagent-io/interagent-bible`）。
 格式是 `<provider>/<URL-encode 過的 projectPath>`（GitLab 巢狀群組的 `/` 要寫成 `%2F`）。
 想回原本首頁：`.env` 填 `DEFAULT_REPO=`（空值）關掉，或直接開 `/?home=1`。
 
@@ -115,7 +157,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 ## 4. 綁 domain（NPM）
 
 見 `interagent-bible/deploy/note-nginx-proxy-manager.md`。
-綁好後記得回來把 `.env` 的 `BASE_URL` 改成正式網址、GitLab OAuth 的 Redirect URI 同步更新，
+綁好後記得回來把 `.env` 的 `BASE_URL` 改成正式網址（如 `https://note.ia`）、GitLab OAuth 的 Redirect URI 同步更新（如 `https://note.ia/api/auth/callback`），
 再 `docker compose up -d` 讓新 BASE_URL 生效。
 
 ## Port 備註
@@ -132,4 +174,5 @@ git pull && docker compose up -d --build
 ## 資料
 
 - `./data`（bind mount）：SQLite（sessions + 分享 token）與 `.secret`。備份就備份這個目錄。
-- 文件本體不在這裡——都在使用者各自的 GitLab/GitHub repo。
+- 文件本體不在這裡——都在使用者各自的 GitLab/GitHub repo（預設文件專案為 `interagent-io/interagent-bible`）。
+

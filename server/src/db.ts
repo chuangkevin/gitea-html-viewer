@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS shares (
   created_at   INTEGER NOT NULL,
   revoked      INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS repo_access (
+  provider    TEXT NOT NULL,
+  project     TEXT NOT NULL,
+  mode        TEXT NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  updated_by  TEXT,
+  PRIMARY KEY (provider, project)
+);
 `);
 
 // 既有部署的漸進式 migration

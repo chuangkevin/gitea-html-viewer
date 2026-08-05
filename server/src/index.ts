@@ -12,8 +12,21 @@ import {
   getShare,
   listShares,
   revokeShare,
+  encrypt,
+  decrypt,
   type Session,
 } from "./db.js";
+import {
+  AccessMode,
+  isAccessMode,
+  getMode,
+  setMode,
+  removeEntry,
+  listEntries,
+  openToken,
+  openTokenReady,
+  defaultGuestAuthor,
+} from "./access.js";
 import {
   registerProvider,
   getProvider,
@@ -187,12 +200,13 @@ app.post("/api/identity", (req, res) => {
 app.get("/api/me", (req, res) => {
   const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab") };
   const team = teamInfo(req);
+  const admin = { enabled: Boolean(process.env.ADMIN_KEY), is: isAdmin(req) };
   const s = getSession(req.cookies?.[COOKIE]);
   if (!s) {
-    res.json({ login: null, providers, team });
+    res.json({ login: null, providers, team, admin });
     return;
   }
-  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers, team });
+  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers, team, admin });
 });
 
 // ── 共用：解析路由上的 provider / project ──────────────
@@ -209,7 +223,8 @@ function projectParam(req: express.Request): string {
  * 這個請求要用「誰的 token」打 provider API。優先序：
  *   1. 個人 OAuth session（同 provider）→ 用他自己的 token
  *   2. 團隊模式所選成員（同 provider）→ 用該成員的 token，commit author 記成該成員
- *   3. 都沒有 → 該 provider 的後備 token（只夠讀 public）
+ *   3. 指定 repo 設為 open 模式、或設為 admin 模式且當前使用者為 admin 且已設定 open token → 用 open token
+ *   4. 都沒有 → 該 provider 的後備 token（只夠讀 public）
  * authed = 有具名身分 → 可讀 private、可寫。token 只在 server 內流動。
  */
 interface Actor {
@@ -217,7 +232,48 @@ interface Actor {
   authed: boolean;
   author?: CommitAuthor;
 }
-function actorFor(req: express.Request, provider: ProviderName): Actor {
+function guestAuthor(req: express.Request): CommitAuthor {
+  const guestName = typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest.trim() : "";
+  if (guestName) {
+    return {
+      name: guestName,
+      email: process.env.NOTE_OPEN_AUTHOR_EMAIL || defaultGuestAuthor().email,
+    };
+  }
+  return defaultGuestAuthor();
+}
+
+function isAdmin(req: express.Request): boolean {
+  const s = getSession(req.cookies?.[COOKIE]);
+  if (s && process.env.ADMIN_LOGINS) {
+    const allowedLogins = process.env.ADMIN_LOGINS.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (allowedLogins.includes(s.login.toLowerCase())) {
+      return true;
+    }
+  }
+  if (process.env.ADMIN_KEY && req.cookies?.nb_admin) {
+    try {
+      const raw = decrypt(req.cookies.nb_admin);
+      const data = JSON.parse(raw) as { t?: number };
+      if (typeof data.t === "number" && Date.now() - data.t < 7 * 24 * 3600 * 1000) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
+function requireAdmin(req: express.Request, res: express.Response): boolean {
+  if (!isAdmin(req)) {
+    res.status(403).json({ error: "admin_only" });
+    return false;
+  }
+  return true;
+}
+
+function actorFor(req: express.Request, provider: ProviderName, project?: string): Actor {
   const s = getSession(req.cookies?.[COOKIE]);
   if (s && s.provider === provider) return { token: s.token, authed: true };
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
@@ -227,6 +283,16 @@ function actorFor(req: express.Request, provider: ProviderName): Actor {
       authed: true,
       author: { name: sel.identity.name, email: sel.identity.email },
     };
+  }
+  if (project && openTokenReady(provider)) {
+    const mode = getMode(provider, project);
+    if (mode === "open" || (mode === "admin" && isAdmin(req))) {
+      return {
+        token: openToken(provider),
+        authed: true,
+        author: guestAuthor(req),
+      };
+    }
   }
   return { token: OAUTH[provider].fallbackToken, authed: false };
 }
@@ -311,17 +377,20 @@ app.get("/api/files/:provider/:project", async (req, res) => {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    actor = actorFor(req, provider);
+    actor = actorFor(req, provider, project);
     const info = await p.getRepo(actor.token, project);
     if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
     const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const mode = getMode(provider, project);
     res.json({
       branch: info.defaultBranch,
       private: info.private,
-      canWrite: Boolean(actor.authed && info.canPush),
+      canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
+      access: mode,
+      guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
       files: files.map((f) => ({ path: f.path })),
     });
   } catch (e) {
@@ -339,7 +408,7 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    actor = actorFor(req, provider);
+    actor = actorFor(req, provider, project);
     const info = await p.getRepo(actor.token, project);
     if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
@@ -363,7 +432,7 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
     const provider = routeProvider(req);
     const p = getProvider(provider);
     const project = projectParam(req);
-    const actor = actorFor(req, provider);
+    const actor = actorFor(req, provider, project);
     const info = await p.getRepo(actor.token, project);
     if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required" });
@@ -411,7 +480,7 @@ app.post("/api/raw-grant", async (req, res) => {
     return;
   }
   const provider = pv as ProviderName;
-  const actor = actorFor(req, provider);
+  const actor = actorFor(req, provider, repo);
   if (!actor.authed) {
     res.status(401).json({ error: "not_authenticated" });
     return;
@@ -464,12 +533,35 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
 app.put("/api/file/:provider/:project/*", async (req, res) => {
   try {
     const provider = routeProvider(req);
-    // 個人 OAuth 或團隊模式選定成員都可以寫；兩者皆無 → 401
-    const actor = actorFor(req, provider);
-    if (!actor.authed) {
-      res.status(401).json({ error: "not_authenticated" });
-      return;
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
     }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
     const filePath = (req.params as Record<string, string>)[0] || "";
     if (!filePath.toLowerCase().endsWith(".md")) {
       res.status(400).json({ error: "note-bridge 只管理 .md 檔" });
@@ -481,7 +573,6 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
     const p = getProvider(provider);
-    const project = projectParam(req);
     const info = await p.getRepo(actor.token, project); // 取預設分支（GitLab 寫入需要）
     const commitMsg = message || `docs: update ${filePath} via note-bridge`;
     const result = await p.writeFile(
@@ -492,12 +583,107 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       commitMsg,
       sha,
       info.defaultBranch,
-      actor.author // 團隊模式才有；個人登入時 undefined = 用 token 帳號
+      actor.author // 團隊模式 / open guest 才有；個人登入時 undefined = 用 token 帳號
     );
     res.json(result);
   } catch (e) {
     handleError(res, e);
   }
+});
+
+// ── guest & admin endpoints ───────────────────────────
+app.post("/api/guest-name", (req, res) => {
+  const rawName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const cleanName = rawName.slice(0, 40);
+  const opts = {
+    httpOnly: false,
+    sameSite: "lax" as const,
+    secure: BASE_URL.startsWith("https"),
+    maxAge: 90 * 24 * 3600 * 1000,
+  };
+  if (cleanName) {
+    res.cookie("nb_guest", cleanName, opts);
+    res.json({ ok: true, name: cleanName });
+  } else {
+    res.clearCookie("nb_guest");
+    res.json({ ok: true, name: null });
+  }
+});
+
+app.post("/api/admin/login", (req, res) => {
+  if (!process.env.ADMIN_KEY) {
+    res.status(501).json({ error: "admin_disabled" });
+    return;
+  }
+  const inputKey = typeof req.body?.key === "string" ? req.body.key : "";
+  const keyBuf = crypto.createHash("sha256").update(inputKey).digest();
+  const envBuf = crypto.createHash("sha256").update(process.env.ADMIN_KEY).digest();
+  if (crypto.timingSafeEqual(keyBuf, envBuf)) {
+    const enc = encrypt(JSON.stringify({ t: Date.now() }));
+    res.cookie("nb_admin", enc, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: BASE_URL.startsWith("https"),
+      maxAge: 7 * 24 * 3600 * 1000,
+    });
+    res.json({ ok: true });
+  } else {
+    console.warn(`[admin] login failure from ${req.ip || req.socket.remoteAddress}`);
+    res.status(401).json({ error: "bad_key" });
+  }
+});
+
+app.post("/api/admin/logout", (_req, res) => {
+  res.clearCookie("nb_admin");
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/state", (req, res) => {
+  const adminEnabled = Boolean(process.env.ADMIN_KEY);
+  const authedAdmin = isAdmin(req);
+  if (!authedAdmin) {
+    res.json({ adminEnabled, isAdmin: false });
+    return;
+  }
+  res.json({
+    adminEnabled,
+    isAdmin: true,
+    openTokenReady: {
+      github: openTokenReady("github"),
+      gitlab: openTokenReady("gitlab"),
+    },
+    entries: listEntries(),
+  });
+});
+
+app.put("/api/admin/repos", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { provider, project, mode } = req.body as { provider?: string; project?: string; mode?: string };
+  if (!provider || !isProviderName(provider) || !project || !project.trim() || !mode || !isAccessMode(mode)) {
+    res.status(400).json({ error: "invalid parameters" });
+    return;
+  }
+  const s = getSession(req.cookies?.[COOKIE]);
+  let by = "admin_key";
+  if (s && process.env.ADMIN_LOGINS) {
+    const allowed = process.env.ADMIN_LOGINS.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (allowed.includes(s.login.toLowerCase())) {
+      by = s.login;
+    }
+  }
+  setMode(provider as ProviderName, project, mode, by);
+  res.json({ ok: true, entries: listEntries() });
+});
+
+app.delete("/api/admin/repos", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { provider, project } = req.body as { provider?: string; project?: string };
+  if (!provider || !isProviderName(provider) || !project || !project.trim()) {
+    res.status(400).json({ error: "invalid parameters" });
+    return;
+  }
+  removeEntry(provider as ProviderName, project);
+  res.json({ ok: true, entries: listEntries() });
 });
 
 // ── shares ─────────────────────────────────────────────
