@@ -148,6 +148,9 @@ docker compose up -d --build
 docker compose logs -f note        # 看到 "note-bridge server on :3210" 即成功
 ```
 
+> **⚠️ 部署注意事項（嚴禁掛載 dist 目錄）：**
+> 啟用 CI 後不得在任何 compose 檔（如 `docker-compose.override.yml`）中掛載 `/app/client/dist` 或 `/app/server/dist`。否則容器啟動時會被 host 舊產物覆蓋。資料持久化只需要主 compose 檔既有的 `./data:/data`，override 檔已無必要。
+
 健康檢查：
 
 ```bash
@@ -216,12 +219,15 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
   - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
   - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
   - **deploy job 出現 cd: Permission denied**：若 deploy job 第一行指令出現 `bash: cd: /home/interagent/note: Permission denied`，代表 gitlab-runner 使用者對部署目錄或其上層目錄缺乏通行/存取權限。重跑安裝腳本 `sudo -E ./deploy/install-gitlab-runner.sh` 即可自動調整權限修復。
+  - **pipeline 全綠但服務畫面沒更新、新功能沒生效**：原因為 compose override 把 host 的 dist 掛進容器覆蓋 image 產物。處置：把 override 改名為 `.disabled` 或移除 dist 掛載後 `docker compose up -d --force-recreate`；CI 現已自動偵測此情況並讓 pipeline 失敗。
 
 ### 4. 新專案要接上這台 runner
 
 該專案建 project runner（tag 填 `dockerhost`）→ 在 docker-host 重跑本腳本（會跳過已安裝步驟）→ 該專案 `.gitlab-ci.yml` 的 deploy job 掛 `tags: [dockerhost]`。
 
 ## 手動部署 / 備援更新
+
+> 註：已由 CI 取代，僅供緊急備援；使用時記得事後移除 dist 掛載。
 
 若 CI/CD 或 Runner 異常時，可手動登入 docker-host 執行以下指令作為備援：
 

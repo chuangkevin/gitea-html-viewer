@@ -70,6 +70,28 @@ deploy-dockerhost:
   script:
     - cd /home/interagent/note
     - git fetch origin && git reset --hard $CI_COMMIT_SHA
+    - |
+      # 防護檢查：防止 docker-compose 檔案將 host 的 dist 掛載進容器覆蓋 CI 建好的 image
+      # 背景：若 Compose 檔將 host 路徑掛載至容器內的 /app/client/dist 或 /app/server/dist，
+      # 會導致 CI 建好的新版程式被 host 上的舊產物覆蓋，造成 pipeline 綠燈但畫面/功能完全沒更新。
+      for f in docker-compose*.yml docker-compose*.yaml; do
+        if [ -f "$f" ]; then
+          if grep -E ':/app/(client|server)/dist' "$f" | grep -v -E -q '^\s*#'; then
+            echo "============================================================"
+            echo "❌ 錯誤：在 $f 中偵測到不當的 dist 目錄掛載！"
+            echo "============================================================"
+            echo "問題說明："
+            echo "  檔案 $f 將宿主機 (host) 的 dist 掛載到容器內的 /app/client/dist 或 /app/server/dist。"
+            echo "  這會導致 CI/CD 構建好的最新容器 Image 內容被宿主機上的舊檔案覆蓋，"
+            echo "  引發「Pipeline 顯示綠燈成功，但服務畫面與新功能完全沒更新」的問題。"
+            echo ""
+            echo "修復方式："
+            echo "  請將該檔改名為 .disabled（例如 mv $f $f.disabled）或移除那兩行 dist 掛載後重跑 Pipeline。"
+            echo "============================================================"
+            exit 1
+          fi
+        fi
+      done
     - docker compose up -d --build
     - |
       echo "=== 開始服務健康檢查 ==="
