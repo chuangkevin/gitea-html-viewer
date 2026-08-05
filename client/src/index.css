@@ -4,8 +4,9 @@
   color-scheme: dark;
 }
 
+html,
 body {
-  @apply bg-zinc-950 text-zinc-100 antialiased;
+  @apply bg-zinc-950 text-zinc-100 antialiased overflow-x-hidden;
 }
 
 /* ── 渲染後的 Markdown 文件樣式（分享頁與預覽共用）── */
@@ -46,7 +47,7 @@ body {
   @apply bg-transparent p-0 text-zinc-200;
 }
 .doc table {
-  @apply w-full my-4 text-base;
+  @apply block overflow-x-auto max-w-full my-4 text-base;
 }
 .doc th {
   @apply border border-zinc-700 bg-zinc-900 px-3 py-2 text-left;
@@ -72,3 +73,21 @@ body {
 .slide .doc li {
   @apply text-2xl;
 }
+
+/* 觸控裝置支援：原本 hover 才顯示的操作在無 hover 裝置上常駐顯示 */
+@media (hover: none) {
+  .opacity-0 {
+    opacity: 1 !important;
+  }
+}
+
+/* 尊重使用者對減少動畫的設定 */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
