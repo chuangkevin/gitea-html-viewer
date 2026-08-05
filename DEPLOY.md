@@ -215,6 +215,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 - **故障排查**：
   - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
   - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
+  - **deploy job 出現 cd: Permission denied**：若 deploy job 第一行指令出現 `bash: cd: /home/interagent/note: Permission denied`，代表 gitlab-runner 使用者對部署目錄或其上層目錄缺乏通行/存取權限。重跑安裝腳本 `sudo -E ./deploy/install-gitlab-runner.sh` 即可自動調整權限修復。
 
 ### 4. 新專案要接上這台 runner
 

@@ -11,6 +11,7 @@
 set -euo pipefail
 
 REG_TOKEN="${REG_TOKEN:-}"
+DEPLOY_DIR="${DEPLOY_DIR:-/home/interagent/note}"
 
 echo "=== 1. 檢查並安裝 GitLab Runner ==="
 if command -v gitlab-runner &> /dev/null; then
@@ -52,28 +53,25 @@ else
 fi
 # 說明：tag 在 GitLab 網頁建立 runner 時填（本專案用 dockerhost），新版 token 流程不可在 CLI 指定，否則 register 會 FATAL。
 
-echo "=== 4. 設定目錄權限說明 ==="
-# Shell Executor 執行時需要對部署目錄 /home/interagent/note 有讀寫權限。
-# 以下提供兩種常用的權限設定作法，請依據現場權限政策擇一執行：
-#
-# 作法 A (使用 POSIX ACL，推薦，不改變原目錄擁有者與群組)：
-#   sudo setfacl -R -m u:gitlab-runner:rwx /home/interagent/note
-#   sudo setfacl -d -m u:gitlab-runner:rwx /home/interagent/note
-#
-# 作法 B (變更目錄權限或擁有者)：
-#   sudo chown -R interagent:docker /home/interagent/note
-#   sudo chmod -R 775 /home/interagent/note
-#   或直接變更擁有者：
-#   sudo chown -R gitlab-runner:gitlab-runner /home/interagent/note
+echo "=== 4. 設定部署目錄權限 ==="
+# 1. 取得上層目錄並設定通行權 (+x)，確保 gitlab-runner 能穿越家目錄進入部署目錄
+#    特別說明：chmod o+x 僅提供目錄通行權 (execute)，不會允許其他使用者檢視或列出家目錄內容 (無 read 權限)，符合最小授權原則
+PARENT_DIR="$(dirname "$DEPLOY_DIR")"
+echo "設定上層目錄 ($PARENT_DIR) 通行權 (o+x)..."
+sudo chmod o+x "$PARENT_DIR"
 
-if command -v setfacl &> /dev/null; then
-  echo "偵測到 setfacl，嘗試自動套用 ACL 權限..."
-  sudo setfacl -R -m u:gitlab-runner:rwx /home/interagent/note || true
-  sudo setfacl -d -m u:gitlab-runner:rwx /home/interagent/note || true
-  echo "已完成 ACL 權限設定。"
-else
-  echo "未偵測到 setfacl 指令，請參考上述註解手動執行 chown / chmod 指令。"
-fi
+# 2. 取得部署目錄擁有者的群組，並將 gitlab-runner 使用者加入該群組
+DEPLOY_GROUP="$(stat -c '%G' "$DEPLOY_DIR")"
+echo "將 gitlab-runner 加入部署目錄群組 ($DEPLOY_GROUP)..."
+sudo usermod -aG "$DEPLOY_GROUP" gitlab-runner
+
+# 3. 對部署目錄設定遞迴群組讀寫與執行權限 (g+rwX)
+echo "設定部署目錄 ($DEPLOY_DIR) 遞迴群組權限 (g+rwX)..."
+sudo chmod -R g+rwX "$DEPLOY_DIR"
+
+# 4. 重啟 gitlab-runner 服務以使新增的群組權限生效
+echo "重啟 gitlab-runner 服務..."
+sudo systemctl restart gitlab-runner
 
 echo "=== 5. 驗證指令提示 ==="
 echo "安裝與註冊已完成！請執行以下指令驗證服務與 Docker 權限："
