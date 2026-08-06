@@ -60,6 +60,37 @@ export default function Workspace() {
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        menuBtnRef.current?.focus();
+      }
+    };
+    const onClickOutside = (e: MouseEvent | TouchEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node) &&
+        menuBtnRef.current &&
+        !menuBtnRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("touchstart", onClickOutside);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("touchstart", onClickOutside);
+    };
+  }, [menuOpen]);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -890,17 +921,17 @@ export default function Workspace() {
 
   return (
     <div className="h-screen flex flex-col">
-      <header className="border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
-        <Link to="/" className="font-mono font-bold">
+      <header className="relative border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
+        <Link to="/" className="font-mono font-bold whitespace-nowrap shrink-0">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-[10px] text-zinc-600">
+        <span className="font-mono text-[10px] text-zinc-600 hidden sm:inline whitespace-nowrap shrink-0">
           {__APP_VERSION__}-{__BUILD_SHA__}
         </span>
-        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>}
+        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate min-w-0 shrink">{projectPath}</span>}
         {readOnly && (
           <span
-            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
+            className="hidden lg:inline-flex rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 whitespace-nowrap shrink-0"
             title={
               me?.team?.enabled && !me.team.selected
                 ? "先在右上角選「你是誰」才能編輯"
@@ -910,14 +941,14 @@ export default function Workspace() {
             {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
           </span>
         )}
-        <div className="flex-1" />
+        <div className="flex-1 min-w-0" />
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
-          <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
+          <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-3 py-1.5 ${view === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${view === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
               </button>
@@ -927,23 +958,23 @@ export default function Workspace() {
         {activePath && activeKind === "md" && (
           <button
             onClick={() => navigate(`/p/${refPath}/${activePath}`)}
-            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+            className="hidden lg:inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap shrink-0"
           >
             🎞️ 簡報
           </button>
         )}
         {(activePath || params.has("dir")) && (
-          <div className="flex items-center gap-1.5">
+          <div className="hidden lg:flex items-center gap-1.5 shrink-0">
             <button
               onClick={handleCopyShare}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors whitespace-nowrap"
               title="分享＝在 note 裡開啟"
             >
               {copiedShare ? "已複製 ✓" : "🔗 分享"}
             </button>
             <button
               onClick={handleCopySite}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors whitespace-nowrap"
               title="獨立網站＝乾淨的網頁、沒有 note 介面"
             >
               {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
@@ -952,12 +983,10 @@ export default function Workspace() {
         )}
         {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
           <>
-            {/* 分享連結的內容是用「分享者的 session」持續拉取，團隊身分沒有 session，
-                所以分享功能仍只開給個人 OAuth 登入者 */}
             {me?.login && (
               <button
                 onClick={handleShare}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+                className="hidden lg:inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap shrink-0"
               >
                 分享 Token
               </button>
@@ -965,13 +994,12 @@ export default function Workspace() {
             <button
               onClick={handleSave}
               disabled={save === "saving"}
-              className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"
+              className="rounded-lg bg-sky-600 px-3 py-1 sm:px-4 sm:py-1.5 text-xs sm:text-sm font-semibold hover:bg-sky-500 disabled:opacity-50 whitespace-nowrap shrink-0"
             >
               {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
             </button>
           </>
         )}
-        {/* 免登入 open 模式：顯示署名輸入框（訪客 commit author 名字） */}
         {accessMode === "open" && me && !me.login && !me.team?.selected && (
           <input
             type="text"
@@ -983,21 +1011,21 @@ export default function Workspace() {
                 e.currentTarget.blur();
               }
             }}
-            className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
+            className="hidden lg:block bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px] whitespace-nowrap shrink-0"
           />
         )}
-        {/* 團隊模式：不必個人 OAuth，選「你是誰」就用該成員的 token 讀寫 */}
         {me && !me.login && me.team?.enabled && (
-          <IdentityPicker team={me.team} onChange={handleIdentityChange} />
+          <div className="hidden lg:block shrink-0">
+            <IdentityPicker team={me.team} onChange={handleIdentityChange} />
+          </div>
         )}
-        {/* 右上角：未登入顯示登入鈕（依目前 repo 來源） */}
         {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
           <a
             href={loginUrl}
             className={
               me.team?.enabled
-                ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
-                : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+                ? "hidden lg:inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 whitespace-nowrap shrink-0"
+                : "hidden lg:inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400 whitespace-nowrap shrink-0"
             }
           >
             <ProviderIcon provider={provider} className="h-4 w-4" />
@@ -1005,20 +1033,150 @@ export default function Workspace() {
           </a>
         )}
         {me?.login && (
-          <span className="flex items-center gap-1.5 text-sm text-zinc-500">
+          <span className="hidden lg:inline-flex items-center gap-1.5 text-sm text-zinc-500 whitespace-nowrap shrink-0">
             {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
             {me.login}
           </span>
         )}
-        {/* Admin 連結 */}
         {me?.admin?.enabled && (
           <Link
             to="/admin"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            className="hidden lg:inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400 whitespace-nowrap shrink-0"
             title="管理控制台"
           >
             ⚙️ 管理
           </Link>
+        )}
+
+        <button
+          ref={menuBtnRef}
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="更多選項"
+          aria-expanded={menuOpen}
+          className="lg:hidden rounded-lg border border-zinc-700 px-2.5 py-1 sm:px-3 sm:py-1.5 text-sm text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
+        >
+          ⋯
+        </button>
+
+        {menuOpen && (
+          <div
+            ref={menuRef}
+            className="lg:hidden absolute right-4 top-full mt-2 w-64 rounded-xl border border-zinc-700 bg-zinc-900 p-3 shadow-2xl z-50 flex flex-col gap-2.5"
+          >
+            {readOnly && (
+              <div className="flex items-center justify-between px-1 py-0.5">
+                <span className="text-xs text-zinc-400">權限</span>
+                <span
+                  className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 whitespace-nowrap"
+                  title={
+                    me?.team?.enabled && !me.team.selected
+                      ? "先在右上角選「你是誰」才能編輯"
+                      : "沒有這個 repo 的寫入權限"
+                  }
+                >
+                  {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
+                </span>
+              </div>
+            )}
+            {activePath && activeKind === "md" && (
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  navigate(`/p/${refPath}/${activePath}`);
+                }}
+                className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+              >
+                🎞️ 簡報
+              </button>
+            )}
+            {(activePath || params.has("dir")) && (
+              <>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleCopyShare();
+                  }}
+                  className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                >
+                  {copiedShare ? "已複製 ✓" : "🔗 分享"}
+                </button>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    handleCopySite();
+                  }}
+                  className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                >
+                  {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
+                </button>
+              </>
+            )}
+            {activePath && (activeKind === "md" || activeKind === "html") && canWrite && me?.login && (
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  handleShare();
+                }}
+                className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+              >
+                分享 Token
+              </button>
+            )}
+            {accessMode === "open" && me && !me.login && !me.team?.selected && (
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-400 px-1">署名：</label>
+                <input
+                  type="text"
+                  defaultValue={guestName}
+                  placeholder="你是誰？（選填，會寫進 commit）"
+                  onBlur={(e) => void api.setGuestName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                      setMenuOpen(false);
+                    }
+                  }}
+                  className="w-full bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 whitespace-nowrap"
+                />
+              </div>
+            )}
+            {me && !me.login && me.team?.enabled && (
+              <div className="space-y-1">
+                <label className="text-xs text-zinc-400 px-1">選擇身分：</label>
+                <IdentityPicker
+                  team={me.team}
+                  onChange={() => {
+                    setMenuOpen(false);
+                    handleIdentityChange();
+                  }}
+                />
+              </div>
+            )}
+            {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
+              <a
+                href={loginUrl}
+                className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-400 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+              >
+                <ProviderIcon provider={provider} className="h-4 w-4" />
+                登入
+              </a>
+            )}
+            {me?.login && (
+              <div className="flex items-center gap-2 px-1 text-sm text-zinc-400 border-t border-zinc-800 pt-2">
+                {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
+                <span className="truncate">{me.login}</span>
+              </div>
+            )}
+            {me?.admin?.enabled && (
+              <Link
+                to="/admin"
+                onClick={() => setMenuOpen(false)}
+                className="w-full inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-400 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+              >
+                ⚙️ 管理
+              </Link>
+            )}
+          </div>
         )}
       </header>
 
