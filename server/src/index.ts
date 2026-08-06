@@ -394,10 +394,11 @@ function projectParam(req: express.Request): string {
 }
 /**
  * 這個請求要用「誰的 token」打 provider API。優先序：
- *   1. 個人 OAuth session（同 provider）→ 用他自己的 token
- *   2. 團隊模式所選成員（同 provider）→ 用該成員的 token，commit author 記成該成員
- *   3. 指定 repo 設為 open 模式、或設為 admin 模式且當前使用者為 admin 且已設定 open token → 用 open token
- *   4. 都沒有 → 該 provider 的後備 token（只夠讀 public）
+ *   1. 指定 repo 設為 open 模式且已設定 open token → 一律用 open token（優先於個人登入，避免登入帳號無權限時反而讀不到），commit author 保留當前身分（個人 session > 團隊成員 > 訪客）
+ *   2. 個人 OAuth session（同 provider）→ 用他自己的 token
+ *   3. 團隊模式所選成員（同 provider）→ 用該成員的 token，commit author 記成該成員
+ *   4. 指定 repo 設為 admin 模式且當前使用者為 admin 且已設定 open token → 用 open token
+ *   5. 都沒有 → 該 provider 的後備 token（只夠讀 public）
  * authed = 有具名身分 → 可讀 private、可寫。token 只在 server 內流動。
  */
 interface Actor {
@@ -447,6 +448,28 @@ function requireAdmin(req: express.Request, res: express.Response): boolean {
 }
 
 function actorFor(req: express.Request, provider: ProviderName, project?: string): Actor {
+  if (project && openTokenReady(provider) && getMode(provider, project) === "open") {
+    const s = req.nbSession ?? null;
+    let author: CommitAuthor;
+    if (s && s.provider === provider) {
+      author = {
+        name: s.login,
+        email: process.env.NOTE_OPEN_AUTHOR_EMAIL || defaultGuestAuthor().email,
+      };
+    } else {
+      const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+      if (sel && sel.identity.provider === provider) {
+        author = { name: sel.identity.name, email: sel.identity.email };
+      } else {
+        author = guestAuthor(req);
+      }
+    }
+    return {
+      token: openToken(provider),
+      authed: true,
+      author,
+    };
+  }
   const s = req.nbSession ?? null;
   if (s && s.provider === provider) return { token: s.token, authed: true };
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
@@ -459,7 +482,7 @@ function actorFor(req: express.Request, provider: ProviderName, project?: string
   }
   if (project && openTokenReady(provider)) {
     const mode = getMode(provider, project);
-    if (mode === "open" || (mode === "admin" && isAdmin(req))) {
+    if (mode === "admin" && isAdmin(req)) {
       return {
         token: openToken(provider),
         authed: true,
