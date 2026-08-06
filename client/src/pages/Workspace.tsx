@@ -61,6 +61,7 @@ export default function Workspace() {
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -91,6 +92,17 @@ export default function Workspace() {
       document.removeEventListener("touchstart", onClickOutside);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSidebarOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sidebarOpen]);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -922,6 +934,14 @@ export default function Workspace() {
   return (
     <div className="h-screen flex flex-col">
       <header className="relative border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
+        <button
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label="開啟選單"
+          aria-expanded={sidebarOpen}
+          className="lg:hidden rounded-lg border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
+        >
+          ☰
+        </button>
         <Link to="/" className="font-mono font-bold whitespace-nowrap shrink-0">
           note<span className="text-sky-400">-bridge</span>
         </Link>
@@ -1207,10 +1227,18 @@ export default function Workspace() {
         </div>
       )}
 
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex min-h-0 relative">
+        {sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden fixed inset-0 bg-black/50 z-40"
+          />
+        )}
         {/* 左側欄 */}
         <aside
-          className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block relative"
+          className={`w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out shadow-xl lg:shadow-none lg:relative lg:z-auto lg:translate-x-0 ${
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -1294,6 +1322,7 @@ export default function Workspace() {
               onSelectFile={(f) => {
                 setActiveFolder("");
                 setParams({ f });
+                setSidebarOpen(false);
               }}
               onSelectFolder={(dir) => {
                 setActiveFolder(dir);
