@@ -572,6 +572,8 @@ function sendRaw(res: express.Response, filePath: string, buf: Buffer, asAttachm
   const mime = mimeFor(filePath);
   res.setHeader("Content-Type", mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
+  // 讓沙箱 iframe（opaque origin）內的頁面能 fetch 原始檔（唯讀公開資料；帶 cookie 的請求不受 * 影響）
+  res.setHeader("Access-Control-Allow-Origin", "*");
   if (mime.startsWith("text/html")) {
     res.setHeader("Content-Security-Policy", "sandbox allow-scripts allow-downloads allow-top-navigation-by-user-activation");
   }
