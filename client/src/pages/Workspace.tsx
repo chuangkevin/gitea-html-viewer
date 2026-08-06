@@ -171,11 +171,14 @@ export default function Workspace() {
     : null;
 
   useEffect(() => {
-    if (!isPrivate || !hasIdentity || rawGrant) return;
+    if (!isPrivate || accessMode === "open" || !hasIdentity || rawGrant) return;
     api.rawGrant(provider, projectPath).then((r) => setRawGrant(r.grant)).catch(() => {});
-  }, [isPrivate, hasIdentity, rawGrant, provider, projectPath]);
+  }, [isPrivate, accessMode, hasIdentity, rawGrant, provider, projectPath]);
 
-  const rawBase = isPrivate && rawGrant ? `/rawt/${rawGrant}` : "/raw";
+    // open 模式的 repo 本來就免登入可讀，掛 grant 只會多一個會過期的東西，
+  // 讓連結在 grant 失效後反而打不開。只有真正需要授權時才掛。
+  const needsGrant = isPrivate && accessMode !== "open";
+  const rawBase = needsGrant && rawGrant ? `/rawt/${rawGrant}` : "/raw";
 
   useEffect(() => {
     if (!activePath) return;
@@ -401,7 +404,7 @@ export default function Workspace() {
 
   function startPresent(items: string[], title: string) {
     if (items.length === 0) return;
-    const g = isPrivate && rawGrant ? `&grant=${rawGrant}` : "";
+    const g = needsGrant && rawGrant ? `&grant=${rawGrant}` : "";
     navigate(
       `/present/${refPath}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}`
     );
@@ -1932,7 +1935,7 @@ export default function Workspace() {
                           ⬇️ 下載
                         </a>
                         <a
-                          href={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                          href={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
@@ -1944,7 +1947,7 @@ export default function Workspace() {
                     <iframe
                       ref={iframeRef}
                       key={activePath}
-                      src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                      src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
                       /* ⚠️ 刻意不給 allow-same-origin：iframe 會是 opaque origin，能跑 JS 但碰不到 note 主站的 cookie / DOM */
                       sandbox="allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-top-navigation-by-user-activation"
                       className="w-full flex-1 border-0 bg-white"

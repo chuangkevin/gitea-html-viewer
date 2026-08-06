@@ -776,6 +776,11 @@ function resolveGrant(grantId: string, provider: ProviderName, project: string):
   return grantToken(g);
 }
 
+// 分享連結的授權效期。原本 6 小時，實務上「早上分享、下午就失效」，
+// 收到的人只看到「需要授權」。grant 本身不含 token（每次現查），
+// 撤銷靠移除成員或關掉 repo 的 open 模式，所以長效期並不等於長期風險。
+const RAW_GRANT_TTL_MS = 90 * 24 * 3600e3;   // 90 天
+
 app.post("/api/raw-grant", async (req, res) => {
   const { provider: pv, repo } = req.body as { provider?: string; repo?: string };
   if (!repo || !isProviderName(pv || "")) {
@@ -796,13 +801,18 @@ app.post("/api/raw-grant", async (req, res) => {
   }
   const grant = crypto.randomBytes(12).toString("base64url");
   const s = req.nbSession ?? null;
+  // 綁「成員身分」優先於綁 session：session 一過期，綁 sid 的 grant 就死了，
+  // 分享出去的連結會在幾小時後變成「需要授權」——那正是要避免的事。
+  // 綁成員身分則是每次現查 token，人還在清單裡連結就一直有效。
+  const identName = actor.author?.name ?? null;
+  const sid = identName ? null : (s && s.provider === provider ? s.sid : null);
   createRawGrant(
     grant,
     provider,
     repo,
-    s && s.provider === provider ? s.sid : null,
-    actor.author?.name ?? null,
-    Date.now() + 6 * 3600e3,
+    sid,
+    identName,
+    Date.now() + RAW_GRANT_TTL_MS,
   );
   res.json({ grant });
 });
