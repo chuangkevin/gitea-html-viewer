@@ -147,15 +147,15 @@ export default function Admin() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-6">
+    <div className="min-h-screen bg-slate-900 text-slate-100 p-3 sm:p-6">
       <div className="max-w-5xl mx-auto space-y-6">
         {/* Top bar */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-4">
           <div className="flex items-center space-x-3">
             <Link to="/" className="text-sm text-slate-400 hover:text-white transition">
               ← 返回首頁
             </Link>
-            <h1 className="text-xl font-bold text-white">Note Bridge 管理員控制台</h1>
+            <h1 className="text-base sm:text-xl font-bold text-white">Note Bridge 管理員控制台</h1>
           </div>
           {state.isAdmin && (
             <button
@@ -229,21 +229,21 @@ export default function Admin() {
             {/* 新增 Entry 表單 */}
             <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-5 space-y-4">
               <h2 className="text-base font-semibold text-white">新增／修改 Repo 存取模式</h2>
-              <form onSubmit={handleAddEntry} className="flex flex-wrap items-end gap-3">
-                <div>
+              <form onSubmit={handleAddEntry} className="flex flex-col sm:flex-row sm:items-end gap-3">
+                <div className="w-full sm:w-auto">
                   <label className="block text-xs text-slate-400 mb-1">Provider</label>
                   <select
                     value={newProvider}
                     onChange={(e) => setNewProvider(e.target.value as "github" | "gitlab")}
-                    className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full sm:w-auto bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                   >
                     <option value="gitlab">GitLab</option>
                     <option value="github">GitHub</option>
                   </select>
                 </div>
-                <div className="flex-1 min-w-[240px]">
+                <div className="flex-1 min-w-0 w-full sm:w-auto sm:min-w-[240px]">
                   <label className="block text-xs text-slate-400 mb-1">
-                    Project Path <span className="text-slate-500">（填原始路徑，不要 URL-encode）</span>
+                    Project Path <span className="block sm:inline text-slate-500">（填原始路徑，不要 URL-encode）</span>
                   </label>
                   <input
                     type="text"
@@ -254,12 +254,12 @@ export default function Admin() {
                     className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                   />
                 </div>
-                <div>
+                <div className="w-full sm:w-auto">
                   <label className="block text-xs text-slate-400 mb-1">存取模式</label>
                   <select
                     value={newMode}
                     onChange={(e) => setNewMode(e.target.value as AccessMode)}
-                    className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full sm:w-auto bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                   >
                     {MODE_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>
@@ -270,7 +270,7 @@ export default function Admin() {
                 </div>
                 <button
                   type="submit"
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded font-medium transition"
+                  className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded font-medium transition"
                 >
                   儲存模式
                 </button>
@@ -279,7 +279,7 @@ export default function Admin() {
 
             {/* Existing Entries Table */}
             <div className="bg-slate-800/60 border border-slate-700 rounded-lg overflow-hidden">
-              <div className="p-4 border-b border-slate-700 flex justify-between items-center">
+              <div className="p-4 border-b border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                 <h2 className="text-base font-semibold text-white">已設定的 Repo 白名單 ({state.entries?.length || 0})</h2>
                 <div className="text-xs text-slate-400">未在清單中的 Repo 預設為「要登入才能編」</div>
               </div>

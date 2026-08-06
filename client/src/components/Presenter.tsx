@@ -78,7 +78,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
   const text = texts[path];
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-dvh flex flex-col">
       <div className="flex-1 min-h-0 relative">
         {error && (
           <div className="absolute inset-x-0 top-0 z-20 bg-red-950/80 text-red-300 text-xs px-4 py-2">
@@ -111,7 +111,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
         ) : kind === "md" ? (
           <div className="h-full overflow-y-auto">
             <article
-              className="doc max-w-4xl mx-auto px-8 py-10"
+              className="doc max-w-4xl mx-auto px-4 sm:px-8 py-10"
               dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
             />
           </div>
@@ -122,13 +122,13 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-zinc-900 bg-zinc-950 px-4 py-2.5 flex items-center gap-3 text-xs text-zinc-500">
+      <footer className="shrink-0 border-t border-zinc-900 bg-zinc-950 px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs text-zinc-500">
         {exitUrl && (
           <a href={exitUrl} className="hover:text-zinc-200">
             ← 離開
           </a>
         )}
-        <button onClick={() => go(-1)} disabled={idx === 0} className="disabled:opacity-30 hover:text-zinc-200">
+        <button onClick={() => go(-1)} disabled={idx === 0} className="disabled:opacity-30 hover:text-zinc-200 min-w-10 min-h-10 inline-flex items-center justify-center">
           ◀
         </button>
         <span className="font-mono">
@@ -137,11 +137,11 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
         <button
           onClick={() => go(1)}
           disabled={idx === items.length - 1}
-          className="disabled:opacity-30 hover:text-zinc-200"
+          className="disabled:opacity-30 hover:text-zinc-200 min-w-10 min-h-10 inline-flex items-center justify-center"
         >
           ▶
         </button>
-        <span className="font-mono text-zinc-400 truncate flex-1">
+        <span className="font-mono text-zinc-400 truncate flex-1 hidden sm:inline">
           {fileIcon(path)} {path}
         </span>
         <div className="hidden md:flex items-center gap-1 max-w-[40%] overflow-hidden">

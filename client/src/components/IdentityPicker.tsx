@@ -166,8 +166,8 @@ export default function IdentityPicker({
 
   const base =
     size === "lg"
-      ? "rounded-lg bg-zinc-900 border px-4 py-2.5 text-base w-64"
-      : "rounded-lg bg-zinc-900 border px-3 py-1.5 text-sm w-48";
+      ? "rounded-lg bg-zinc-900 border px-4 py-2.5 text-base w-full sm:w-64"
+      : "rounded-lg bg-zinc-900 border px-3 py-1.5 text-sm w-full sm:w-48";
 
   return (
     <div ref={containerRef} className="relative" role="combobox" aria-expanded={open} aria-haspopup="listbox">

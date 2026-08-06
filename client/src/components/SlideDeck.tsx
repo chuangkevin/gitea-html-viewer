@@ -24,19 +24,19 @@ export default function SlideDeck({ content, docUrl }: { content: string; docUrl
   }, [go, slides.length]);
 
   return (
-    <div className="h-screen flex flex-col select-none">
+    <div className="h-dvh flex flex-col select-none">
       <div className="relative flex-1 min-h-0 slide">
         <button
           aria-label="上一張"
           onClick={() => go(-1)}
-          className="absolute left-0 top-0 h-full w-1/4 z-10 cursor-w-resize"
+          className="absolute left-0 top-0 h-full w-12 sm:w-1/4 z-10 cursor-w-resize"
         />
         <button
           aria-label="下一張"
           onClick={() => go(1)}
-          className="absolute right-0 top-0 h-full w-1/4 z-10 cursor-e-resize"
+          className="absolute right-0 top-0 h-full w-12 sm:w-1/4 z-10 cursor-e-resize"
         />
-        <div className="h-full overflow-y-auto grid place-items-center px-10 md:px-24 py-12">
+        <div className="h-full overflow-y-auto grid place-items-center px-4 sm:px-10 md:px-24 py-12">
           <article
             className="doc max-w-4xl w-full"
             dangerouslySetInnerHTML={{ __html: renderMarkdown(slides[idx] ?? "") }}

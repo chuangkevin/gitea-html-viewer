@@ -47,7 +47,7 @@ export default function SharePage() {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-zinc-800 px-6 py-3 flex items-center gap-3 text-sm sticky top-0 bg-zinc-950/90 backdrop-blur">
+      <header className="border-b border-zinc-800 px-3 sm:px-6 py-3 flex flex-wrap items-center gap-2 text-sm sticky top-0 bg-zinc-950/90 backdrop-blur">
         <span className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </span>
@@ -62,7 +62,7 @@ export default function SharePage() {
           🎞️ 以簡報開啟
         </Link>
       </header>
-      <main className="max-w-3xl mx-auto px-6 py-10">
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
         <article className="doc" dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.content ?? "") }} />
         <footer className="mt-16 pt-6 border-t border-zinc-900 text-xs text-zinc-600">
           以 <span className="font-mono">note-bridge</span> 分享 — 文件原文存放於 Git repo（{doc.repo}）

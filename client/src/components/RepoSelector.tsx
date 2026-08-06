@@ -376,7 +376,7 @@ function RepoItem({
       <button
         onClick={(e) => { e.stopPropagation(); onTogglePin(entry); }}
         className={`shrink-0 text-xs focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded p-0.5 ${
-          pinned ? "text-amber-400 hover:text-amber-300" : "text-zinc-600 hover:text-amber-400 opacity-0 group-hover:opacity-100"
+          pinned ? "text-amber-400 hover:text-amber-300" : "text-zinc-600 hover:text-amber-400 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100"
         }`}
         title={pinned ? "取消釘選" : "釘選"}
         aria-label={pinned ? "取消釘選" : "釘選"}
@@ -386,7 +386,7 @@ function RepoItem({
       {showRemove && (
         <button
           onClick={(e) => { e.stopPropagation(); onRemove(entry); }}
-          className="shrink-0 text-xs text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded p-0.5"
+          className="shrink-0 text-xs text-zinc-600 hover:text-red-400 [@media(hover:none)]:opacity-100 opacity-0 group-hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-500 rounded p-0.5"
           title="從最近清單移除"
           aria-label="從最近清單移除"
         >

@@ -945,7 +945,7 @@ export default function Workspace() {
   }
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-dvh flex flex-col">
       <header className="relative border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
         <button
           onClick={() => setSidebarOpen((v) => !v)}
@@ -961,7 +961,7 @@ export default function Workspace() {
         <span className="font-mono text-[10px] text-zinc-600 hidden sm:inline whitespace-nowrap shrink-0">
           {__APP_VERSION__}-{__BUILD_SHA__}
         </span>
-        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate min-w-0 shrink">{projectPath}</span>}
+        {hasRepo && <span className="font-mono text-base text-zinc-500 max-w-[120px] sm:max-w-xs truncate min-w-0 shrink">{projectPath}</span>}
         {readOnly && (
           <span
             className="hidden lg:inline-flex rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 whitespace-nowrap shrink-0"
@@ -1400,7 +1400,7 @@ export default function Workspace() {
             </div>
           ) : params.has("dir") ? (
           <div className="flex-1 overflow-auto p-6 max-w-3xl mx-auto w-full">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800 pb-4 mb-6">
               <div className="flex items-center gap-3">
                 <h2 className="text-xl font-bold font-mono text-zinc-100 flex items-center gap-2">
                   📁 {cleanDir || "根目錄"}
@@ -1679,7 +1679,7 @@ export default function Workspace() {
               />
             )}
             {mentionQuery !== null && filteredMentions.length > 0 && (
-              <div className="absolute left-6 top-14 z-50 w-80 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
+              <div className="absolute left-2 right-2 w-auto sm:left-6 sm:right-auto sm:w-80 max-w-[calc(100vw-1rem)] top-14 z-50 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
                 <div className="px-3 py-1.5 text-xs text-zinc-400 border-b border-zinc-800 font-mono flex justify-between">
                   <span>@ 自動完成 ({filteredMentions.length})</span>
                   <span>↑↓ 移動 · Enter/Tab 選取</span>

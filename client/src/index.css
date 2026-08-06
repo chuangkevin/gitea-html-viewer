@@ -46,13 +46,16 @@ body {
   @apply bg-transparent p-0 text-zinc-200;
 }
 .doc table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   @apply w-full my-4 text-base;
 }
 .doc th {
-  @apply border border-zinc-700 bg-zinc-900 px-3 py-2 text-left;
+  @apply border border-zinc-700 bg-zinc-900 px-3 py-2 text-left whitespace-nowrap;
 }
 .doc td {
-  @apply border border-zinc-800 px-3 py-2;
+  @apply border border-zinc-800 px-3 py-2 whitespace-nowrap;
 }
 .doc img {
   @apply max-w-full rounded-lg my-4;
@@ -63,12 +66,12 @@ body {
 
 /* ── 簡報模式：一頁一張投影片 ── */
 .slide .doc h1 {
-  @apply text-5xl border-0 mt-0;
+  @apply text-3xl lg:text-5xl border-0 mt-0;
 }
 .slide .doc h2 {
-  @apply text-4xl mt-0;
+  @apply text-2xl lg:text-4xl mt-0;
 }
 .slide .doc p,
 .slide .doc li {
-  @apply text-2xl;
+  @apply text-lg lg:text-2xl;
 }

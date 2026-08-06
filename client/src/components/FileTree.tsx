@@ -172,7 +172,7 @@ export default function FileTree({
                     ? "bg-sky-950 text-sky-300"
                     : "text-zinc-400 hover:bg-zinc-900"
               }`}
-              style={{ paddingLeft: `${depth * 14 + 4}px` }}
+              style={{ paddingLeft: `${Math.min(depth, 6) * 10 + 4}px` }}
               onClick={() => {
                 if (isFolder) {
                   toggleFolder(node.path);
@@ -195,7 +195,7 @@ export default function FileTree({
               )}
               <span className="w-3 shrink-0 text-zinc-600">{isFolder ? (isOpen ? "▾" : "▸") : ""}</span>
               <span className="shrink-0">{isFolder ? (isOpen ? "📂" : "📁") : fileIcon(node.name)}</span>
-              <span className="truncate py-1">{node.name}</span>
+              <span className="truncate py-1 min-w-0 flex-1">{node.name}</span>
             </div>
             {isFolder && isOpen && renderNodes(node.children!, depth + 1)}
           </li>
