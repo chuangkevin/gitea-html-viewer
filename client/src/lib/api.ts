@@ -128,11 +128,11 @@ export const api = {
     ),
   readFile: (ref: string, path: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
-  saveFile: (ref: string, path: string, content: string, sha?: string, message?: string) =>
+  saveFile: (ref: string, path: string, content?: string, sha?: string, message?: string, contentBase64?: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, sha, message }),
+      body: JSON.stringify(contentBase64 ? { contentBase64, sha, message } : { content, sha, message }),
     }).then((r) => j<{ sha: string }>(r)),
   uploadFile: (ref: string, path: string, contentBase64: string, message?: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`, {
@@ -140,6 +140,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contentBase64, message }),
     }).then((r) => j<{ sha: string }>(r)),
+  batchUpload: (ref: string, files: Array<{ path: string; contentBase64: string }>, message?: string) =>
+    fetch(`/api/upload/${ref}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files, message }),
+    }).then((r) =>
+      j<{ ok: boolean; count: number; batched: boolean; failed: Array<{ path: string; error: string }> }>(r)
+    ),
   setGuestName: (name: string) =>
     fetch("/api/guest-name", {
       method: "POST",

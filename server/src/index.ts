@@ -1098,6 +1098,155 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
   }
 });
 
+app.post("/api/upload/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const { files, message } = req.body as {
+      files?: Array<{ path: string; contentBase64: string }>;
+      message?: string;
+    };
+
+    if (!Array.isArray(files) || files.length === 0) {
+      res.status(400).json({ error: "files_required" });
+      return;
+    }
+
+    if (files.length > 200) {
+      res.status(413).json({ error: "too_many_files", message: "單次最多上傳 200 個檔案" });
+      return;
+    }
+
+    const MAX_SINGLE_SIZE = 20 * 1024 * 1024;
+    const MAX_TOTAL_SIZE = 50 * 1024 * 1024;
+    let totalSize = 0;
+
+    for (const f of files) {
+      if (!f || typeof f.path !== "string" || typeof f.contentBase64 !== "string") {
+        res.status(400).json({ error: "invalid_file_format" });
+        return;
+      }
+      const size = Buffer.from(f.contentBase64, "base64").byteLength;
+      if (size > MAX_SINGLE_SIZE) {
+        res.status(413).json({ error: "file_too_large", message: `單檔 ${f.path} 超過 20MB 限制` });
+        return;
+      }
+      totalSize += size;
+    }
+
+    if (totalSize > MAX_TOTAL_SIZE) {
+      res.status(413).json({ error: "batch_too_large", message: "單次總上傳量超過 50MB 限制" });
+      return;
+    }
+
+    const failed: { path: string; error: string }[] = [];
+    const validFiles: { path: string; contentBase64: string }[] = [];
+
+    for (const f of files) {
+      const filePath = f.path;
+      if (
+        !filePath ||
+        filePath.startsWith("/") ||
+        filePath.includes("\\") ||
+        filePath.includes("..")
+      ) {
+        failed.push({ path: filePath || "", error: "invalid_path" });
+        continue;
+      }
+      const segments = filePath.split("/");
+      let hasInvalidSeg = false;
+      for (const seg of segments) {
+        if (seg === "" || seg === "." || seg === "..") {
+          hasInvalidSeg = true;
+          break;
+        }
+      }
+      if (hasInvalidSeg) {
+        failed.push({ path: filePath, error: "invalid_path" });
+        continue;
+      }
+      validFiles.push(f);
+    }
+
+    const p = getProvider(provider);
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    const commitMsg = message || `上傳 ${validFiles.length} 個檔案`;
+
+    if (p.batchWriteFiles) {
+      const result = await p.batchWriteFiles(
+        actor.token,
+        project,
+        validFiles,
+        commitMsg,
+        info.defaultBranch,
+        actor.author
+      );
+      res.json({
+        ok: true,
+        count: result.count,
+        batched: true,
+        failed: [...failed, ...result.failed],
+      });
+    } else {
+      let count = 0;
+      for (const f of validFiles) {
+        try {
+          await p.writeFile(
+            actor.token,
+            project,
+            f.path,
+            f.contentBase64,
+            commitMsg,
+            undefined,
+            info.defaultBranch,
+            actor.author,
+            true
+          );
+          count++;
+        } catch (e: any) {
+          failed.push({ path: f.path, error: e?.message || "write_failed" });
+        }
+      }
+      res.json({ ok: true, count, batched: false, failed });
+    }
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
 // ── guest & admin endpoints ───────────────────────────
 app.post("/api/guest-name", (req, res) => {
   const rawName = typeof req.body?.name === "string" ? req.body.name.trim() : "";

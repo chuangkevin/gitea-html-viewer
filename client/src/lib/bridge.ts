@@ -20,7 +20,7 @@
 export interface BridgeContext {
   iframe: HTMLIFrameElement;
   readFile: (path: string) => Promise<string>;
-  saveFile: (path: string, content: string) => Promise<void>;
+  saveFile: (path: string, content?: string, contentBase64?: string) => Promise<void>;
   openPath: (path: string) => void;
   listFiles: (
     path: string,
@@ -34,14 +34,17 @@ export interface BridgeContext {
  * - 必須為字串、非空且長度小於 500 字元
  * - 不得以 '/' 開頭
  * - 不得包含 '..' 或反斜線 '\'
- * - 讀與寫一律只允許 '.md' 副檔名
+ * - 任一路徑段不可為空或為 '.' / '..'
  */
 function isValidPath(path: unknown): path is string {
   if (typeof path !== "string") return false;
   if (path.length === 0 || path.length >= 500) return false;
   if (path.startsWith("/")) return false;
   if (path.includes("..") || path.includes("\\")) return false;
-  if (!path.toLowerCase().endsWith(".md")) return false;
+  const segments = path.split("/");
+  for (const seg of segments) {
+    if (seg === "" || seg === "." || seg === "..") return false;
+  }
   return true;
 }
 
@@ -50,11 +53,10 @@ function isValidPath(path: unknown): path is string {
  * - 必須為字串、非空且長度小於 500 字元
  * - 不得以 '/' 開頭
  * - 不得包含 '..' 或反斜線 '\'
- * - 資料夾路徑不套用 '.md' 副檔名限制
  */
 function isValidFolderPath(path: unknown): path is string {
   if (typeof path !== "string") return false;
-  if (path.length === 0 || path.length >= 500) return false;
+  if (path.length >= 500) return false;
   if (path.startsWith("/")) return false;
   if (path.includes("..") || path.includes("\\")) return false;
   return true;
@@ -84,7 +86,7 @@ export function attachBridge(ctx: BridgeContext): () => void {
     try {
       const data = e.data;
       if (!data || typeof data !== "object") return;
-      const { type, path, content } = data;
+      const { type, path, content, contentBase64 } = data;
 
       if (type === "nb:load") {
         if (!isValidPath(path)) {
@@ -98,12 +100,20 @@ export function attachBridge(ctx: BridgeContext): () => void {
           postReply({ type: "nb:error", message: `無效或不允許的檔案路徑：${String(path)}` });
           return;
         }
-        if (typeof content !== "string" || content.length >= 2 * 1024 * 1024) {
-          postReply({ type: "nb:error", message: "檔案內容必須為字串且大小必須小於 2MB" });
+        if (typeof contentBase64 === "string") {
+          await ctx.saveFile(path, undefined, contentBase64);
+          postReply({ type: "nb:saved", path });
+        } else if (typeof content === "string") {
+          if (content.length >= 20 * 1024 * 1024) {
+            postReply({ type: "nb:error", message: "檔案內容必須小於 20MB" });
+            return;
+          }
+          await ctx.saveFile(path, content);
+          postReply({ type: "nb:saved", path });
+        } else {
+          postReply({ type: "nb:error", message: "檔案內容 (content 或 contentBase64) 為必填" });
           return;
         }
-        await ctx.saveFile(path, content);
-        postReply({ type: "nb:saved", path });
       } else if (type === "nb:open") {
         if (!isValidPath(path)) {
           postReply({ type: "nb:error", message: `無效或不允許的檔案路徑：${String(path)}` });

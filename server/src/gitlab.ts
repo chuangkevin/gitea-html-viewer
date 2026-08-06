@@ -231,6 +231,59 @@ export const gitlab: Provider = {
       return { sha: "" };
     }
   },
+
+  async batchWriteFiles(token, projectPath, files, message, branch, author) {
+    const failed: { path: string; error: string }[] = [];
+    const actions: { action: "create" | "update"; file_path: string; content: string; encoding: "base64" }[] = [];
+
+    for (const f of files) {
+      try {
+        const res = await glRaw(
+          token,
+          `/projects/${pid(projectPath)}/repository/files/${encFile(f.path)}?ref=${encodeURIComponent(branch)}`,
+          { method: "HEAD" }
+        );
+        const action = res.ok ? "update" : "create";
+        actions.push({
+          action,
+          file_path: f.path,
+          content: f.contentBase64,
+          encoding: "base64",
+        });
+      } catch (e: any) {
+        failed.push({ path: f.path, error: e?.message || "failed_to_check_status" });
+      }
+    }
+
+    if (actions.length === 0) {
+      return { count: 0, failed };
+    }
+
+    const body = JSON.stringify({
+      branch,
+      commit_message: message || `上傳 ${actions.length} 個檔案`,
+      actions,
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
+    });
+
+    const res = await glRaw(token, `/projects/${pid(projectPath)}/repository/commits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      const errMsg = `GitLab ${res.status}: ${t.slice(0, 200)}`;
+      for (const a of actions) {
+        failed.push({ path: a.file_path, error: errMsg });
+      }
+      return { count: 0, failed };
+    }
+
+    return { count: actions.length, failed };
+  },
 };
 
 // readFile / readFileRaw 需要 ref；GitLab 沒有「預設分支」隱含值，先查專案。

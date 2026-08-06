@@ -57,7 +57,9 @@ export default function Workspace() {
   const [copiedShare, setCopiedShare] = useState(false);
   const [copiedSite, setCopiedSite] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const [uploadFailures, setUploadFailures] = useState<Array<{ path: string; error: string }> | null>(null);
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -225,11 +227,11 @@ export default function Workspace() {
         const file = await api.readFile(refPath, path);
         return file.content;
       },
-      saveFile: async (path: string, contentStr: string) => {
+      saveFile: async (path: string, contentStr?: string, contentBase64?: string) => {
         const msg = `更新 ${path}（via 互動頁）`;
         const targetSha = path === activePath ? sha : undefined;
-        const res = await api.saveFile(refPath, path, contentStr, targetSha, msg);
-        if (path === activePath) {
+        const res = await api.saveFile(refPath, path, contentStr, targetSha, msg, contentBase64);
+        if (path === activePath && contentStr !== undefined) {
           setSha(res.sha);
           setContent(contentStr);
           setSave("saved");
@@ -522,6 +524,123 @@ export default function Workspace() {
     }
   }
 
+  const shouldIgnoreFile = (relPath: string): boolean => {
+    const parts = relPath.split("/");
+    for (const part of parts) {
+      if (part === ".git" || part === "node_modules" || part === ".DS_Store") {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const uploadFilesList = async (rawItems: Array<{ relPath: string; file: File }>) => {
+    if (isUploading) return;
+    setUploadFailures(null);
+    setError("");
+
+    // 16. 自動略過：.git/ 底下所有檔案、.DS_Store、node_modules/
+    const items = rawItems.filter((it) => !shouldIgnoreFile(it.relPath));
+
+    if (items.length === 0) {
+      setError("沒有可上傳的有效檔案（已自動過濾隱藏檔／特定目錄）");
+      return;
+    }
+
+    // 15. 前端先擋掉明顯不合法的：單檔 > 20MB、總量 > 50MB、檔數 > 200
+    if (items.length > 200) {
+      setError(`單次上傳最多 200 個檔案（目前選擇了 ${items.length} 個檔案）`);
+      return;
+    }
+
+    const MAX_SINGLE = 20 * 1024 * 1024;
+    const MAX_TOTAL = 50 * 1024 * 1024;
+    let totalSize = 0;
+
+    for (const it of items) {
+      if (it.file.size > MAX_SINGLE) {
+        setError(`檔案「${it.relPath}」大小 (${(it.file.size / (1024 * 1024)).toFixed(1)}MB) 超過單檔 20MB 限制`);
+        return;
+      }
+      totalSize += it.file.size;
+    }
+
+    if (totalSize > MAX_TOTAL) {
+      setError(`上傳總量 (${(totalSize / (1024 * 1024)).toFixed(1)}MB) 超過單次 50MB 限制`);
+      return;
+    }
+
+    setIsUploading(true);
+    const targetDir = getCurrentDirContext();
+    const payloadFiles: Array<{ path: string; contentBase64: string }> = [];
+
+    try {
+      // 14. 讀檔轉 base64
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        setUploadProgress(`正在讀取檔案 (${i + 1}/${items.length})：${it.relPath}`);
+
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = reader.result as string;
+            const b64 = res.includes(",") ? res.split(",")[1] : res;
+            resolve(b64);
+          };
+          reader.onerror = (err) => reject(err);
+          reader.readAsDataURL(it.file);
+        });
+
+        const fullPath = targetDir ? `${targetDir}/${it.relPath}` : it.relPath;
+        payloadFiles.push({ path: fullPath, contentBase64: base64 });
+      }
+
+      setUploadProgress(`正在提交 ${payloadFiles.length} 個檔案至伺服器...`);
+      const commitMsg = `docs: 上傳 ${payloadFiles.length} 個檔案`;
+      const res = await api.batchUpload(refPath, payloadFiles, commitMsg);
+
+      setUploadProgress(null);
+      setIsUploading(false);
+
+      if (res.count > 0) {
+        await loadFiles();
+      }
+
+      if (res.failed && res.failed.length > 0) {
+        setUploadFailures(res.failed);
+      }
+    } catch (err: any) {
+      setUploadProgress(null);
+      setIsUploading(false);
+      let msg = err.message || "上傳失敗";
+      if (err.status === 413 || err.code === "file_too_large") {
+        msg = err.message || "檔案或總量超過大小限制";
+      } else if (err.status === 401 || err.status === 403) {
+        msg = "沒有寫入權限，請先登入或選擇身分";
+      }
+      setError(`上傳失敗：${msg}`);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const items = files.map((f) => ({ relPath: f.name, file: f }));
+    uploadFilesList(items);
+    e.target.value = "";
+  };
+
+  const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const items = files.map((f) => ({
+      relPath: (f as any).webkitRelativePath || f.name,
+      file: f,
+    }));
+    uploadFilesList(items);
+    e.target.value = "";
+  };
+
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -557,54 +676,77 @@ export default function Workspace() {
       return;
     }
 
-    const droppedFiles = Array.from(e.dataTransfer.files || []);
-    if (droppedFiles.length === 0) return;
+    const items = e.dataTransfer.items;
+    const files: { relPath: string; file: File }[] = [];
+    let fallbackUsed = false;
 
-    const failures: string[] = [];
-    let lastUploadedPath = "";
-
-    for (let i = 0; i < droppedFiles.length; i++) {
-      const file = droppedFiles[i];
-      const cleanFileName = file.name.replace(/\\/g, "-");
-      const filePath = targetUploadDir ? `${targetUploadDir}/${cleanFileName}` : cleanFileName;
-
-      setUploadProgress(`上傳中 ${i + 1} / ${droppedFiles.length}：${cleanFileName}`);
-
-      try {
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const res = reader.result as string;
-            const b64 = res.includes(",") ? res.split(",")[1] : res;
-            resolve(b64);
-          };
-          reader.onerror = (err) => reject(err);
-          reader.readAsDataURL(file);
+    if (items && items.length > 0) {
+      let hasEntryAPI = false;
+      const readEntry = (entry: any, path: string): Promise<void> => {
+        return new Promise((resolve) => {
+          if (entry.isFile) {
+            entry.file(
+              (file: File) => {
+                files.push({ relPath: path ? `${path}/${file.name}` : file.name, file });
+                resolve();
+              },
+              () => resolve()
+            );
+          } else if (entry.isDirectory) {
+            const dirReader = entry.createReader();
+            const readEntries = () => {
+              dirReader.readEntries(
+                (entries: any[]) => {
+                  if (!entries || entries.length === 0) {
+                    resolve();
+                  } else {
+                    Promise.all(entries.map((child: any) => readEntry(child, path ? `${path}/${entry.name}` : entry.name))).then(() => {
+                      readEntries();
+                    });
+                  }
+                },
+                () => resolve()
+              );
+            };
+            readEntries();
+          } else {
+            resolve();
+          }
         });
+      };
 
-        const message = `docs: 上傳 ${cleanFileName}`;
-        await api.uploadFile(refPath, filePath, base64, message);
-        lastUploadedPath = filePath;
-      } catch (err: any) {
-        let msg = err.message || "上傳失敗";
-        if (err.status === 413 || err.code === "file_too_large" || err.message === "file_too_large") {
-          msg = "檔案超過 20MB 上限";
-        } else if (err.status === 401 || err.status === 403) {
-          msg = "沒有寫入權限，請先登入或選身分";
+      const promises: Promise<void>[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+        if (entry) {
+          hasEntryAPI = true;
+          promises.push(readEntry(entry, ""));
         }
-        failures.push(`${cleanFileName}: ${msg}`);
+      }
+
+      if (hasEntryAPI) {
+        await Promise.all(promises);
+      } else {
+        fallbackUsed = true;
+        const droppedFiles = Array.from(e.dataTransfer.files || []);
+        for (const f of droppedFiles) {
+          files.push({ relPath: f.name, file: f });
+        }
+      }
+    } else {
+      const droppedFiles = Array.from(e.dataTransfer.files || []);
+      for (const f of droppedFiles) {
+        files.push({ relPath: f.name, file: f });
       }
     }
 
-    setUploadProgress(null);
-    await loadFiles();
-
-    if (droppedFiles.length === 1 && failures.length === 0 && lastUploadedPath) {
-      setParams({ f: lastUploadedPath });
+    if (fallbackUsed) {
+      console.info("瀏覽器不支援 DataTransferItem.webkitGetAsEntry()，僅讀取檔案。");
     }
 
-    if (failures.length > 0) {
-      setError(`以下檔案上傳失敗：\n${failures.join("\n")}`);
+    if (files.length > 0) {
+      await uploadFilesList(files);
     }
   };
 
@@ -1265,6 +1407,73 @@ export default function Workspace() {
             identified={hasIdentity}
             identityId={identityId}
           />
+          {hasRepo && (
+            <div className="mt-2 mb-3 border-b border-zinc-800 pb-2.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-zinc-400 font-mono">
+                <span>將上傳到：</span>
+                <span
+                  className="truncate max-w-[140px] font-semibold text-sky-400"
+                  title={getCurrentDirContext() ? `${getCurrentDirContext()}/` : "根目錄 (/)"}
+                >
+                  {getCurrentDirContext() ? `${getCurrentDirContext()}/` : "根目錄 (/)"}
+                </span>
+              </div>
+              {canWrite && (
+                <div className="flex flex-wrap gap-1.5">
+                  <label
+                    className={`flex-1 min-w-[100px] cursor-pointer inline-flex items-center justify-center gap-1 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-700 hover:text-white transition-colors ${
+                      isUploading ? "opacity-50 pointer-events-none" : ""
+                    }`}
+                  >
+                    <span>⬆ 上傳檔案</span>
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      disabled={isUploading}
+                      onChange={handleFileInputChange}
+                    />
+                  </label>
+                  <label
+                    className={`flex-1 min-w-[100px] cursor-pointer inline-flex items-center justify-center gap-1 rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-700 hover:text-white transition-colors ${
+                      isUploading ? "opacity-50 pointer-events-none" : ""
+                    }`}
+                  >
+                    <span>📁 上傳資料夾</span>
+                    <input
+                      type="file"
+                      // @ts-ignore
+                      webkitdirectory=""
+                      multiple
+                      className="hidden"
+                      disabled={isUploading}
+                      onChange={handleFolderInputChange}
+                    />
+                  </label>
+                </div>
+              )}
+              {uploadFailures && uploadFailures.length > 0 && (
+                <div className="rounded bg-red-950/90 border border-red-800 p-2 text-xs text-red-200 space-y-1">
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>部分失敗 ({uploadFailures.length})：</span>
+                    <button
+                      onClick={() => setUploadFailures(null)}
+                      className="text-red-400 hover:text-red-100 font-bold px-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <ul className="max-h-28 overflow-y-auto space-y-1 font-mono text-[11px]">
+                    {uploadFailures.map((f, idx) => (
+                      <li key={idx} className="break-all">
+                        <span className="font-semibold text-red-300">{f.path}</span>: {f.error}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
           {hasRepo && isDragging && (
             <div
               className={`absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed p-4 text-center backdrop-blur-sm pointer-events-none ${
@@ -1275,8 +1484,11 @@ export default function Workspace() {
             >
               <div className="text-3xl mb-1">{canWrite ? "📥" : "🔒"}</div>
               <div className="font-mono text-xs font-semibold">
-                {canWrite ? `放開以上傳到 ${targetDirLabel}` : "唯讀，無法上傳"}
+                {canWrite
+                  ? `放開以上傳到：${getCurrentDirContext() ? `${getCurrentDirContext()}/` : "根目錄 (/)"}`
+                  : "唯讀，無法上傳"}
               </div>
+              <div className="text-[10px] text-zinc-400 mt-1">支援檔案與資料夾拖放</div>
             </div>
           )}
           {hasRepo && canWrite && (

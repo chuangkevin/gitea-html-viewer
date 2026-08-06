@@ -83,6 +83,14 @@ export interface Provider {
     author?: CommitAuthor,
     isBase64?: boolean
   ): Promise<{ sha: string }>;
+  batchWriteFiles?(
+    token: string,
+    projectPath: string,
+    files: { path: string; contentBase64: string }[],
+    message: string,
+    branch: string,
+    author?: CommitAuthor
+  ): Promise<{ count: number; failed: { path: string; error: string }[] }>;
 }
 
 // registry 由 index.ts 用 registerProvider 填入，避免循環相依
