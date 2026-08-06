@@ -60,45 +60,6 @@ export default function Workspace() {
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  const [isNarrow, setIsNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
-
-  useEffect(() => {
-    const mql = window.matchMedia("(max-width: 1023px)");
-    const onChange = (e: MediaQueryListEvent) => setIsNarrow(e.matches);
-    setIsNarrow(mql.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setSidebarOpen(false);
-        setMenuOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handleClickOutside = (e: MouseEvent | TouchEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("touchstart", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("touchstart", handleClickOutside);
-    };
-  }, [menuOpen]);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -412,8 +373,7 @@ export default function Workspace() {
   });
 
   const readOnly = !canWrite;
-  const currentView = isNarrow && view === "split" ? "preview" : view;
-  const effectiveView = readOnly ? "preview" : currentView;
+  const effectiveView = readOnly ? "preview" : view;
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -931,27 +891,16 @@ export default function Workspace() {
   return (
     <div className="h-screen flex flex-col">
       <header className="border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
-        <button
-          onClick={() => setSidebarOpen((v) => !v)}
-          className="lg:hidden p-1.5 rounded-lg border border-zinc-800 text-zinc-300 hover:bg-zinc-800 text-base leading-none focus:outline-none focus:ring-2 focus:ring-sky-500"
-          aria-label="開啟側欄選單"
-        >
-          ☰
-        </button>
-        <Link to="/" className="font-mono font-bold shrink-0">
+        <Link to="/" className="font-mono font-bold">
           note<span className="text-sky-400">-bridge</span>
         </Link>
-        <span className="font-mono text-[10px] text-zinc-600 hidden sm:inline shrink-0">
+        <span className="font-mono text-[10px] text-zinc-600">
           {__APP_VERSION__}-{__BUILD_SHA__}
         </span>
-        {hasRepo && (
-          <span className="font-mono text-sm sm:text-base text-zinc-500 truncate max-w-[100px] sm:max-w-[180px] lg:max-w-none">
-            {projectPath}
-          </span>
-        )}
+        {hasRepo && <span className="font-mono text-base text-zinc-500 truncate">{projectPath}</span>}
         {readOnly && (
           <span
-            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 shrink-0"
+            className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
             title={
               me?.team?.enabled && !me.team.selected
                 ? "先在右上角選「你是誰」才能編輯"
@@ -962,9 +911,8 @@ export default function Workspace() {
           </span>
         )}
         <div className="flex-1" />
-        {/* 桌機 (≥1024px) 檢視模式切換：編輯 / 分割 / 預覽 */}
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
-          <div className="hidden lg:flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0">
+          <div className="hidden md:flex rounded-lg border border-zinc-800 overflow-hidden text-sm">
             {(["edit", "split", "preview"] as const).map((v) => (
               <button
                 key={v}
@@ -976,219 +924,102 @@ export default function Workspace() {
             ))}
           </div>
         )}
-        {/* 行動裝置 (<1024px) 檢視模式切換：編輯 / 預覽 */}
-        {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
-          <div className="flex lg:hidden rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0">
-            {(["edit", "preview"] as const).map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={`px-3 py-1.5 ${currentView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
-              >
-                {v === "edit" ? "編輯" : "預覽"}
-              </button>
-            ))}
+        {activePath && activeKind === "md" && (
+          <button
+            onClick={() => navigate(`/p/${refPath}/${activePath}`)}
+            className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+          >
+            🎞️ 簡報
+          </button>
+        )}
+        {(activePath || params.has("dir")) && (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleCopyShare}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="分享＝在 note 裡開啟"
+            >
+              {copiedShare ? "已複製 ✓" : "🔗 分享"}
+            </button>
+            <button
+              onClick={handleCopySite}
+              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
+              title="獨立網站＝乾淨的網頁、沒有 note 介面"
+            >
+              {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
+            </button>
           </div>
         )}
-        {/* 存檔 (commit) 按鈕：在 header 上保留 */}
         {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
-          <button
-            onClick={handleSave}
-            disabled={save === "saving"}
-            className="rounded-lg bg-sky-600 px-3 sm:px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50 shrink-0"
-          >
-            {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
-          </button>
+          <>
+            {/* 分享連結的內容是用「分享者的 session」持續拉取，團隊身分沒有 session，
+                所以分享功能仍只開給個人 OAuth 登入者 */}
+            {me?.login && (
+              <button
+                onClick={handleShare}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
+              >
+                分享 Token
+              </button>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={save === "saving"}
+              className="rounded-lg bg-sky-600 px-4 py-1.5 text-sm font-semibold hover:bg-sky-500 disabled:opacity-50"
+            >
+              {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
+            </button>
+          </>
         )}
-
-        {/* 桌機 (≥1024px) 直列按鈕與身分區 */}
-        <div className="hidden lg:flex items-center gap-3 shrink-0">
-          {activePath && activeKind === "md" && (
-            <button
-              onClick={() => navigate(`/p/${refPath}/${activePath}`)}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
-            >
-              🎞️ 簡報
-            </button>
-          )}
-          {(activePath || params.has("dir")) && (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={handleCopyShare}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
-                title="分享＝在 note 裡開啟"
-              >
-                {copiedShare ? "已複製 ✓" : "🔗 分享"}
-              </button>
-              <button
-                onClick={handleCopySite}
-                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors"
-                title="獨立網站＝乾淨的網頁、沒有 note 介面"
-              >
-                {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
-              </button>
-            </div>
-          )}
-          {activePath && (activeKind === "md" || activeKind === "html") && canWrite && me?.login && (
-            <button
-              onClick={handleShare}
-              className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400"
-            >
-              分享 Token
-            </button>
-          )}
-          {accessMode === "open" && me && !me.login && !me.team?.selected && (
-            <input
-              type="text"
-              defaultValue={guestName}
-              placeholder="你是誰？（選填，會寫進 commit）"
-              onBlur={(e) => void api.setGuestName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.currentTarget.blur();
-                }
-              }}
-              className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
-            />
-          )}
-          {me && !me.login && me.team?.enabled && (
-            <IdentityPicker team={me.team} onChange={handleIdentityChange} />
-          )}
-          {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
-            <a
-              href={loginUrl}
-              className={
-                me.team?.enabled
-                  ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
-                  : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+        {/* 免登入 open 模式：顯示署名輸入框（訪客 commit author 名字） */}
+        {accessMode === "open" && me && !me.login && !me.team?.selected && (
+          <input
+            type="text"
+            defaultValue={guestName}
+            placeholder="你是誰？（選填，會寫進 commit）"
+            onBlur={(e) => void api.setGuestName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
               }
-            >
-              <ProviderIcon provider={provider} className="h-4 w-4" />
-              登入
-            </a>
-          )}
-          {me?.login && (
-            <span className="flex items-center gap-1.5 text-sm text-zinc-500">
-              {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
-              {me.login}
-            </span>
-          )}
-          {me?.admin?.enabled && (
-            <Link
-              to="/admin"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
-              title="管理控制台"
-            >
-              ⚙️ 管理
-            </Link>
-          )}
-        </div>
-
-        {/* 行動裝置 (<1024px) 溢出選單 「⋯」 */}
-        <div className="relative lg:hidden shrink-0" ref={menuRef}>
-          <button
-            onClick={() => setMenuOpen((v) => !v)}
-            className="rounded-lg border border-zinc-700 px-2.5 py-1.5 text-sm text-zinc-300 hover:border-zinc-500 font-bold focus:outline-none focus:ring-2 focus:ring-sky-500"
-            aria-expanded={menuOpen}
-            aria-label="更多選項"
+            }}
+            className="bg-zinc-900 border border-zinc-700 rounded px-2.5 py-1 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500 max-w-[200px]"
+          />
+        )}
+        {/* 團隊模式：不必個人 OAuth，選「你是誰」就用該成員的 token 讀寫 */}
+        {me && !me.login && me.team?.enabled && (
+          <IdentityPicker team={me.team} onChange={handleIdentityChange} />
+        )}
+        {/* 右上角：未登入顯示登入鈕（依目前 repo 來源） */}
+        {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
+          <a
+            href={loginUrl}
+            className={
+              me.team?.enabled
+                ? "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
+                : "inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            }
           >
-            ⋯
-          </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-full mt-2 z-50 w-64 rounded-xl border border-zinc-700 bg-zinc-900 p-2.5 shadow-2xl flex flex-col gap-2 transition-all duration-150 ease-out motion-reduce:transition-none">
-              {activePath && activeKind === "md" && (
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    navigate(`/p/${refPath}/${activePath}`);
-                  }}
-                  className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 flex items-center gap-2"
-                >
-                  🎞️ 簡報
-                </button>
-              )}
-              {(activePath || params.has("dir")) && (
-                <>
-                  <button
-                    onClick={() => {
-                      handleCopyShare();
-                      setMenuOpen(false);
-                    }}
-                    className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors flex items-center gap-2"
-                  >
-                    {copiedShare ? "已複製 ✓" : "🔗 分享"}
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleCopySite();
-                      setMenuOpen(false);
-                    }}
-                    className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 transition-colors flex items-center gap-2"
-                  >
-                    {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
-                  </button>
-                </>
-              )}
-              {activePath && (activeKind === "md" || activeKind === "html") && canWrite && me?.login && (
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    handleShare();
-                  }}
-                  className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 flex items-center gap-2"
-                >
-                  分享 Token
-                </button>
-              )}
-              {accessMode === "open" && me && !me.login && !me.team?.selected && (
-                <div className="px-1 py-1">
-                  <input
-                    type="text"
-                    defaultValue={guestName}
-                    placeholder="你是誰？（選填，會寫進 commit）"
-                    onBlur={(e) => void api.setGuestName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.currentTarget.blur();
-                        setMenuOpen(false);
-                      }
-                    }}
-                    className="w-full bg-zinc-950 border border-zinc-700 rounded px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-sky-500"
-                  />
-                </div>
-              )}
-              {me && !me.login && me.team?.enabled && (
-                <div className="px-1 py-1">
-                  <IdentityPicker team={me.team} onChange={handleIdentityChange} />
-                </div>
-              )}
-              {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
-                <a
-                  href={loginUrl}
-                  className="w-full inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-400"
-                >
-                  <ProviderIcon provider={provider} className="h-4 w-4" />
-                  登入
-                </a>
-              )}
-              {me?.login && (
-                <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-zinc-300 border-t border-zinc-800 pt-2">
-                  {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
-                  <span>{me.login}</span>
-                </div>
-              )}
-              {me?.admin?.enabled && (
-                <Link
-                  to="/admin"
-                  onClick={() => setMenuOpen(false)}
-                  className="w-full inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-200 hover:border-zinc-400"
-                >
-                  ⚙️ 管理
-                </Link>
-              )}
-            </div>
-          )}
-        </div>
+            <ProviderIcon provider={provider} className="h-4 w-4" />
+            登入
+          </a>
+        )}
+        {me?.login && (
+          <span className="flex items-center gap-1.5 text-sm text-zinc-500">
+            {me.avatarUrl && <img src={me.avatarUrl} alt="" className="h-5 w-5 rounded-full" />}
+            {me.login}
+          </span>
+        )}
+        {/* Admin 連結 */}
+        {me?.admin?.enabled && (
+          <Link
+            to="/admin"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-400"
+            title="管理控制台"
+          >
+            ⚙️ 管理
+          </Link>
+        )}
       </header>
 
       {shareUrl && (
@@ -1218,21 +1049,10 @@ export default function Workspace() {
         </div>
       )}
 
-      <div className="flex-1 flex min-h-0 relative">
-        {/* 行動裝置 (<1024px) 側欄半透明遮罩 */}
-        {isNarrow && sidebarOpen && (
-          <div
-            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs transition-opacity duration-150"
-            onClick={() => setSidebarOpen(false)}
-          />
-        )}
-
-        {/* 左側欄：<1024px 抽屜式從左滑入，≥1024px 固定側欄 */}
+      <div className="flex-1 flex min-h-0">
+        {/* 左側欄 */}
         <aside
-          className={`w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950
-            max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:transition-transform max-lg:duration-150 max-lg:ease-in-out
-            ${sidebarOpen ? "max-lg:translate-x-0" : "max-lg:-translate-x-full"}
-            lg:static lg:translate-x-0 lg:z-auto relative`}
+          className="w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 hidden sm:block relative"
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -1316,12 +1136,10 @@ export default function Workspace() {
               onSelectFile={(f) => {
                 setActiveFolder("");
                 setParams({ f });
-                if (isNarrow) setSidebarOpen(false);
               }}
               onSelectFolder={(dir) => {
                 setActiveFolder(dir);
                 setParams({ dir });
-                if (isNarrow) setSidebarOpen(false);
               }}
               presentMode={presentMode}
               checked={checked}
