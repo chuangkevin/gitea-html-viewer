@@ -1178,6 +1178,23 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
 
+    // 樂觀鎖：前端把讀到的 sha 一起送來，寫入前先確認檔案沒被別人改過。
+    // GitLab 的寫入 API 不吃舊 sha（provider 層的 _sha 是被忽略的），
+    // 所以「最後寫的人贏」——兩個人同時存檔會靜默弄丟先存的那份。
+    // 這裡自己補一層：對不上就回 409，讓前端重讀合併後再試。
+    // 沒帶 sha 的舊呼叫端維持原行為，不受影響。
+    if (typeof sha === "string" && sha) {
+      try {
+        const cur = await getProvider(provider).readFile(actorFor(req, provider, project).token, project, filePath);
+        if (cur.sha && cur.sha !== sha) {
+          res.status(409).json({ error: "sha_mismatch", currentSha: cur.sha });
+          return;
+        }
+      } catch {
+        // 讀不到就當作是新檔，照原流程往下走
+      }
+    }
+
     const MAX_SIZE = 20 * 1024 * 1024;
     const byteLength = isBase64
       ? Buffer.from(writeContent, "base64").byteLength
