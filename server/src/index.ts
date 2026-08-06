@@ -671,7 +671,9 @@ app.get("/api/zip/:provider/:project/*", async (req, res) => {
     }
 
     const folderName = cleanDir ? (cleanDir.split("/").pop() || "folder") : (project.split("/").pop() || "repository");
-    const zipFileName = `${folderName}.zip`;
+    // ?name= 可自訂下載檔名（去除路徑分隔與控制字元，避免 header injection）
+    const customName = String(req.query.name || "").replace(/[/\\\r\n"]/g, "").trim().slice(0, 120);
+    const zipFileName = `${customName || folderName}.zip`;
 
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("X-Content-Type-Options", "nosniff");
