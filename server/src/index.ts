@@ -6,7 +6,9 @@ import fs from "node:fs";
 import * as archiverModule from "archiver";
 import { marked } from "marked";
 
-const archiver = archiverModule as unknown as (
+// archiver 是 CJS 套件：ESM 下 namespace object 的 default 才是函式（本機 dev 與容器 Node 版本行為不同，取 default 優先）
+const archiver = ((archiverModule as unknown as { default?: unknown }).default ??
+  archiverModule) as (
   format: string,
   options?: archiverModule.ArchiverOptions
 ) => archiverModule.Archiver;
