@@ -65,6 +65,18 @@ export default function Workspace() {
   const menuRef = useRef<HTMLDivElement>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
 
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth >= 1024 : true
+  );
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    setIsDesktop(mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
   useEffect(() => {
     if (!menuOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -416,7 +428,8 @@ export default function Workspace() {
   });
 
   const readOnly = !canWrite;
-  const effectiveView = readOnly ? "preview" : view;
+  const rawEffectiveView = readOnly ? "preview" : view;
+  const effectiveView = !isDesktop && rawEffectiveView === "split" ? "preview" : rawEffectiveView;
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -964,11 +977,11 @@ export default function Workspace() {
         <div className="flex-1 min-w-0" />
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
           <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
-            {(["edit", "split", "preview"] as const).map((v) => (
+            {(isDesktop ? (["edit", "split", "preview"] as const) : (["edit", "preview"] as const)).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${view === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
               </button>
