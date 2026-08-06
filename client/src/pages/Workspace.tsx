@@ -1868,7 +1868,7 @@ export default function Workspace() {
             </pre>
           </div>
         ) : (
-          <div className="flex-1 flex min-w-0 relative">
+          <div className="flex-1 flex min-w-0 min-h-0 relative overflow-hidden">
             {effectiveView !== "preview" && (
               <textarea
                 ref={editorRef}
