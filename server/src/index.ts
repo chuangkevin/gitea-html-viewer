@@ -571,7 +571,7 @@ function sendRaw(res: express.Response, filePath: string, buf: Buffer, asAttachm
   res.setHeader("Content-Type", mime);
   res.setHeader("X-Content-Type-Options", "nosniff");
   if (mime.startsWith("text/html")) {
-    res.setHeader("Content-Security-Policy", "sandbox allow-scripts");
+    res.setHeader("Content-Security-Policy", "sandbox allow-scripts allow-downloads allow-top-navigation-by-user-activation");
   }
   if (asAttachment) {
     const name = path.basename(filePath) || "file";

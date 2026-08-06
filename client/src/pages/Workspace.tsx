@@ -1946,7 +1946,7 @@ export default function Workspace() {
                       key={activePath}
                       src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${isPrivate && rawGrant ? `&grant=${rawGrant}` : ""}`}
                       /* ⚠️ 刻意不給 allow-same-origin：iframe 會是 opaque origin，能跑 JS 但碰不到 note 主站的 cookie / DOM */
-                      sandbox="allow-scripts allow-popups allow-forms allow-modals"
+                      sandbox="allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-top-navigation-by-user-activation"
                       className="w-full flex-1 border-0 bg-white"
                       title={activePath}
                     />
