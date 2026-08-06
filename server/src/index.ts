@@ -3,7 +3,13 @@ import cookieParser from "cookie-parser";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
+import * as archiverModule from "archiver";
 import { marked } from "marked";
+
+const archiver = archiverModule as unknown as (
+  format: string,
+  options?: archiverModule.ArchiverOptions
+) => archiverModule.Archiver;
 import {
   createSession,
   getSession,
@@ -632,6 +638,84 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
     handleError(res, e);
+  }
+});
+
+app.get("/api/zip/:provider/:project/*", async (req, res) => {
+  let actor: Actor | null = null;
+  try {
+    const provider = routeProvider(req);
+    const p = getProvider(provider);
+    const project = projectParam(req);
+    actor = actorFor(req, provider, project);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required", reason: "private_repo" });
+      return;
+    }
+    const dirPath = (req.params as Record<string, string>)[0] || "";
+    const cleanDir = dirPath.replace(/^\/+|\/+$/g, "");
+    const prefix = cleanDir ? cleanDir + "/" : "";
+
+    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const matchingFiles = files.filter((f) => (cleanDir ? f.path.startsWith(prefix) : true));
+
+    if (matchingFiles.length === 0) {
+      res.status(404).json({ error: "not_found", reason: "folder_empty_or_not_found" });
+      return;
+    }
+
+    if (matchingFiles.length > 300) {
+      res.status(413).json({ error: "payload_too_large", reason: "too_many_files", count: matchingFiles.length, limit: 300 });
+      return;
+    }
+
+    const folderName = cleanDir ? (cleanDir.split("/").pop() || "folder") : (project.split("/").pop() || "repository");
+    const zipFileName = `${folderName}.zip`;
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${encodeURIComponent(zipFileName)}"; filename*=UTF-8''${encodeURIComponent(zipFileName)}`
+    );
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    archive.on("warning", (err: archiverModule.ArchiverError) => {
+      if (err.code === "ENOENT") {
+        console.warn("[archiver warning]", err);
+      } else {
+        throw err;
+      }
+    });
+
+    archive.on("error", (err: archiverModule.ArchiverError) => {
+      console.error("[archiver error]", err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "zip_error" });
+      }
+    });
+
+    archive.pipe(res);
+
+    for (const file of matchingFiles) {
+      const buf = await p.readFileRaw(actor.token, project, file.path);
+      const relPath = prefix ? file.path.slice(prefix.length) : file.path;
+      archive.append(buf, { name: relPath });
+    }
+
+    await archive.finalize();
+  } catch (e) {
+    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+      res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
+      return;
+    }
+    if (!res.headersSent) {
+      handleError(res, e);
+    } else {
+      console.error("[zip route error]", e);
+    }
   }
 });
 

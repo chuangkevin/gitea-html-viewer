@@ -96,6 +96,8 @@ interface Props {
   presentMode: boolean;
   checked: Set<string>;
   onCheckedChange: (next: Set<string>) => void;
+  rawBase?: string;
+  refPath?: string;
 }
 
 export default function FileTree({
@@ -107,6 +109,8 @@ export default function FileTree({
   presentMode,
   checked,
   onCheckedChange,
+  rawBase,
+  refPath,
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -160,6 +164,9 @@ export default function FileTree({
         const checkedCount = sub.filter((f) => checked.has(f)).length;
         const allChecked = checkedCount === sub.length && sub.length > 0;
         const someChecked = checkedCount > 0 && !allChecked;
+        const downloadUrl = isFolder
+          ? `/api/zip/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}`
+          : `${rawBase}/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}?download=1`;
         return (
           <li key={(isFolder ? "d:" : "f:") + node.path}>
             <div
@@ -196,6 +203,31 @@ export default function FileTree({
               <span className="w-3 shrink-0 text-zinc-600">{isFolder ? (isOpen ? "▾" : "▸") : ""}</span>
               <span className="shrink-0">{isFolder ? (isOpen ? "📂" : "📁") : fileIcon(node.name)}</span>
               <span className="truncate py-1 min-w-0 flex-1">{node.name}</span>
+              {rawBase && refPath && (
+                <a
+                  href={downloadUrl}
+                  download
+                  title={isFolder ? `下載資料夾 ${node.name}.zip` : `下載檔案 ${node.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                  className="opacity-45 hover:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-zinc-100 rounded"
+                >
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                </a>
+              )}
             </div>
             {isFolder && isOpen && renderNodes(node.children!, depth + 1)}
           </li>
@@ -247,7 +279,32 @@ export default function FileTree({
                         }`}
                       >
                         <span className="shrink-0 text-xs">{fileIcon(fileName)}</span>
-                        <span className="truncate">{highlightMatch(p, searchQuery.trim())}</span>
+                        <span className="truncate flex-1 min-w-0">{highlightMatch(p, searchQuery.trim())}</span>
+                        {rawBase && refPath && (
+                          <a
+                            href={`${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                            download
+                            title={`下載檔案 ${fileName}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
+                            className="opacity-45 hover:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-zinc-100 rounded"
+                          >
+                            <svg
+                              className="w-3.5 h-3.5"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                              <polyline points="7 10 12 15 17 10" />
+                              <line x1="12" y1="15" x2="12" y2="3" />
+                            </svg>
+                          </a>
+                        )}
                       </div>
                     </li>
                   );

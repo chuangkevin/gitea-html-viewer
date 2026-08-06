@@ -1556,6 +1556,8 @@ export default function Workspace() {
               presentMode={presentMode}
               checked={checked}
               onCheckedChange={setChecked}
+              rawBase={rawBase}
+              refPath={refPath}
             />
           )}
           {hasRepo && presentMode && (
