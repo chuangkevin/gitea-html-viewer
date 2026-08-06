@@ -965,10 +965,24 @@ app.get("/site/:provider/:project", async (req, res) => {
       grantToken = resolveGrant(req.query.grant, provider, project);
     }
 
-    const actor = grantToken
-      ? { token: grantToken, authed: true } as Actor
-      : actorFor(req, provider, project);
-    const info = await p.getRepo(actor.token, project);
+    // grant 只是「加分」，不該讓事情變糟：grant 背後的 session 過期、或那個人
+    // 已經沒有該 repo 的權限時，舊做法直接 403，反而比完全不帶 grant 還糟
+    // （repo 若是 open 模式，不帶 grant 本來就打得開）。改成失敗就退回 actorFor。
+    const fallbackActor = actorFor(req, provider, project);
+    let actor: Actor = grantToken
+      ? ({ token: grantToken, authed: true } as Actor)
+      : fallbackActor;
+    let info;
+    try {
+      info = await p.getRepo(actor.token, project);
+    } catch (e) {
+      if (grantToken && actor.token !== fallbackActor.token) {
+        actor = fallbackActor;                 // grant 的 token 不管用 → 用一般路徑再試一次
+        info = await p.getRepo(actor.token, project);
+      } else {
+        throw e;
+      }
+    }
     if (info.private && !actor.authed) {
       const err = new ProviderError(403, "login_required");
       throw err;
