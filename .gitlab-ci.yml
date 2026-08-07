@@ -1,24 +1,24 @@
 # ==============================================================================
-# GitLab CI/CD Pipeline Configuration for note
-# ==============================================================================
-# 整體流程說明：
-# 1. check 階段：
-#    - 在 gitlab.com shared runner (Docker Executor, Node 22) 上並行執行。
-#    - check-client: 執行 client 端的依賴安裝、TypeScript 型態檢查與 Vite 打包驗證。
-#    - check-server: 執行 server 端的依賴安裝、TypeScript 型態檢查與編譯驗證。
-#    - 利用 package-lock.json 作為 Cache Key 提升安裝速度。
+# 標準 CI/CD（全專案同一套）
 #
-# 2. deploy 階段：
-#    - 限制僅在 push 至 main 分支時觸發。
-#    - 指定 tag: [dockerhost]，由部署在內網 docker-host (10.11.12.55) 上的
-#      GitLab Runner (Shell Executor) 執行。
-#    - 執行 rsync 同步 CI 的 Commit 內容至部署目錄、啟動容器、進行 60 秒內健康檢查，
-#      並清理過期的 Docker Images。
+#   check  : GitLab shared runner，跑 typecheck + build。所有 branch / MR 都跑。
+#   deploy : docker-host（10.11.12.55）上 tag=dockerhost 的 shell runner，
+#            只在預設分支（main）跑。
+#            GIT_STRATEGY: none —— runner 不 clone，直接在部署目錄操作 git，
+#            部署目錄本身就是唯一事實來源。
 #
-# Runner 前提條件：
-# - docker-host 上必須已安裝 gitlab-runner 並加入 docker 群組。
-# - gitlab-runner 需完成註冊（tag: dockerhost, executor: shell）。
-# - gitlab-runner 對 /home/interagent/note 目錄具備讀寫權限。
+# 認證：deploy 用 CI_JOB_TOKEN 對 GitLab 取用，token 只在該 job 存活期間有效。
+#      主機上不需要、也刻意不放任何長期憑證；fetch 用完整 URL 帶 token，
+#      不寫回 .git/config，所以部署目錄不會殘留任何 secret。
+#
+# 前提（由 docker-host 上 ops/deploy-perms.sh 一次設定，全專案共用）：
+#   部署目錄 owner=gitlab-runner、group=deploy、目錄 setgid、.env 640。
+#
+# 2026-08-08 從 rsync 流程改為 git 流程。舊流程的問題：
+#   rsync 會把 runner build dir 的 .git（含暫時性 .gitlab-runner.ext.conf 的
+#   include 設定）一起同步進部署目錄，導致部署目錄變成 detached HEAD，
+#   而且 interagent 在該目錄跑任何 git 都會 Permission denied。
+#   舊流程原本繞過 git 的理由（dubious ownership）已由權限根治解決。
 # ==============================================================================
 
 stages:
@@ -58,71 +58,22 @@ check-server:
     - npm run typecheck
     - npm run build
 
-deploy-dockerhost:
+deploy:
   stage: deploy
   tags:
     - dockerhost
-  variables:
-    DEPLOY_DIR: /home/interagent/note
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   environment:
     name: production
     url: http://10.11.12.55:8790
+  variables:
+    GIT_STRATEGY: none
+    DEPLOY_DIR: /home/interagent/note
+    HEALTH_URL: http://localhost:8790/
   script:
-    - set -euo pipefail
-    # 不在部署目錄使用 git：部署目錄 (DEPLOY_DIR) 擁有者為 interagent，而 GitLab Runner 以 gitlab-runner 身分執行，
-    # 若在部署目錄使用 git 會觸發 "fatal: detected dubious ownership"，導致程式碼無法更新且靜默回報成功。
-    # Runner 執行 job 時已將目標 commit checkout 至 $CI_PROJECT_DIR，直接用 rsync 同步至部署目錄。
-    - mkdir -p "$DEPLOY_DIR"
-    # rsync --delete 說明：
-    # --delete 的目的是清掉宿主機上的舊建置產物殘留（例如 client/dist、server/dist），避免污染 Context。
-    # 透過 --exclude 確保宿主機既有檔案 (.env, .env.*, data/, set-note-token.sh, docker-compose.override.yml*) 不被刪除或覆蓋。
-    # 因 runner 非 root 身份，不保留擁有者/群組（使用 -rlptD 替代 -a，排除 -o/-g），強行保留會導致 chgrp 失敗
-    - rsync -rlptD --delete --exclude='.env' --exclude='.env.*' --exclude='data/' --exclude='set-note-token.sh' --exclude='docker-compose.override.yml*' "$CI_PROJECT_DIR/" "$DEPLOY_DIR/"
-    - echo "Deploying Commit SHA $CI_COMMIT_SHA ($CI_COMMIT_SHORT_SHA)"
-    # 將 Commit SHA 寫入 client/.build-sha 檔案傳遞給前端 build context
-    # 說明：Docker build arg (ARG -> ENV -> vite) 鏈實測在 Compose 傳遞不可靠，改用實體檔案傳遞可直接打包進 context 供 Vite 穩定讀取
-    - echo "$CI_COMMIT_SHORT_SHA" > "$DEPLOY_DIR/client/.build-sha"
     - cd "$DEPLOY_DIR"
-    - |
-      # 防護檢查：防止 docker-compose 檔案將 host 的 dist 掛載進容器覆蓋 CI 建好的 image
-      # 背景：若 Compose 檔將 host 路徑掛載至容器內的 /app/client/dist 或 /app/server/dist，
-      # 會導致 CI 建好的新版程式被 host 上的舊產物覆蓋，造成 pipeline 綠燈但畫面/功能完全沒更新。
-      for f in docker-compose*.yml docker-compose*.yaml; do
-        if [ -f "$f" ]; then
-          if grep -E ':/app/(client|server)/dist' "$f" | grep -v -E -q '^\s*#'; then
-            echo "============================================================"
-            echo "❌ 錯誤：在 $f 中偵測到不當的 dist 目錄掛載！"
-            echo "============================================================"
-            echo "問題說明："
-            echo "  檔案 $f 將宿主機 (host) 的 dist 掛載到容器內的 /app/client/dist 或 /app/server/dist。"
-            echo "  這會導致 CI/CD 構建好的最新容器 Image 內容被宿主機上的舊檔案覆蓋，"
-            echo "  引發「Pipeline 顯示綠燈成功，但服務畫面與新功能完全沒更新」的問題。"
-            echo ""
-            echo "修復方式："
-            echo "  請將該檔改名為 .disabled（例如 mv $f $f.disabled）或移除那兩行 dist 掛載後重跑 Pipeline。"
-            echo "============================================================"
-            exit 1
-          fi
-        fi
-      done
-    - BUILD_SHA=$CI_COMMIT_SHORT_SHA docker compose up -d --build
-    - |
-      echo "=== 開始服務健康檢查 ==="
-      HEALTH_OK=0
-      for i in $(seq 1 12); do
-        if curl -fsS http://localhost:8790/ > /dev/null 2>&1; then
-          echo "健康檢查成功！(第 $i 次嘗試)"
-          HEALTH_OK=1
-          break
-        fi
-        echo "等待服務就緒... (第 $i/12 次嘗試，5 秒後重試)"
-        sleep 5
-      done
-      if [ $HEALTH_OK -eq 0 ]; then
-        echo "健康檢查失敗！顯示容器 note 最近 30 行 Log："
-        docker logs note --tail 30
-        exit 1
-      fi
-    - docker image prune -f
+    - git fetch --prune "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
+    - git reset --hard "origin/${CI_COMMIT_BRANCH}"
+    - git log -1 --format='deployed commit = %h %s'
+    - ./scripts/deploy.sh
