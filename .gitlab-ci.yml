@@ -30,6 +30,8 @@ default:
 
 check-client:
   stage: check
+  tags:
+    - pve-note-check
   cache:
     key:
       files:
@@ -45,6 +47,8 @@ check-client:
 
 check-server:
   stage: check
+  tags:
+    - pve-note-check
   cache:
     key:
       files:
