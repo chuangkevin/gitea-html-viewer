@@ -228,3 +228,33 @@ export async function readWithPublicFallback<T>(
     throw err;
   }
 }
+
+export async function readClosestPackageJson(
+  readFn: (filePath: string) => Promise<Buffer | string>,
+  filePath: string
+): Promise<any | null> {
+  const cleanPath = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  let currentDir = path.posix.dirname(cleanPath);
+  if (currentDir === "." || currentDir === "/") {
+    currentDir = "";
+  }
+
+  while (true) {
+    const pkgPath = currentDir ? `${currentDir}/package.json` : "package.json";
+    try {
+      const raw = await readFn(pkgPath);
+      return JSON.parse(raw.toString());
+    } catch (err) {
+      if (!(err instanceof ProviderError && err.status === 404)) {
+        throw err;
+      }
+    }
+
+    if (!currentDir) {
+      return null;
+    }
+
+    const parentDir = path.posix.dirname(currentDir);
+    currentDir = parentDir === "." || parentDir === "/" ? "" : parentDir;
+  }
+}

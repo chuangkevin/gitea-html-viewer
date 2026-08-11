@@ -78,6 +78,7 @@ import {
   injectPreviewHead,
   rewriteCssSideEffectImports,
   createCssShim,
+  readClosestPackageJson,
   readWithPublicFallback,
 } from "./site-preview.js";
 
@@ -1111,14 +1112,11 @@ app.get("/site/:provider/:project", async (req, res) => {
           grant: validGrant,
         });
 
-        let importMap = null;
-        try {
-          const pkgBuf = await p.readFileRaw(actor.token, project, "package.json");
-          const pkgJson = JSON.parse(pkgBuf.toString("utf8"));
-          importMap = generateImportMap(pkgJson);
-        } catch {
-          // package.json 不存在、格式無效或讀取失敗時退化成一般靜態頁
-        }
+        const pkgJson = await readClosestPackageJson(
+          (filePath) => p.readFileRaw(actor.token, project, filePath),
+          f
+        );
+        const importMap = pkgJson ? generateImportMap(pkgJson) : null;
 
         html = injectPreviewHead(html, baseHref, importMap);
 

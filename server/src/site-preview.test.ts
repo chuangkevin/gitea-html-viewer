@@ -9,6 +9,7 @@ import {
   rewriteCssSideEffectImports,
   createCssShim,
   readWithPublicFallback,
+  readClosestPackageJson,
 } from "./site-preview.js";
 import { ProviderError } from "./providers.js";
 
@@ -229,6 +230,34 @@ const str = "import './string.css'";
     // Case 4: root favicon missing falls back to public/favicon.svg
     const resFavicon = await readWithPublicFallback(mockRead, "favicon.ico");
     assert.equal(resFavicon, "<svg>favicon</svg>");
+  });
+
+  it("reads closest ancestor package.json for source previews and propagates non-404 provider errors", async () => {
+    const attempts: string[] = [];
+    const pkg = { dependencies: { three: "^0.160.0" } };
+    const found = await readClosestPackageJson(async (path) => {
+      attempts.push(path);
+      if (path === "ai-pair-programming-poc/package.json") {
+        throw new ProviderError(404, "File not found");
+      }
+      if (path === "package.json") {
+        return JSON.stringify(pkg);
+      }
+      throw new Error(`unexpected path: ${path}`);
+    }, "ai-pair-programming-poc/index.html");
+
+    assert.deepEqual(found, pkg);
+    assert.deepEqual(attempts, ["ai-pair-programming-poc/package.json", "package.json"]);
+
+    const failedAttempts: string[] = [];
+    await assert.rejects(
+      async () => readClosestPackageJson(async (path) => {
+        failedAttempts.push(path);
+        throw new ProviderError(500, "Internal Server Error");
+      }, "ai-pair-programming-poc/index.html"),
+      (err: any) => err instanceof ProviderError && err.status === 500
+    );
+    assert.deepEqual(failedAttempts, ["ai-pair-programming-poc/package.json"]);
   });
 
   it("simulates weather fixture project structure (index.html, main.js, package.json)", () => {
