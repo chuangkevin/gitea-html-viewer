@@ -70,6 +70,16 @@ import {
   resolveSelection,
   teamEnabled,
 } from "./identities.js";
+import {
+  buildPreviewBaseUrl,
+  determineEffectiveGrant,
+  shouldServeCssShim,
+  generateImportMap,
+  injectPreviewHead,
+  rewriteCssSideEffectImports,
+  createCssShim,
+  readWithPublicFallback,
+} from "./site-preview.js";
 
 registerProvider(github);
 registerProvider(gitlab);
@@ -839,6 +849,82 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
   }
 });
 
+async function servePreviewAsset(
+  req: express.Request,
+  res: express.Response,
+  p: ReturnType<typeof getProvider>,
+  token: string,
+  project: string,
+  filePath: string
+): Promise<void> {
+  const buf = await readWithPublicFallback((path) => p.readFileRaw(token, project, path), filePath);
+
+  if (shouldServeCssShim(filePath, req.query.site_preview_css)) {
+    res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(createCssShim());
+    return;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+
+  if (ext === ".js" || ext === ".mjs") {
+    const code = buf.toString("utf8");
+    const transformed = rewriteCssSideEffectImports(code);
+    res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(transformed);
+    return;
+  }
+
+  sendRaw(res, filePath, buf, false);
+}
+
+app.get("/site-assets/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const p = getProvider(provider);
+    const project = projectParam(req);
+    const actor = actorFor(req, provider, project);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required" });
+      return;
+    }
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    await servePreviewAsset(req, res, p, actor.token, project, filePath);
+  } catch (e) {
+    if (e instanceof ProviderError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
+  }
+});
+
+app.get("/site-assetst/:grant/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const token = resolveGrant(req.params.grant, provider, project);
+    if (!token) {
+      res.status(401).json({ error: "grant_invalid" });
+      return;
+    }
+    const p = getProvider(provider);
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    await servePreviewAsset(req, res, p, token, project, filePath);
+  } catch (e) {
+    if (e instanceof ProviderError) {
+      res.status(e.status === 404 ? 404 : 502).end();
+      return;
+    }
+    res.status(500).end();
+  }
+});
+
 function escapeHtml(str: string): string {
   return str
     .replace(/&/g, "&amp;")
@@ -971,8 +1057,9 @@ app.get("/site/:provider/:project", async (req, res) => {
 
     // 優先嘗試 grant query：分享連結帶 ?grant=xxx 可在無 session 時授權
     let grantToken: string | null = null;
-    if (typeof req.query.grant === "string" && req.query.grant) {
-      grantToken = resolveGrant(req.query.grant, provider, project);
+    const rawGrant = typeof req.query.grant === "string" && req.query.grant ? req.query.grant : null;
+    if (rawGrant) {
+      grantToken = resolveGrant(rawGrant, provider, project);
     }
 
     // grant 只是「加分」，不該讓事情變糟：grant 背後的 session 過期、或那個人
@@ -982,12 +1069,14 @@ app.get("/site/:provider/:project", async (req, res) => {
     let actor: Actor = grantToken
       ? ({ token: grantToken, authed: true } as Actor)
       : fallbackActor;
+    let usingGrant = Boolean(grantToken);
     let info;
     try {
       info = await p.getRepo(actor.token, project);
     } catch (e) {
       if (grantToken && actor.token !== fallbackActor.token) {
         actor = fallbackActor;                 // grant 的 token 不管用 → 用一般路徑再試一次
+        usingGrant = false;
         info = await p.getRepo(actor.token, project);
       } else {
         throw e;
@@ -1013,13 +1102,25 @@ app.get("/site/:provider/:project", async (req, res) => {
         let html = buf.toString("utf8");
         const dirName = path.dirname(f).replace(/\\/g, "/");
         const folderPath = dirName === "." || dirName === "" ? "" : dirName + "/";
-        const baseHref = `/raw/${provider}/${encodeURIComponent(project)}/${folderPath}`;
 
-        if (/<head\b[^>]*>/i.test(html)) {
-          html = html.replace(/(<head\b[^>]*>)/i, `$1\n  <base href="${baseHref}">`);
-        } else {
-          html = `<base href="${baseHref}">\n` + html;
+        const validGrant = determineEffectiveGrant(rawGrant, grantToken, usingGrant);
+        const baseHref = buildPreviewBaseUrl({
+          provider,
+          project,
+          folderPath,
+          grant: validGrant,
+        });
+
+        let importMap = null;
+        try {
+          const pkgBuf = await p.readFileRaw(actor.token, project, "package.json");
+          const pkgJson = JSON.parse(pkgBuf.toString("utf8"));
+          importMap = generateImportMap(pkgJson);
+        } catch {
+          // package.json 不存在、格式無效或讀取失敗時退化成一般靜態頁
         }
+
+        html = injectPreviewHead(html, baseHref, importMap);
 
         // Note: Content-Security-Policy: sandbox is intentionally omitted to allow JS execution for standalone site view.
         // Trust model: Internal / self-hosted usage where repository contents are treated as trusted.

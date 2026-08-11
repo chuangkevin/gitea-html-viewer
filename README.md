@@ -18,6 +18,7 @@ PM 不需要知道什麼是 Git。他們得到的是「線上文件工具 + 一�
 - **公開 repo 免登入**：public repo 直接讀、直接放簡報；private 或要編輯時才右上角登入
 - **分享為獨立網頁**：`/s/<token>` 公開頁面，可隨時撤銷；訪客不需要帳號
 - **簡報模式**：同一份文件以 `---` 分頁即為投影片，鍵盤／點擊翻頁——相容 PM 的簡報習慣
+- **HTML 預覽**：支援一般靜態站及常見 vanilla Vite 原始碼預覽；bare dependencies 由瀏覽器透過 esm.sh 載入，Server 不執行 repo build
 - Roadmap：PM 側 AI 討論優化（RAG 知識注入）、研發側 AI 總結
 
 ## 開發
