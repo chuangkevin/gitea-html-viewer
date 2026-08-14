@@ -80,21 +80,53 @@ deploy:
     SKYNET_TARGET_ID: "72"
     SKYNET_MAINTENANCE_MINUTES: "30"
   script:
-    # First deploy action: target-scoped maintenance. It intentionally fails
-    # open, and the 30-minute window is allowed to expire naturally (no DELETE).
     - |
+      set -euo pipefail
+
       payload="{\"scope\":\"target\",\"targetId\":${SKYNET_TARGET_ID},\"durationMinutes\":${SKYNET_MAINTENANCE_MINUTES},\"reason\":\"deploy note ${CI_COMMIT_SHORT_SHA:-unknown}\"}"
+      auth_args=()
       if [ -n "${SKYNET_API_KEY:-}" ]; then
-        http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$SKYNET_MAINTENANCE_URL" -H "Content-Type: application/json" -H "X-API-Key: ${SKYNET_API_KEY}" -d "$payload" || true)"
-      else
-        http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$SKYNET_MAINTENANCE_URL" -H "Content-Type: application/json" -d "$payload" || true)"
+        auth_args=(-H "X-API-Key: ${SKYNET_API_KEY}")
       fi
-      case "$http_code" in
-        200|201) printf 'Skynet maintenance confirmed for Note target %s.\n' "$SKYNET_TARGET_ID" ;;
-        *) printf 'WARNING: Skynet maintenance for Note target %s was not confirmed (HTTP %s); continuing deploy.\n' "$SKYNET_TARGET_ID" "${http_code:-curl-error}" >&2 ;;
-      esac
-    - cd "$DEPLOY_DIR"
-    - git fetch --prune "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
-    - git reset --hard "origin/${CI_COMMIT_BRANCH}"
-    - git log -1 --format='deployed commit = %h %s'
-    - ./scripts/deploy.sh
+      maintenance_id=""
+
+      post_response="$(
+        curl -sS --connect-timeout 3 --max-time 10 -w '\n%{http_code}' \
+          -X POST "$SKYNET_MAINTENANCE_URL" \
+          -H "Content-Type: application/json" \
+          "${auth_args[@]}" \
+          -d "$payload" \
+          || true
+      )"
+      post_http_code="${post_response##*$'\n'}"
+      post_body="${post_response%$'\n'*}"
+
+      if [ "$post_http_code" = "201" ]; then
+        maintenance_id="$(printf '%s' "$post_body" | jq -r '.id // empty' 2>/dev/null || true)"
+        case "$maintenance_id" in
+          ''|*[!0-9]*)
+            printf 'WARNING: Skynet maintenance for Note target %s returned malformed id; continuing deploy without releasable maintenance ID.\n' "$SKYNET_TARGET_ID" >&2
+            maintenance_id=""
+            ;;
+          *)
+            printf 'Skynet maintenance %s confirmed for Note target %s.\n' "$maintenance_id" "$SKYNET_TARGET_ID"
+            ;;
+        esac
+      else
+        printf 'WARNING: Skynet maintenance for Note target %s was not confirmed (HTTP %s); continuing deploy.\n' "$SKYNET_TARGET_ID" "${post_http_code:-curl-error}" >&2
+      fi
+
+      cd "$DEPLOY_DIR"
+      git fetch --prune "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
+      git reset --hard "origin/${CI_COMMIT_BRANCH}"
+      git log -1 --format='deployed commit = %h %s'
+      ./scripts/deploy.sh
+
+      if [ -n "$maintenance_id" ]; then
+        delete_http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X DELETE "${SKYNET_MAINTENANCE_URL}/${maintenance_id}" "${auth_args[@]}" || true)"
+        if [ "$delete_http_code" = "204" ]; then
+          printf 'Skynet maintenance %s released for Note target %s.\n' "$maintenance_id" "$SKYNET_TARGET_ID"
+        else
+          printf 'WARNING: Failed to release Skynet maintenance %s for Note target %s (HTTP %s); deploy remains successful and TTL will expire it.\n' "$maintenance_id" "$SKYNET_TARGET_ID" "${delete_http_code:-curl-error}" >&2
+        fi
+      fi

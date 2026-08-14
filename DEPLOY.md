@@ -172,7 +172,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 
 **部署機制**：GitLab Runner 執行 deploy job 時，第一步先向 Skynet 對 Note target 開 30 分鐘維護視窗，避免部署期間自動復原誤判。接著在部署目錄 (`/home/interagent/note`) 直接執行 `git fetch --prune` 與 `git reset --hard origin/<branch>`，再執行 `./scripts/deploy.sh` 重建與啟動容器。部署目錄本身是唯一事實來源，不再使用 rsync 同步 Runner build dir。
 
-Skynet 維護行為：target ID 為 `72`，duration 為 `30` 分鐘；維護會自然到期，CI 不會自動 DELETE。若 GitLab protected/masked CI variable `SKYNET_API_KEY` 存在，deploy job 會送 `X-API-Key` header；未設定時不送。Skynet 不可達或 request 失敗只印 warning，不阻擋部署。
+Skynet 維護行為：target ID 為 `72`，duration 為 `30` 分鐘；CI 只會在 POST 回傳 HTTP `201` 且 JSON body 內有純數字 `id` 時記錄自己的維護 ID。若 GitLab protected/masked CI variable `SKYNET_API_KEY` 存在，deploy job 會送 `X-API-Key` header；未設定時不送。Skynet 不可達、request 失敗、非 `201` 或 malformed ID 只印 warning，不阻擋部署。僅在 `git fetch/reset`、`./scripts/deploy.sh` 與其 health check 全部成功後，CI 才會用同一組 optional auth header 立即 DELETE 自己 POST 回傳的 `/api/maintenance/<id>`；若 git/build/deploy/health 任一步失敗或 job 中斷，絕不 DELETE，保留 30 分鐘 TTL 作為中斷保險。不得透過 `/active` 或 reason 查找 ID，也不得刪除別人的維護窗。
 
 ### 1. 架構圖
 
@@ -189,14 +189,15 @@ Skynet 維護行為：target ID 為 `72`，duration 為 `30` 分鐘；維護會�
                                      | (Pass)
                                      v
                         +---------------------------+
-                        |   Stage: deploy           |
-                        | (docker-host runner)      |
-                        | - Skynet target maintenance |
-                        | - git fetch/reset 部署目錄 |
-                        | - docker compose up -d    |
-                        | - Health Check (curl)     |
-                        | - docker image prune      |
-                       +---------------------------+
+                         |   Stage: deploy           |
+                         | (docker-host runner)      |
+                         | - Skynet target maintenance |
+                         | - git fetch/reset 部署目錄 |
+                         | - docker compose up -d    |
+                         | - Health Check (curl)     |
+                         | - docker image prune      |
+                         | - DELETE own maintenance ID |
+                        +---------------------------+
 ```
 
 ### 2. 首次設定（三步驟）
@@ -237,7 +238,7 @@ Skynet 維護行為：target ID 為 `72`，duration 為 `30` 分鐘；維護會�
 
 若 CI/CD 或 Runner 異常時，先在 Skynet Dashboard 對 **Note target ID `72`** 開 **30 分鐘**的 target-scoped maintenance window，再手動登入 docker-host 執行以下指令作為備援。若用 API，請只使用受保護的 `SKYNET_API_KEY`，不可把 key 寫進 shell history 或 repo。
 
-部署結束後**不需下維護，也不要呼叫 DELETE**；讓 30 分鐘視窗自然到期，避免提早解除時仍有容器重建或健康檢查尚未完成。
+手動部署也必須遵循與 CI 相同的維護釋放規則：只在部署與健康檢查成功後，立即 DELETE 自己建立時 POST 回傳的 maintenance ID；若部署失敗或中斷，絕不 DELETE，保留 30 分鐘 TTL 作為中斷保險。不要透過 active list 或 reason 查找並刪除別人的維護窗。
 
 ```bash
 git pull --ff-only
