@@ -17,6 +17,7 @@ PM 不需要知道什麼是 Git。他們得到的是「線上文件工具 + 一�
 - **OAuth 多使用者**：訪客用自己的帳號登入、操作自己的 repo（GitHub、GitLab 各自的 OAuth App）
 - **公開 repo 免登入**：public repo 直接讀、直接放簡報；private 或要編輯時才右上角登入
 - **分享為獨立網頁**：`/s/<token>` 公開頁面，可隨時撤銷；訪客不需要帳號
+- **內部短網址**：管理員可建立 `https://note.ia/go/<alias>`，集中檢視、改目標、啟用/停用；只做 redirect，不增加存取權
 - **簡報模式**：同一份文件以 `---` 分頁即為投影片，鍵盤／點擊翻頁——相容 PM 的簡報習慣
 - **HTML 預覽**：支援一般靜態站及常見 vanilla Vite 原始碼預覽；bare dependencies 由瀏覽器透過 esm.sh 載入，Server 不執行 repo build
 - Roadmap：PM 側 AI 討論優化（RAG 知識注入）、研發側 AI 總結
@@ -37,6 +38,14 @@ npm run build && npm start   # Express 同時服務 API 與 client/dist
 
 Docker：見 `docker-compose.yml`。
 
+## 內部短網址
+
+管理員可在 `/admin` 的「內部短網址」區建立 `/go/<alias>` 連結，也可在工作區目前文件或資料夾的分享動線直接建立。alias 可自訂，規則為小寫英數與 hyphen，長度 2-48；留空時 server 會產生短 code 並避開碰撞。
+
+短網址目標只接受同站相對的 Note UI path，例如 `/edit/...`、`/site/...`、`/p/...`、`/present/...`。`/api`、`/raw`、`/s`、`/go`、`/admin` 等系統路徑會被拒絕。redirect 會使用保存的 target path，包括原本的 query/fragment；使用者打在 `/go/<alias>` 後面的 query string 不會被帶到目標。
+
+`/go/<alias>` 只允許導向本站既有 UI，且回應不會被快取；所以重新指向或停用會立即生效。短網址不賦予任何讀取或寫入權限。被導向的頁面仍依原本 Note、repo、公開分享或登入權限判斷能不能開啟。
+
 ## 架構
 
 ```
@@ -46,7 +55,7 @@ server (Express + TypeScript)
    ├─ Provider 抽象層（providers.ts）：GitHub / GitLab 各一實作
    ├─ OAuth（GitHub / GitLab，token AES-256-GCM 加密存放）
    ├─ list / read / write(=commit) / raw
-   └─ SQLite：sessions + share tokens（唯二不放 repo 的資料）
+   └─ SQLite：sessions + share tokens + internal short links（不放 repo 的資料）
 GitHub / GitLab repo  ←── 唯一的文件儲存
 ```
 

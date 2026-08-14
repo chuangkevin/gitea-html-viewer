@@ -81,6 +81,14 @@ import {
   readClosestPackageJson,
   readWithPublicFallback,
 } from "./site-preview.js";
+import {
+  ShortLinkError,
+  createShortLink,
+  listShortLinks,
+  resolveShortLink,
+  shortLinkToResponse,
+  updateShortLink,
+} from "./short-links.js";
 
 registerProvider(github);
 registerProvider(gitlab);
@@ -115,7 +123,7 @@ process.on("unhandledRejection", (err) => {
   console.error("[unhandledRejection]", err);
 });
 
-const app = express();
+export const app = express();
 app.use(express.json({ limit: "30mb" }));
 app.use(cookieParser());
 
@@ -464,6 +472,25 @@ function requireAdmin(req: express.Request, res: express.Response): boolean {
     return false;
   }
   return true;
+}
+
+function currentAdminName(req: express.Request): string {
+  const s = req.nbSession ?? null;
+  if (s && process.env.ADMIN_LOGINS) {
+    const allowed = process.env.ADMIN_LOGINS.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+    if (allowed.includes(s.login.toLowerCase())) {
+      return s.login;
+    }
+  }
+  return "admin_key";
+}
+
+function handleShortLinkError(res: express.Response, e: unknown): void {
+  if (e instanceof ShortLinkError) {
+    res.status(e.code === "alias_exists" ? 409 : 400).json({ error: e.code });
+    return;
+  }
+  handleError(res, e);
 }
 
 function actorFor(req: express.Request, provider: ProviderName, project?: string): Actor {
@@ -1582,6 +1609,57 @@ app.delete("/api/admin/repos", (req, res) => {
   res.json({ ok: true, entries: listEntries() });
 });
 
+app.get("/api/admin/short-links", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  res.json({ links: listShortLinks(q).map((link) => shortLinkToResponse(link, BASE_URL)) });
+});
+
+app.post("/api/admin/short-links", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { alias, targetPath, label } = req.body as { alias?: string | null; targetPath?: string; label?: string | null };
+  if (typeof targetPath !== "string") {
+    res.status(400).json({ error: "invalid_target" });
+    return;
+  }
+  try {
+    const link = createShortLink({ alias, targetPath, label, createdBy: currentAdminName(req) });
+    res.status(201).json({ link: shortLinkToResponse(link, BASE_URL) });
+  } catch (e) {
+    handleShortLinkError(res, e);
+  }
+});
+
+app.put("/api/admin/short-links/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { targetPath, label, isEnabled } = req.body as {
+    targetPath?: string;
+    label?: string | null;
+    isEnabled?: boolean;
+  };
+  try {
+    const link = updateShortLink(req.params.id, { targetPath, label, isEnabled });
+    if (!link) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json({ link: shortLinkToResponse(link, BASE_URL) });
+  } catch (e) {
+    handleShortLinkError(res, e);
+  }
+});
+
+app.get("/go/:alias", (req, res) => {
+  const link = resolveShortLink(req.params.alias);
+  if (!link) {
+    res.status(404).setHeader("Cache-Control", "no-store").end();
+    return;
+  }
+  // Links can be retargeted or disabled, so intermediaries must never retain
+  // an old Location response after the administrator changes it.
+  res.status(302).set({ Location: link.targetPath, "Cache-Control": "no-store" }).end();
+});
+
 // ── prefs ──────────────────────────────────────────────
 app.post("/api/prefs/last-repo", (req, res) => {
   const { provider, project, file } = req.body as { provider?: string; project?: string; file?: string | null };
@@ -1799,6 +1877,8 @@ if (fs.existsSync(clientDist)) {
   app.get("*", (_req, res) => res.sendFile(path.join(clientDist, "index.html")));
 }
 
-app.listen(PORT, () => {
-  console.log(`note-bridge server on :${PORT} (${BASE_URL})`);
-});
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(`note-bridge server on :${PORT} (${BASE_URL})`);
+  });
+}

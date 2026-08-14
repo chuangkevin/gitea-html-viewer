@@ -170,7 +170,9 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 
 ## CI/CD 自動部署
 
-**部署機制**：GitLab Runner 執行 deploy job 時，已先在 Runner 端 checkout 最新 Commit (`$CI_PROJECT_DIR`)，接著透過 `rsync -a --delete` 同步至部署目錄 (`/home/interagent/note`)，同步時自動保留宿主機的 `.env` 與 `.env.*` 備份、`data/` 目錄、`set-note-token.sh` 與 `docker-compose.override.yml*`，最後執行 Docker Compose 重建與啟動容器。
+**部署機制**：GitLab Runner 執行 deploy job 時，第一步先向 Skynet 對 Note target 開 30 分鐘維護視窗，避免部署期間自動復原誤判。接著在部署目錄 (`/home/interagent/note`) 直接執行 `git fetch --prune` 與 `git reset --hard origin/<branch>`，再執行 `./scripts/deploy.sh` 重建與啟動容器。部署目錄本身是唯一事實來源，不再使用 rsync 同步 Runner build dir。
+
+Skynet 維護行為：target ID 為 `72`，duration 為 `30` 分鐘；維護會自然到期，CI 不會自動 DELETE。若 GitLab protected/masked CI variable `SKYNET_API_KEY` 存在，deploy job 會送 `X-API-Key` header；未設定時不送。Skynet 不可達或 request 失敗只印 warning，不阻擋部署。
 
 ### 1. 架構圖
 
@@ -186,13 +188,14 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
                        +---------------------------+
                                      | (Pass)
                                      v
-                       +---------------------------+
-                       |   Stage: deploy           |
-                       | (docker-host runner)      |
-                       | - rsync 到部署目錄        |
-                       | - docker compose up -d    |
-                       | - Health Check (curl)     |
-                       | - docker image prune      |
+                        +---------------------------+
+                        |   Stage: deploy           |
+                        | (docker-host runner)      |
+                        | - Skynet target maintenance |
+                        | - git fetch/reset 部署目錄 |
+                        | - docker compose up -d    |
+                        | - Health Check (curl)     |
+                        | - docker image prune      |
                        +---------------------------+
 ```
 
@@ -220,7 +223,7 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 - **故障排查**：
   - **Runner Offline**：至 docker-host 執行 `gitlab-runner status` 或 `sudo gitlab-runner verify` 檢視服務狀態。
   - **Deploy Fail**：先在 GitLab Pipeline 頁面檢視 Job Log；若為健康檢查或容器啟動失敗，登入 docker-host 執行 `docker logs note` 查看容器日誌。
-  - **pipeline 綠燈但服務跑的是舊 code（dubious ownership）**：部署目錄用 git 更新，但目錄擁有者 (`interagent`) 與 runner 執行身分 (`gitlab-runner`) 不一致，git 回 `fatal: detected dubious ownership` 而靜默失敗。處置：已改為 rsync 同步，不再依賴部署目錄的 git。
+   - **pipeline 綠燈但服務跑的是舊 code（git fetch/reset 沒有生效）**：部署目錄由 deploy job 直接 `git fetch` / `git reset --hard origin/<branch>` 更新。若 job log 出現 `dubious ownership` 或權限錯誤，代表部署目錄權限不符合 runner 設定；重跑安裝腳本 `sudo -E ./deploy/install-gitlab-runner.sh` 修復 owner/group/setgid 後再重跑 pipeline。
   - **deploy job 出現 cd: Permission denied**：若 deploy job 第一行指令出現 `bash: cd: /home/interagent/note: Permission denied`，代表 gitlab-runner 使用者對部署目錄或其上層目錄缺乏通行/存取權限。重跑安裝腳本 `sudo -E ./deploy/install-gitlab-runner.sh` 即可自動調整權限修復。
   - **pipeline 全綠但服務畫面沒更新、新功能沒生效**：原因為 compose override 把 host 的 dist 掛進容器覆蓋 image 產物。處置：把 override 改名為 `.disabled` 或移除 dist 掛載後 `docker compose up -d --force-recreate`；CI 現已自動偵測此情況並讓 pipeline 失敗。
 
@@ -232,14 +235,16 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 
 > 註：已由 CI 取代，僅供緊急備援；使用時記得事後移除 dist 掛載。
 
-若 CI/CD 或 Runner 異常時，可手動登入 docker-host 執行以下指令作為備援：
+若 CI/CD 或 Runner 異常時，先在 Skynet Dashboard 對 **Note target ID `72`** 開 **30 分鐘**的 target-scoped maintenance window，再手動登入 docker-host 執行以下指令作為備援。若用 API，請只使用受保護的 `SKYNET_API_KEY`，不可把 key 寫進 shell history 或 repo。
+
+部署結束後**不需下維護，也不要呼叫 DELETE**；讓 30 分鐘視窗自然到期，避免提早解除時仍有容器重建或健康檢查尚未完成。
 
 ```bash
-git pull && docker compose up -d --build
+git pull --ff-only
+./scripts/deploy.sh
 ```
 
 ## 資料
 
 - `./data`（bind mount）：SQLite（sessions + 分享 token）與 `.secret`。備份就備份這個目錄。
 - 文件本體不在這裡——都在使用者各自的 GitLab/GitHub repo（預設文件專案為 `interagent-io/global-doc`）。
-

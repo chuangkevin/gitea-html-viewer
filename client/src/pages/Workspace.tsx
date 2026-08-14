@@ -56,6 +56,13 @@ export default function Workspace() {
   const [isFolderLoading, setIsFolderLoading] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
   const [copiedSite, setCopiedSite] = useState(false);
+  const [shortLinkOpen, setShortLinkOpen] = useState(false);
+  const [shortAlias, setShortAlias] = useState("");
+  const [shortLabel, setShortLabel] = useState("");
+  const [shortLinkResult, setShortLinkResult] = useState<{ goUrl: string } | null>(null);
+  const [shortLinkError, setShortLinkError] = useState("");
+  const [shortLinkSaving, setShortLinkSaving] = useState(false);
+  const [copiedShortLink, setCopiedShortLink] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
@@ -878,11 +885,26 @@ export default function Workspace() {
     return true;
   }
 
-  function handleCopyShare() {
+  const currentShareTargetPath = useMemo(() => {
+    if (!hasRepo || (!activePath && !params.has("dir"))) return "";
     const paramStr = params.has("dir")
       ? `?dir=${encodeURIComponent(cleanDir)}`
       : `?f=${encodeURIComponent(activePath)}`;
-    const url = `${window.location.origin}/edit/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
+    return `/edit/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
+  }, [hasRepo, activePath, params, cleanDir, provider, projectPath]);
+
+  const defaultShortLabel = useMemo(() => {
+    if (params.has("dir")) return cleanDir ? `${repoLeaf}/${cleanDir}/` : `${repoLeaf}/`;
+    return activePath || repoLeaf;
+  }, [params, cleanDir, activePath, repoLeaf]);
+
+  useEffect(() => {
+    setShortLinkResult(null);
+    setShortLinkError("");
+  }, [currentShareTargetPath]);
+
+  function handleCopyShare() {
+    const url = `${window.location.origin}${currentShareTargetPath}`;
     void copyTextToClipboard(url).then(() => {
       setCopiedShare(true);
       setTimeout(() => setCopiedShare(false), 2000);
@@ -897,6 +919,39 @@ export default function Workspace() {
     void copyTextToClipboard(url).then(() => {
       setCopiedSite(true);
       setTimeout(() => setCopiedSite(false), 2000);
+    });
+  }
+
+  async function handleCreateShortLink(e: React.FormEvent) {
+    e.preventDefault();
+    if (!me?.admin?.is) {
+      setShortLinkError("只有管理員可以建立內部短網址");
+      return;
+    }
+    if (!currentShareTargetPath) return;
+    setShortLinkSaving(true);
+    setShortLinkError("");
+    setShortLinkResult(null);
+    try {
+      const r = await api.createShortLink({
+        alias: shortAlias.trim() || undefined,
+        targetPath: currentShareTargetPath,
+        label: shortLabel.trim() || defaultShortLabel,
+      });
+      setShortLinkResult({ goUrl: r.link.goUrl });
+      setShortAlias("");
+    } catch (err: any) {
+      setShortLinkError(String(err.message || err));
+    } finally {
+      setShortLinkSaving(false);
+    }
+  }
+
+  function handleCopyShortLink() {
+    if (!shortLinkResult) return;
+    void copyTextToClipboard(shortLinkResult.goUrl).then(() => {
+      setCopiedShortLink(true);
+      setTimeout(() => setCopiedShortLink(false), 2000);
     });
   }
 
@@ -1091,7 +1146,7 @@ export default function Workspace() {
 
   return (
     <div className="h-dvh flex flex-col">
-      <header className="relative border-b border-zinc-800 px-4 py-2.5 flex items-center gap-3 shrink-0">
+      <header className="relative border-b border-zinc-800 px-4 py-2.5 flex flex-wrap items-center gap-3 shrink-0">
         <button
           onClick={() => setSidebarOpen((v) => !v)}
           aria-label="開啟選單"
@@ -1157,6 +1212,19 @@ export default function Workspace() {
             >
               {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
             </button>
+            {me?.admin?.is ? (
+              <button
+                onClick={() => setShortLinkOpen((v) => !v)}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-emerald-600 hover:text-emerald-300 transition-colors whitespace-nowrap"
+                title="建立 /go/alias 內部短網址"
+              >
+                建立短網址
+              </button>
+            ) : me?.admin?.enabled ? (
+              <span className="rounded-lg border border-zinc-800 px-3 py-1.5 text-sm text-zinc-500 whitespace-nowrap" title="只有管理員可以建立內部短網址">
+                短網址需管理員
+              </span>
+            ) : null}
           </div>
         )}
         {activePath && (activeKind === "md" || activeKind === "html") && canWrite && (
@@ -1287,6 +1355,21 @@ export default function Workspace() {
                 >
                   {copiedSite ? "已複製 ✓" : "🌐 分享為獨立網站"}
                 </button>
+                {me?.admin?.is ? (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setShortLinkOpen((v) => !v);
+                    }}
+                    className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-emerald-600 hover:text-emerald-300 transition-colors whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                  >
+                    建立內部短網址
+                  </button>
+                ) : me?.admin?.enabled ? (
+                  <div className="rounded-lg border border-zinc-800 px-3 py-2 text-sm text-zinc-500 whitespace-nowrap">
+                    內部短網址需管理員
+                  </div>
+                ) : null}
               </>
             )}
             {activePath && (activeKind === "md" || activeKind === "html") && canWrite && me?.login && (
@@ -1370,6 +1453,73 @@ export default function Workspace() {
           <button className="ml-auto text-zinc-500 hover:text-zinc-300" onClick={() => setShareUrl(null)}>
             ✕
           </button>
+        </div>
+      )}
+      {shortLinkOpen && (
+        <div className="border-b border-emerald-900/50 bg-emerald-950/30 px-4 py-3 text-sm">
+          <form onSubmit={handleCreateShortLink} className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-emerald-200">建立內部短網址</span>
+                <span className="text-xs text-emerald-400/80">只 redirect，不增加任何存取權</span>
+              </div>
+              <div className="rounded border border-emerald-900/70 bg-zinc-950/60 px-2 py-1.5 font-mono text-xs text-zinc-300 break-all">
+                target: {currentShareTargetPath || "尚未選擇可分享的頁面"}
+              </div>
+            </div>
+            <label className="min-w-0 lg:w-44 space-y-1">
+              <span className="block text-xs text-emerald-300/80">Alias（可留空）</span>
+              <input
+                type="text"
+                value={shortAlias}
+                onChange={(e) => setShortAlias(e.target.value.toLowerCase())}
+                placeholder="erp"
+                className="w-full rounded border border-emerald-900/70 bg-zinc-950 px-3 py-2 font-mono text-sm text-white placeholder-zinc-600 outline-none focus:border-emerald-500"
+              />
+            </label>
+            <label className="min-w-0 lg:w-56 space-y-1">
+              <span className="block text-xs text-emerald-300/80">Label</span>
+              <input
+                type="text"
+                value={shortLabel}
+                onChange={(e) => setShortLabel(e.target.value)}
+                placeholder={defaultShortLabel}
+                className="w-full rounded border border-emerald-900/70 bg-zinc-950 px-3 py-2 text-sm text-white placeholder-zinc-600 outline-none focus:border-emerald-500"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="submit"
+                disabled={!currentShareTargetPath || shortLinkSaving}
+                className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 whitespace-nowrap"
+              >
+                {shortLinkSaving ? "建立中..." : "建立"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShortLinkOpen(false)}
+                className="rounded border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-500 whitespace-nowrap"
+              >
+                關閉
+              </button>
+            </div>
+          </form>
+          {shortLinkError && <div className="mt-2 text-sm text-red-300 break-all">{shortLinkError}</div>}
+          {shortLinkResult && (
+            <div className="mt-3 flex flex-col gap-2 rounded border border-emerald-800/70 bg-emerald-950/50 px-3 py-2 sm:flex-row sm:items-center">
+              <span className="text-emerald-200 whitespace-nowrap">已建立：</span>
+              <a href={shortLinkResult.goUrl} target="_blank" rel="noreferrer" className="min-w-0 flex-1 break-all font-mono text-emerald-100 underline">
+                {shortLinkResult.goUrl}
+              </a>
+              <button
+                type="button"
+                onClick={handleCopyShortLink}
+                className="rounded border border-emerald-700 px-3 py-1.5 text-xs text-emerald-100 hover:bg-emerald-900/50 whitespace-nowrap"
+              >
+                {copiedShortLink ? "已複製" : "Copy"}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {error && (

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type AccessMode, type AdminState } from "../lib/api";
+import { api, type AccessMode, type AdminState, type ShortLink } from "../lib/api";
 
 const MODE_OPTIONS: { value: AccessMode; label: string }[] = [
   { value: "open", label: "免登入公開可編" },
   { value: "login", label: "要登入才能編" },
   { value: "admin", label: "只有 admin 能編" },
 ];
+
+type ShortLinkDraft = { targetPath: string; label: string; isEnabled: boolean };
 
 export function normalizeProjectInput(
   raw: string,
@@ -50,6 +52,15 @@ export default function Admin() {
   const [newProject, setNewProject] = useState("");
   const [newMode, setNewMode] = useState<AccessMode>("open");
 
+  const [shortLinks, setShortLinks] = useState<ShortLink[]>([]);
+  const [shortDrafts, setShortDrafts] = useState<Record<string, ShortLinkDraft>>({});
+  const [shortSearch, setShortSearch] = useState("");
+  const [newShortAlias, setNewShortAlias] = useState("");
+  const [newShortTarget, setNewShortTarget] = useState("");
+  const [newShortLabel, setNewShortLabel] = useState("");
+  const [shortLinkNotice, setShortLinkNotice] = useState("");
+  const [copiedShortLink, setCopiedShortLink] = useState<string | null>(null);
+
   function handleBlurProject() {
     if (!newProject.trim()) return;
     const normalized = normalizeProjectInput(newProject, newProvider);
@@ -61,17 +72,40 @@ export default function Admin() {
     }
   }
 
+  function applyShortLinks(links: ShortLink[]) {
+    setShortLinks(links);
+    const drafts: Record<string, ShortLinkDraft> = {};
+    for (const link of links) {
+      drafts[link.id] = { targetPath: link.targetPath, label: link.label || "", isEnabled: link.isEnabled };
+    }
+    setShortDrafts(drafts);
+  }
+
+  const loadShortLinks = useCallback((query?: string) => {
+    setActionError("");
+    api
+      .listShortLinks(query ?? shortSearch)
+      .then((r) => applyShortLinks(r.links))
+      .catch((e) => setActionError(String((e as Error).message || e)));
+  }, [shortSearch]);
+
   const loadState = useCallback(() => {
     setActionError("");
     api
       .adminState()
-      .then(setState)
+      .then((next) => {
+        setState(next);
+      })
       .catch((e) => setActionError(String((e as Error).message || e)));
   }, []);
 
   useEffect(() => {
     loadState();
   }, [loadState]);
+
+  useEffect(() => {
+    if (state?.isAdmin) loadShortLinks();
+  }, [state?.isAdmin, loadShortLinks]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -125,6 +159,78 @@ export default function Admin() {
       const r = await api.setRepoAccess(providerToSend, p, newMode);
       setState((prev) => (prev ? { ...prev, entries: r.entries } : prev));
       setNewProject("");
+    } catch (e) {
+      setActionError(String((e as Error).message || e));
+    }
+  }
+
+  function updateShortDraft(id: string, patch: Partial<ShortLinkDraft>) {
+    setShortDrafts((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  }
+
+  async function copyTextToClipboard(text: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        prompt("請複製以下短網址：", text);
+      }
+    } else {
+      prompt("請複製以下短網址：", text);
+    }
+  }
+
+  async function handleCopyShortLink(link: ShortLink) {
+    await copyTextToClipboard(link.goUrl);
+    setCopiedShortLink(link.id);
+    setTimeout(() => setCopiedShortLink((id) => (id === link.id ? null : id)), 1600);
+  }
+
+  async function handleAddShortLink(e: React.FormEvent) {
+    e.preventDefault();
+    setActionError("");
+    setShortLinkNotice("");
+    try {
+      const r = await api.createShortLink({
+        alias: newShortAlias.trim() || undefined,
+        targetPath: newShortTarget.trim(),
+        label: newShortLabel.trim() || undefined,
+      });
+      setNewShortAlias("");
+      setNewShortTarget("");
+      setNewShortLabel("");
+      setShortLinkNotice(`已建立 ${r.link.goUrl}`);
+      loadShortLinks();
+    } catch (e) {
+      setActionError(String((e as Error).message || e));
+    }
+  }
+
+  async function handleSaveShortLink(link: ShortLink) {
+    const draft = shortDrafts[link.id];
+    if (!draft) return;
+    setActionError("");
+    setShortLinkNotice("");
+    try {
+      await api.updateShortLink(link.id, {
+        targetPath: draft.targetPath,
+        label: draft.label || null,
+        isEnabled: draft.isEnabled,
+      });
+      setShortLinkNotice(`已更新 /go/${link.alias}`);
+      loadShortLinks();
+    } catch (e) {
+      setActionError(String((e as Error).message || e));
+    }
+  }
+
+  async function handleToggleShortLink(link: ShortLink) {
+    setActionError("");
+    setShortLinkNotice("");
+    try {
+      await api.updateShortLink(link.id, { isEnabled: !link.isEnabled });
+      setShortLinkNotice(`${link.isEnabled ? "已停用" : "已啟用"} /go/${link.alias}`);
+      loadShortLinks();
     } catch (e) {
       setActionError(String((e as Error).message || e));
     }
@@ -225,6 +331,177 @@ export default function Admin() {
                 </div>
               </div>
             )}
+
+            {/* Short links */}
+            <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0">
+                  <h2 className="text-base font-semibold text-white">內部短網址</h2>
+                  <p className="text-xs text-slate-400 leading-5">
+                    建立 <code className="font-mono text-slate-200">/go/alias</code> redirect。只導向既有 Note 頁面，不會賦予任何額外存取權。
+                  </p>
+                </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    loadShortLinks(shortSearch);
+                  }}
+                  className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto"
+                >
+                  <input
+                    type="search"
+                    value={shortSearch}
+                    onChange={(e) => setShortSearch(e.target.value)}
+                    placeholder="搜尋 alias、label、target"
+                    className="w-full lg:w-72 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    className="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white text-sm px-4 py-2 rounded font-medium transition whitespace-nowrap"
+                  >
+                    搜尋
+                  </button>
+                </form>
+              </div>
+
+              <form onSubmit={handleAddShortLink} className="grid gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,2fr)_minmax(0,1fr)_auto] lg:items-end">
+                <div className="min-w-0">
+                  <label className="block text-xs text-slate-400 mb-1">Alias（可留空自動產生）</label>
+                  <input
+                    type="text"
+                    value={newShortAlias}
+                    onChange={(e) => setNewShortAlias(e.target.value.toLowerCase())}
+                    placeholder="erp"
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <label className="block text-xs text-slate-400 mb-1">Target path</label>
+                  <input
+                    type="text"
+                    value={newShortTarget}
+                    onChange={(e) => setNewShortTarget(e.target.value)}
+                    placeholder="/edit/gitlab/interagent-io%2Fglobal-doc?f=README.md"
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+                <div className="min-w-0">
+                  <label className="block text-xs text-slate-400 mb-1">Label</label>
+                  <input
+                    type="text"
+                    value={newShortLabel}
+                    onChange={(e) => setNewShortLabel(e.target.value)}
+                    placeholder="ERP 首頁"
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full lg:w-auto bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded font-medium transition whitespace-nowrap"
+                >
+                  建立短網址
+                </button>
+              </form>
+
+              {shortLinkNotice && (
+                <div className="rounded border border-emerald-800/70 bg-emerald-950/50 px-3 py-2 text-sm text-emerald-200 break-all">
+                  {shortLinkNotice}
+                </div>
+              )}
+
+              {shortLinks.length === 0 ? (
+                <div className="rounded border border-slate-700/70 bg-slate-900/40 p-6 text-center text-sm text-slate-500">
+                  目前沒有符合條件的短網址。
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {shortLinks.map((link) => {
+                    const draft = shortDrafts[link.id] || { targetPath: link.targetPath, label: link.label || "", isEnabled: link.isEnabled };
+                    return (
+                      <div key={link.id} className="rounded-lg border border-slate-700 bg-slate-900/50 p-4 space-y-3 min-w-0">
+                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-xs border ${
+                                  link.isEnabled
+                                    ? "border-emerald-700 bg-emerald-950/60 text-emerald-300"
+                                    : "border-slate-600 bg-slate-800 text-slate-400"
+                                }`}
+                              >
+                                {link.isEnabled ? "啟用" : "停用"}
+                              </span>
+                              <a href={link.goUrl} target="_blank" rel="noreferrer" className="font-mono text-sm text-sky-300 hover:underline break-all">
+                                {link.goUrl}
+                              </a>
+                            </div>
+                            <div className="text-xs text-slate-500 font-mono break-all">alias: {link.alias}</div>
+                          </div>
+                          <div className="flex flex-wrap gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyShortLink(link)}
+                              className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:border-sky-600 hover:text-sky-300 transition whitespace-nowrap"
+                            >
+                              {copiedShortLink === link.id ? "已複製" : "Copy"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleShortLink(link)}
+                              className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:border-amber-600 hover:text-amber-300 transition whitespace-nowrap"
+                            >
+                              {link.isEnabled ? "停用" : "啟用"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveShortLink(link)}
+                              className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 transition whitespace-nowrap"
+                            >
+                              儲存變更
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] lg:items-end">
+                          <div className="min-w-0">
+                            <label className="block text-xs text-slate-400 mb-1">Label</label>
+                            <input
+                              type="text"
+                              value={draft.label}
+                              onChange={(e) => updateShortDraft(link.id, { label: e.target.value })}
+                              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <label className="block text-xs text-slate-400 mb-1">Target</label>
+                            <input
+                              type="text"
+                              value={draft.targetPath}
+                              onChange={(e) => updateShortDraft(link.id, { targetPath: e.target.value })}
+                              className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+                            />
+                          </div>
+                          <label className="inline-flex items-center gap-2 text-sm text-slate-300 whitespace-nowrap">
+                            <input
+                              type="checkbox"
+                              checked={draft.isEnabled}
+                              onChange={(e) => updateShortDraft(link.id, { isEnabled: e.target.checked })}
+                              className="h-4 w-4 accent-indigo-500"
+                            />
+                            啟用
+                          </label>
+                        </div>
+
+                        <div className="grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
+                          <div className="break-all">建立：{new Date(link.createdAt).toLocaleString()} by {link.createdBy}</div>
+                          <div className="break-all sm:text-right">更新：{new Date(link.updatedAt).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             {/* 新增 Entry 表單 */}
             <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-5 space-y-4">

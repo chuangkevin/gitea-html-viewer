@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   file        TEXT,
   updated_at  INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS short_links (
+  id          TEXT PRIMARY KEY,
+  alias       TEXT NOT NULL UNIQUE CHECK(alias = lower(alias)),
+  target_path TEXT NOT NULL,
+  label       TEXT,
+  created_by  TEXT NOT NULL,
+  is_enabled  INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
 `);
 
 // 既有部署的漸進式 migration
@@ -406,4 +416,3 @@ export function getLastRepo(owner: string): LastRepo | null {
   if (!row) return null;
   return { provider: row.provider, project: row.project, file: row.file };
 }
-

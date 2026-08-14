@@ -60,6 +60,7 @@ check-server:
     - cd server
     - npm ci
     - npm run typecheck
+    - npm test
     - npm run build
 
 deploy:
@@ -75,7 +76,23 @@ deploy:
     GIT_STRATEGY: none
     DEPLOY_DIR: /home/interagent/note
     HEALTH_URL: http://localhost:8790/
+    SKYNET_MAINTENANCE_URL: http://10.11.12.55:3001/api/maintenance
+    SKYNET_TARGET_ID: "72"
+    SKYNET_MAINTENANCE_MINUTES: "30"
   script:
+    # First deploy action: target-scoped maintenance. It intentionally fails
+    # open, and the 30-minute window is allowed to expire naturally (no DELETE).
+    - |
+      payload="{\"scope\":\"target\",\"targetId\":${SKYNET_TARGET_ID},\"durationMinutes\":${SKYNET_MAINTENANCE_MINUTES},\"reason\":\"deploy note ${CI_COMMIT_SHORT_SHA:-unknown}\"}"
+      if [ -n "${SKYNET_API_KEY:-}" ]; then
+        http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$SKYNET_MAINTENANCE_URL" -H "Content-Type: application/json" -H "X-API-Key: ${SKYNET_API_KEY}" -d "$payload" || true)"
+      else
+        http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X POST "$SKYNET_MAINTENANCE_URL" -H "Content-Type: application/json" -d "$payload" || true)"
+      fi
+      case "$http_code" in
+        200|201) printf 'Skynet maintenance confirmed for Note target %s.\n' "$SKYNET_TARGET_ID" ;;
+        *) printf 'WARNING: Skynet maintenance for Note target %s was not confirmed (HTTP %s); continuing deploy.\n' "$SKYNET_TARGET_ID" "${http_code:-curl-error}" >&2 ;;
+      esac
     - cd "$DEPLOY_DIR"
     - git fetch --prune "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
     - git reset --hard "origin/${CI_COMMIT_BRANCH}"

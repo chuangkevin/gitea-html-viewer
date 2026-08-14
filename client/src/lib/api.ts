@@ -37,6 +37,18 @@ export interface AdminState {
   entries?: AdminEntry[];
 }
 
+export interface ShortLink {
+  id: string;
+  alias: string;
+  targetPath: string;
+  label: string | null;
+  createdBy: string;
+  isEnabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  goUrl: string;
+}
+
 export interface RepoInfo {
   provider: string;
   fullName: string;
@@ -174,6 +186,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider, project }),
     }).then((r) => j<{ ok: boolean; entries: AdminEntry[] }>(r)),
+  listShortLinks: (q: string = "") =>
+    fetch(`/api/admin/short-links${q ? `?q=${encodeURIComponent(q)}` : ""}`).then((r) => j<{ links: ShortLink[] }>(r)),
+  createShortLink: (body: { alias?: string; targetPath: string; label?: string }) =>
+    fetch("/api/admin/short-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => j<{ link: ShortLink }>(r)),
+  updateShortLink: (id: string, body: { targetPath?: string; label?: string | null; isEnabled?: boolean }) =>
+    fetch(`/api/admin/short-links/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => j<{ link: ShortLink }>(r)),
   // repo = projectPath（server 依 session 決定 provider）
   share: (repo: string, path: string, title?: string) =>
     fetch("/api/share", {
