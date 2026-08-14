@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, type AccessMode, type AdminState, type ShortLink } from "../lib/api";
+import { api, type AccessMode, type AdminShareInventoryItem, type AdminState, type ShortLink } from "../lib/api";
 
 const MODE_OPTIONS: { value: AccessMode; label: string }[] = [
   { value: "open", label: "免登入公開可編" },
@@ -61,6 +61,14 @@ export default function Admin() {
   const [shortLinkNotice, setShortLinkNotice] = useState("");
   const [copiedShortLink, setCopiedShortLink] = useState<string | null>(null);
 
+  const [adminShares, setAdminShares] = useState<AdminShareInventoryItem[]>([]);
+  const [shareSearch, setShareSearch] = useState("");
+  const [sharesLoading, setSharesLoading] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const [shareNotice, setShareNotice] = useState("");
+  const [copiedShareUrl, setCopiedShareUrl] = useState<string | null>(null);
+  const [revokingShareToken, setRevokingShareToken] = useState<string | null>(null);
+
   function handleBlurProject() {
     if (!newProject.trim()) return;
     const normalized = normalizeProjectInput(newProject, newProvider);
@@ -89,6 +97,16 @@ export default function Admin() {
       .catch((e) => setActionError(String((e as Error).message || e)));
   }, [shortSearch]);
 
+  const loadAdminShares = useCallback((query = "") => {
+    setShareError("");
+    setSharesLoading(true);
+    api
+      .listAdminShares(query)
+      .then((r) => setAdminShares(r.shares))
+      .catch((e) => setShareError(String((e as Error).message || e)))
+      .finally(() => setSharesLoading(false));
+  }, []);
+
   const loadState = useCallback(() => {
     setActionError("");
     api
@@ -106,6 +124,10 @@ export default function Admin() {
   useEffect(() => {
     if (state?.isAdmin) loadShortLinks();
   }, [state?.isAdmin, loadShortLinks]);
+
+  useEffect(() => {
+    if (state?.isAdmin) loadAdminShares();
+  }, [state?.isAdmin, loadAdminShares]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -184,6 +206,28 @@ export default function Admin() {
     await copyTextToClipboard(link.goUrl);
     setCopiedShortLink(link.id);
     setTimeout(() => setCopiedShortLink((id) => (id === link.id ? null : id)), 1600);
+  }
+
+  async function handleCopyAdminShare(share: AdminShareInventoryItem) {
+    await copyTextToClipboard(share.shareUrl);
+    setCopiedShareUrl(share.token);
+    setTimeout(() => setCopiedShareUrl((token) => (token === share.token ? null : token)), 1600);
+  }
+
+  async function handleRevokeAdminShare(share: AdminShareInventoryItem) {
+    if (!window.confirm(`確定撤銷 ${share.shareUrl}？撤銷後連結將立即失效。`)) return;
+    setShareError("");
+    setShareNotice("");
+    setRevokingShareToken(share.token);
+    try {
+      await api.revokeAdminShare(share.token);
+      setShareNotice(`已撤銷 ${share.shareUrl}`);
+      loadAdminShares(shareSearch);
+    } catch (e) {
+      setShareError(String((e as Error).message || e));
+    } finally {
+      setRevokingShareToken(null);
+    }
   }
 
   async function handleAddShortLink(e: React.FormEvent) {
@@ -495,6 +539,140 @@ export default function Admin() {
                         <div className="grid gap-1 text-xs text-slate-500 sm:grid-cols-2">
                           <div className="break-all">建立：{new Date(link.createdAt).toLocaleString()} by {link.createdBy}</div>
                           <div className="break-all sm:text-right">更新：{new Date(link.updatedAt).toLocaleString()}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Public share inventory */}
+            <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base font-semibold text-white">公開分享網址</h2>
+                    <span className="rounded-full border border-sky-800 bg-sky-950/50 px-2 py-0.5 text-xs text-sky-200">
+                      未撤銷 {adminShares.filter((share) => !share.revoked).length}／本次結果 {adminShares.length}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-5">
+                    這裡列出 Note 建立的 <code className="font-mono text-slate-200">/s/</code> 公開分享；只複製的 <code className="font-mono text-slate-200">/edit</code>、<code className="font-mono text-slate-200">/site</code> 等長網址不會被記錄，舊資料無法回推。
+                  </p>
+                </div>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    loadAdminShares(shareSearch);
+                  }}
+                  className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto"
+                >
+                  <input
+                    type="search"
+                    value={shareSearch}
+                    onChange={(e) => setShareSearch(e.target.value)}
+                    placeholder="搜尋 token、建立者、repo、檔案"
+                    className="w-full lg:w-80 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    className="w-full sm:w-auto bg-slate-700 hover:bg-slate-600 text-white text-sm px-4 py-2 rounded font-medium transition whitespace-nowrap"
+                  >
+                    搜尋
+                  </button>
+                </form>
+              </div>
+
+              {shareNotice && (
+                <div aria-live="polite" className="rounded border border-emerald-800/70 bg-emerald-950/50 px-3 py-2 text-sm text-emerald-200 break-all">
+                  {shareNotice}
+                </div>
+              )}
+              {shareError && (
+                <div role="alert" className="rounded border border-red-800/70 bg-red-950/50 px-3 py-2 text-sm text-red-200 break-all">
+                  無法讀取或更新公開分享：{shareError}
+                </div>
+              )}
+
+              {sharesLoading ? (
+                <div className="rounded border border-slate-700/70 bg-slate-900/40 p-6 text-center text-sm text-slate-400">正在讀取公開分享…</div>
+              ) : adminShares.length === 0 ? (
+                <div className="rounded border border-slate-700/70 bg-slate-900/40 p-6 text-center text-sm text-slate-500">
+                  目前沒有符合條件的公開分享網址。
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {adminShares.map((share) => {
+                    const targetSummary = share.kind === "set"
+                      ? `${share.paths?.length ?? 0} 個檔案${share.paths?.[0] ? ` · ${share.paths[0]}` : ""}`
+                      : share.path || "未記錄檔案路徑";
+                    return (
+                      <div key={share.token} className="rounded-lg border border-slate-700 bg-slate-900/50 p-4 space-y-3 min-w-0">
+                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-xs border ${
+                                  share.revoked
+                                    ? "border-slate-600 bg-slate-800 text-slate-400"
+                                    : "border-emerald-700 bg-emerald-950/60 text-emerald-300"
+                                }`}
+                              >
+                                {share.revoked ? "已撤銷" : "未撤銷"}
+                              </span>
+                              <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-xs text-slate-300">
+                                {share.kind === "set" ? "展示集" : "文件分享"}
+                              </span>
+                              <a href={share.shareUrl} target="_blank" rel="noreferrer" className="font-mono text-sm text-sky-300 hover:underline break-all">
+                                {share.shareUrl}
+                              </a>
+                            </div>
+                            {share.title && <div className="text-sm font-medium text-white break-words">{share.title}</div>}
+                          </div>
+                          <div className="flex flex-wrap gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyAdminShare(share)}
+                              className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:border-sky-600 hover:text-sky-300 transition whitespace-nowrap"
+                            >
+                              {copiedShareUrl === share.token ? "已複製" : "Copy"}
+                            </button>
+                            <a
+                              href={share.shareUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:border-sky-600 hover:text-sky-300 transition whitespace-nowrap"
+                            >
+                              {share.kind === "set" ? "開啟展示" : "開啟"}
+                            </a>
+                            {share.kind === "doc" && share.slidesUrl && (
+                              <a
+                                href={share.slidesUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:border-violet-600 hover:text-violet-300 transition whitespace-nowrap"
+                              >
+                                投影片
+                              </a>
+                            )}
+                            {!share.revoked && (
+                              <button
+                                type="button"
+                                disabled={revokingShareToken === share.token}
+                                onClick={() => handleRevokeAdminShare(share)}
+                                className="rounded border border-red-800/70 bg-red-950/40 px-3 py-1.5 text-xs text-red-300 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-60 transition whitespace-nowrap"
+                              >
+                                {revokingShareToken === share.token ? "撤銷中…" : "撤銷分享"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2 text-xs text-slate-400 sm:grid-cols-2 xl:grid-cols-3">
+                          <div className="min-w-0 break-all">來源：{share.provider.toUpperCase()}／{share.repo}</div>
+                          <div className="min-w-0 break-all">目標：{targetSummary}</div>
+                          <div className="min-w-0 break-all sm:col-span-2 xl:col-span-1 xl:text-right">建立：{new Date(share.createdAt).toLocaleString()} by {share.ownerLogin}</div>
                         </div>
                       </div>
                     );

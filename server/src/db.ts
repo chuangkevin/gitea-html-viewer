@@ -189,6 +189,59 @@ export interface Share {
   provider: string;
 }
 
+/** 管理員可檢視的分享資料；刻意不包含 owner_sid 或任何 session 資訊。 */
+export interface AdminShareInventoryItem {
+  token: string;
+  ownerLogin: string;
+  provider: string;
+  repo: string;
+  path: string | null;
+  paths: string[] | null;
+  title: string | null;
+  kind: "doc" | "set";
+  createdAt: number;
+  revoked: boolean;
+}
+
+interface AdminShareInventoryRow {
+  token: string;
+  owner_login: string;
+  provider: string;
+  repo: string;
+  path: string | null;
+  paths: string | null;
+  title: string | null;
+  kind: string | null;
+  created_at: number;
+  revoked: number;
+}
+
+function parseSharePaths(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every((value) => typeof value === "string") ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function toAdminShareInventoryItem(row: AdminShareInventoryRow): AdminShareInventoryItem {
+  const kind: "doc" | "set" = row.kind === "set" ? "set" : "doc";
+  return {
+    token: row.token,
+    ownerLogin: row.owner_login,
+    provider: row.provider || "github",
+    repo: row.repo,
+    path: row.path,
+    paths: kind === "set" ? parseSharePaths(row.paths) : null,
+    title: row.title,
+    kind,
+    createdAt: row.created_at,
+    revoked: row.revoked !== 0,
+  };
+}
+
 /** 多檔展示集：勾選的檔案（已排序）打包成一個分享 token。 */
 export function createShareSet(s: Session, repo: string, paths: string[], title: string | null): string {
   const token = crypto.randomBytes(8).toString("base64url");
@@ -226,6 +279,47 @@ export function listShares(login: string): Share[] {
 export function revokeShare(login: string, token: string): boolean {
   const r = db.prepare("UPDATE shares SET revoked = 1 WHERE token = ? AND owner_login = ?").run(token, login);
   return r.changes > 0;
+}
+
+/**
+ * 管理員總覽使用：列出所有已建立的 /s 分享，包含已撤銷的歷史資料。
+ * 搜尋在 SQL 端以參數傳入，避免字串拼接。
+ */
+export function listAdminShares(query = ""): AdminShareInventoryItem[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  const columns = "token, owner_login, provider, repo, path, paths, title, kind, created_at, revoked";
+  let rows: AdminShareInventoryRow[];
+  if (normalizedQuery) {
+    const matches = `
+      instr(lower(token), ?) > 0
+      OR instr(lower(owner_login), ?) > 0
+      OR instr(lower(provider), ?) > 0
+      OR instr(lower(repo), ?) > 0
+      OR instr(lower(COALESCE(path, '')), ?) > 0
+      OR instr(lower(COALESCE(paths, '')), ?) > 0
+      OR instr(lower(COALESCE(title, '')), ?) > 0
+    `;
+    rows = db
+      .prepare(`SELECT ${columns} FROM shares WHERE ${matches} ORDER BY created_at DESC, token DESC`)
+      .all(
+        normalizedQuery,
+        normalizedQuery,
+        normalizedQuery,
+        normalizedQuery,
+        normalizedQuery,
+        normalizedQuery,
+        normalizedQuery
+      ) as AdminShareInventoryRow[];
+  } else {
+    rows = db.prepare(`SELECT ${columns} FROM shares ORDER BY created_at DESC, token DESC`).all() as AdminShareInventoryRow[];
+  }
+  return rows.map(toAdminShareInventoryItem);
+}
+
+/** 管理員可撤銷任一仍有效的公開分享；資料保留供稽核，不硬刪。 */
+export function revokeAdminShare(token: string): boolean {
+  const result = db.prepare("UPDATE shares SET revoked = 1 WHERE token = ? AND revoked = 0").run(token);
+  return result.changes > 0;
 }
 
 // ── raw_grants ────────────────────────────────────────

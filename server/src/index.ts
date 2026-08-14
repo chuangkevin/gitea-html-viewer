@@ -21,7 +21,9 @@ import {
   createShareSet,
   getShare,
   listShares,
+  listAdminShares,
   revokeShare,
+  revokeAdminShare,
   encrypt,
   decrypt,
   setLastRepo,
@@ -1647,6 +1649,33 @@ app.put("/api/admin/short-links/:id", (req, res) => {
   } catch (e) {
     handleShortLinkError(res, e);
   }
+});
+
+const publicShareBaseUrl = BASE_URL.replace(/\/+$/, "");
+
+function adminShareResponse(share: ReturnType<typeof listAdminShares>[number]) {
+  const shareUrl = `${publicShareBaseUrl}/s/${encodeURIComponent(share.token)}`;
+  return {
+    ...share,
+    shareUrl,
+    // 展示集本身就是 Presenter；單一文件才有獨立的 /slides route。
+    slidesUrl: share.kind === "set" ? shareUrl : `${shareUrl}/slides`,
+  };
+}
+
+app.get("/api/admin/shares", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  res.json({ shares: listAdminShares(q).map(adminShareResponse) });
+});
+
+app.delete("/api/admin/shares/:token", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  if (!revokeAdminShare(req.params.token)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
+  res.json({ ok: true, revoked: true });
 });
 
 app.get("/go/:alias", (req, res) => {

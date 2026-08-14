@@ -49,6 +49,31 @@ export interface ShortLink {
   goUrl: string;
 }
 
+/** 管理員可檢視的公開 /s 分享；不含分享者的 session 或 token。 */
+export interface AdminShareInventoryItem {
+  token: string;
+  ownerLogin: string;
+  provider: string;
+  repo: string;
+  path: string | null;
+  paths: string[] | null;
+  title: string | null;
+  kind: "doc" | "set";
+  createdAt: number;
+  revoked: boolean;
+  shareUrl: string;
+  slidesUrl?: string;
+}
+
+export interface AdminSharesResult {
+  shares: AdminShareInventoryItem[];
+}
+
+export interface AdminRevokeShareResult {
+  ok: boolean;
+  revoked: boolean;
+}
+
 export interface RepoInfo {
   provider: string;
   fullName: string;
@@ -200,6 +225,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then((r) => j<{ link: ShortLink }>(r)),
+  listAdminShares: (q: string = "") =>
+    fetch(`/api/admin/shares${q ? `?q=${encodeURIComponent(q)}` : ""}`).then((r) => j<AdminSharesResult>(r)),
+  revokeAdminShare: (token: string) =>
+    fetch(`/api/admin/shares/${encodeURIComponent(token)}`, { method: "DELETE" }).then((r) => j<AdminRevokeShareResult>(r)),
   // repo = projectPath（server 依 session 決定 provider）
   share: (repo: string, path: string, title?: string) =>
     fetch("/api/share", {
