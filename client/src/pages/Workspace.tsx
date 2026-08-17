@@ -72,6 +72,8 @@ export default function Workspace() {
 
   // 自動存檔用。pendingSaveRef ＝「還沒成功寫回 GitLab 的快照」。
   // 用 ref 不用 state：切換檔案時 effect cleanup 必須拿得到「上一個檔案」的內容才能 flush。
+  // 拖到預覽窗格上時的視覺回饋（預覽是渲染後 HTML，沒有 caret，要讓使用者知道放得進去）
+  const [previewDropActive, setPreviewDropActive] = useState(false);
   const pendingSaveRef = useRef<{ path: string; content: string; sha?: string } | null>(null);
   const savingRef = useRef(false);
   // render 期間直接賦值，讓 async callback 永遠讀得到最新值
@@ -484,16 +486,24 @@ export default function Workspace() {
   }
 
   /**
-   * 把一段 markdown 插進編輯區。at 是插入位置（字元 offset），不給就用目前游標位置、
-   * 再不行就插在文件末尾。插完要同步 pendingSaveRef，自動存檔才吃得到。
+   * 把一段 markdown 插進文件原始碼。
+   * at 是插入位置（字元 offset）；atEnd 強制插在文件末尾（拖到預覽窗格時用，
+   * 因為預覽是渲染後的 HTML，沒有 caret 可以對應）。都不給就用目前游標位置。
+   *
+   * 刻意不切換檢視模式：在預覽模式拖入時要留在預覽，讓使用者當下就看到圖，
+   * 而不是被踢去 split。預覽是 content 的 useMemo，setContent 後會自動重繪。
+   *
+   * 插完要同步 pendingSaveRef，自動存檔才吃得到。
    */
   const insertIntoEditor = useCallback(
-    (snippet: string, at?: number) => {
+    (snippet: string, opts?: { at?: number; atEnd?: boolean }) => {
       if (!canWrite) return;
       const el = editorRef.current;
       const cur = contentRef.current;
-      const pos =
-        typeof at === "number" && at >= 0 && at <= cur.length
+      const at = opts?.at;
+      const pos = opts?.atEnd
+        ? cur.length
+        : typeof at === "number" && at >= 0 && at <= cur.length
           ? at
           : el
             ? el.selectionStart
@@ -512,9 +522,7 @@ export default function Workspace() {
       pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
       setSave((s) => (s === "conflict" ? s : "dirty"));
 
-      // 預覽模式沒有 textarea 可以放，切到看得到編輯器的模式
-      setView((v) => (v === "preview" ? (isDesktop ? "split" : "edit") : v));
-
+      // 只有原本就看得到編輯器時才移動游標；純預覽模式沒有 textarea，不做任何事
       setTimeout(() => {
         const t = editorRef.current;
         if (t) {
@@ -523,8 +531,23 @@ export default function Workspace() {
         }
       }, 0);
     },
-    [canWrite, isDesktop]
+    [canWrite]
   );
+
+  /**
+   * 從一次拖放事件取出要插入的 markdown。
+   * 檔案樹的檔案 → 圖片 `![]()`／其他 `[]()`；外部網址 → 裸網址（預覽會渲染成卡片）。
+   * 取不到就回 null。
+   */
+  const snippetFromDrag = useCallback((dt: DataTransfer): string | null => {
+    if (isInternalPathDrag(dt)) {
+      const p = dt.getData(NOTE_PATH_MIME);
+      return p ? insertSnippetFor(p) : null;
+    }
+    const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
+    const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
+    return url && isHttpUrl(url) ? url : null;
+  }, []);
 
   /** 拖到編輯區：檔案樹的檔案→插入 markdown；外部網址→插入裸網址。 */
   const handleEditorDrop = useCallback(
@@ -540,17 +563,46 @@ export default function Workspace() {
         return;
       }
 
-      if (internal) {
-        const p = dt.getData(NOTE_PATH_MIME);
-        if (p) insertIntoEditor(insertSnippetFor(p));
+      const snippet = snippetFromDrag(dt);
+      if (snippet) insertIntoEditor(snippet);
+    },
+    [canWrite, insertIntoEditor, snippetFromDrag]
+  );
+
+  /**
+   * 拖到「預覽窗格」：預覽是渲染後的 HTML，沒有 caret 可對應放開位置，
+   * 所以一律插在文件末尾，並留在預覽模式——setContent 後 html 這個 useMemo
+   * 會重算，圖片當下就出現在預覽裡。
+   */
+  const handlePreviewDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+    setPreviewDropActive(true);
+  }, []);
+
+  const handlePreviewDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer)) return;
+    e.stopPropagation();
+    setPreviewDropActive(false);
+  }, []);
+
+  const handlePreviewDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const dt = e.dataTransfer;
+      if (!isInternalPathDrag(dt) && !isUrlDrag(dt)) return; // OS 檔案 → 交給既有的上傳流程
+      e.preventDefault();
+      e.stopPropagation(); // 別讓 <main> 再處理一次，否則會插入兩份
+      setPreviewDropActive(false);
+      if (!canWrite) {
+        setError("唯讀，無法插入");
         return;
       }
-
-      const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
-      const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
-      if (url && isHttpUrl(url)) insertIntoEditor(url);
+      const snippet = snippetFromDrag(dt);
+      if (snippet) insertIntoEditor(snippet, { atEnd: true });
     },
-    [canWrite, insertIntoEditor]
+    [canWrite, insertIntoEditor, snippetFromDrag]
   );
 
   async function handleCreate() {
@@ -1013,14 +1065,9 @@ export default function Workspace() {
         setError("唯讀，無法插入");
         return;
       }
-      if (isInternalPathDrag(dt)) {
-        const p = dt.getData(NOTE_PATH_MIME);
-        if (p) insertIntoEditor(insertSnippetFor(p));
-        return;
-      }
-      const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
-      const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
-      if (url && isHttpUrl(url)) insertIntoEditor(url);
+      const snippet = snippetFromDrag(dt);
+      // 沒有 textarea（純預覽）時插在末尾，才不會插到看不見的地方
+      if (snippet) insertIntoEditor(snippet, { atEnd: !editorRef.current });
       return;
     }
     void handleDrop(e);
@@ -2417,7 +2464,12 @@ export default function Workspace() {
                     ref={previewRef}
                     onScroll={() => syncScroll(previewRef.current, editorRef.current)}
                     onClick={handlePreviewClick}
-                    className={`flex-1 overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto w-full" : ""}`}
+                    onDragOver={handlePreviewDragOver}
+                    onDragLeave={handlePreviewDragLeave}
+                    onDrop={handlePreviewDrop}
+                    className={`flex-1 overflow-y-auto p-6 doc ${readOnly ? "max-w-3xl mx-auto w-full" : ""} ${
+                      previewDropActive ? "ring-2 ring-inset ring-sky-500 bg-sky-950/20" : ""
+                    }`}
                     dangerouslySetInnerHTML={{ __html: html }}
                   />
                 )}
