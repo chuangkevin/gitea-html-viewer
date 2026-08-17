@@ -540,31 +540,15 @@ export default function Workspace() {
         return;
       }
 
-      // 用滑鼠位置換算插入點；拿不到就交給 insertIntoEditor 自己決定
-      let at: number | undefined;
-      const docAny = document as unknown as {
-        caretRangeFromPoint?: (x: number, y: number) => { startOffset: number } | null;
-        caretPositionFromPoint?: (x: number, y: number) => { offset: number } | null;
-      };
-      try {
-        if (typeof docAny.caretRangeFromPoint === "function") {
-          at = docAny.caretRangeFromPoint(e.clientX, e.clientY)?.startOffset;
-        } else if (typeof docAny.caretPositionFromPoint === "function") {
-          at = docAny.caretPositionFromPoint(e.clientX, e.clientY)?.offset;
-        }
-      } catch {
-        at = undefined;
-      }
-
       if (internal) {
         const p = dt.getData(NOTE_PATH_MIME);
-        if (p) insertIntoEditor(insertSnippetFor(p), at);
+        if (p) insertIntoEditor(insertSnippetFor(p));
         return;
       }
 
       const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
       const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
-      if (url && isHttpUrl(url)) insertIntoEditor(url, at);
+      if (url && isHttpUrl(url)) insertIntoEditor(url);
     },
     [canWrite, insertIntoEditor]
   );

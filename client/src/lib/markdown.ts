@@ -4,6 +4,7 @@ import {
   classifyHref,
   resolveRepoHref,
   buildAssetUrl,
+  safeDecodeHref,
   urlCardInfo,
 } from "./doc-paths.js";
 
@@ -44,7 +45,8 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
 
       // 3. repo 內路徑：需有 ctx 才能解析
       if (kind === "repo" && ctx) {
-        const { path: resolvedPath, anchor } = resolveRepoHref(href, ctx.currentPath);
+        const decodedHref = safeDecodeHref(href);
+        const { path: resolvedPath, anchor } = resolveRepoHref(decodedHref, ctx.currentPath);
         const encodedProject = encodeURIComponent(ctx.project);
 
         if (ctx.files.includes(resolvedPath)) {
@@ -70,7 +72,8 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
         const kind = classifyHref(src);
         if (kind === "repo") {
           if (ctx?.rawBase) {
-            const { path: resolvedPath } = resolveRepoHref(src, ctx.currentPath);
+            const decodedSrc = safeDecodeHref(src);
+            const { path: resolvedPath } = resolveRepoHref(decodedSrc, ctx.currentPath);
             img.setAttribute("src", buildAssetUrl(ctx.rawBase, ctx.provider, ctx.project, resolvedPath));
           } else {
             img.setAttribute("data-nb-unresolved", "1");

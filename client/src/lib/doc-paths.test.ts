@@ -5,6 +5,9 @@ import {
   classifyHref,
   resolveRepoHref,
   encodeRepoPath,
+  formatLinkDestination,
+  escapeLinkText,
+  safeDecodeHref,
   buildAssetUrl,
   isImagePath,
   insertSnippetFor,
@@ -92,6 +95,38 @@ describe("doc-paths module", () => {
     });
   });
 
+  describe("formatLinkDestination", () => {
+    it("keeps simple paths unwrapped", () => {
+      assert.equal(formatLinkDestination("/a/b.png"), "/a/b.png");
+    });
+
+    it("wraps paths containing spaces in CommonMark angle brackets", () => {
+      assert.equal(
+        formatLinkDestination("/導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png"),
+        "</導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png>"
+      );
+    });
+
+    it("wraps paths containing parentheses", () => {
+      assert.equal(formatLinkDestination("/docs/a(1).png"), "</docs/a(1).png>");
+      assert.equal(formatLinkDestination("/docs/a)1.png"), "</docs/a)1.png>");
+    });
+
+    it("percent-encodes > and wraps the destination", () => {
+      assert.equal(formatLinkDestination("/docs/a>b.png"), "</docs/a%3Eb.png>");
+    });
+  });
+
+  describe("escapeLinkText", () => {
+    it("escapes square brackets inside link text", () => {
+      assert.equal(escapeLinkText("a[b]c"), "a\\[b\\]c");
+    });
+
+    it("keeps text without square brackets unchanged", () => {
+      assert.equal(escapeLinkText("abc"), "abc");
+    });
+  });
+
   describe("buildAssetUrl", () => {
     it("builds public asset URL with encoded project path", () => {
       const url = buildAssetUrl("/raw", "gitlab", "interagent-io/global-doc", "docs/img/a.png");
@@ -145,6 +180,68 @@ describe("doc-paths module", () => {
     it("generates markdown link snippet for non-image files", () => {
       assert.equal(insertSnippetFor("docs/會議記錄.md"), "[會議記錄](/docs/會議記錄.md)");
       assert.equal(insertSnippetFor("specs/api.pdf"), "[api](/specs/api.pdf)");
+    });
+
+    it("wraps real-world image paths containing spaces", () => {
+      assert.equal(
+        insertSnippetFor("導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png"),
+        "![截圖 2026-08-13 下午2.13.51](</導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png>)"
+      );
+    });
+
+    it("wraps non-image Chinese paths containing spaces", () => {
+      assert.equal(insertSnippetFor("導入客戶/元信豐/會議 記錄.md"), "[會議 記錄](</導入客戶/元信豐/會議 記錄.md>)");
+    });
+
+    it("keeps simple image paths unwrapped", () => {
+      const snippet = insertSnippetFor("docs/a.png");
+      assert.equal(snippet, "![a](/docs/a.png)");
+      assert.ok(!snippet.includes("<"));
+      assert.ok(!snippet.includes(">"));
+    });
+  });
+
+  describe("safeDecodeHref", () => {
+    it("decodes percent-encoded Chinese text", () => {
+      assert.equal(safeDecodeHref("%E5%B0%8E%E5%85%A5"), "導入");
+    });
+
+    it("decodes encoded spaces", () => {
+      assert.equal(safeDecodeHref("a%20b.png"), "a b.png");
+    });
+
+    it("returns malformed percent escapes unchanged without throwing", () => {
+      assert.doesNotThrow(() => safeDecodeHref("a%zzb.png"));
+      assert.equal(safeDecodeHref("a%zzb.png"), "a%zzb.png");
+    });
+
+    it("keeps ordinary strings unchanged", () => {
+      assert.equal(safeDecodeHref("docs/a.png"), "docs/a.png");
+    });
+  });
+
+  describe("asset URL encoding regressions", () => {
+    const expectedUrl =
+      "/raw/gitlab/interagent-io%2Fglobal-doc/%E5%B0%8E%E5%85%A5%E5%AE%A2%E6%88%B6/%E5%85%83%E4%BF%A1%E8%B1%90/%E6%88%AA%E5%9C%96%202026-08-13%20%E4%B8%8B%E5%8D%882.13.51.png";
+
+    it("does not double-encode a marked-encoded image src", () => {
+      const markedSrc =
+        "/%E5%B0%8E%E5%85%A5%E5%AE%A2%E6%88%B6/%E5%85%83%E4%BF%A1%E8%B1%90/%E6%88%AA%E5%9C%96%202026-08-13%20%E4%B8%8B%E5%8D%882.13.51.png";
+      const { path } = resolveRepoHref(safeDecodeHref(markedSrc), "_note-test.md");
+      const url = buildAssetUrl("/raw", "gitlab", "interagent-io/global-doc", path);
+      assert.equal(url, expectedUrl);
+      assert.ok(!url.includes("%25"));
+    });
+
+    it("keeps insertSnippetFor output round-trip consistent with asset URLs", () => {
+      const snippet = insertSnippetFor("導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png");
+      const match = /^!\[.*\]\(<(.+)>\)$/.exec(snippet);
+      assert.ok(match);
+
+      const { path } = resolveRepoHref(safeDecodeHref(match[1]), "_note-test.md");
+      const url = buildAssetUrl("/raw", "gitlab", "interagent-io/global-doc", path);
+      assert.equal(url, expectedUrl);
+      assert.ok(!url.includes("%25"));
     });
   });
 

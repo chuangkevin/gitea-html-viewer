@@ -68,6 +68,34 @@ export function encodeRepoPath(repoPath: string): string {
 }
 
 /**
+ * 把 repo 路徑轉成可安全放進 markdown 連結目的地的形式。
+ * 含空白或 () <> 時用 CommonMark 角括號包住；角括號形式無法表達的 `>` 先 percent-encode。
+ */
+export function formatLinkDestination(repoPath: string): string {
+  const hadAngleClose = repoPath.includes(">");
+  const safePath = repoPath.replace(/>/g, "%3E");
+  return hadAngleClose || /[\s()<]/.test(safePath) ? `<${safePath}>` : safePath;
+}
+
+/** 把文字放進 markdown 的 [] 內時，跳脫會破壞語法的中括號。 */
+export function escapeLinkText(text: string): string {
+  return text.replace(/[\[\]]/g, "\\$&");
+}
+
+/**
+ * 還原 marked 對連結目的地做過的 percent-encoding。
+ * 檔名裡可能有單獨的 `%`（例如 "a%b.png"），那會讓 decodeURIComponent 丟 URIError，
+ * 這種情況回傳原字串，不可讓例外冒出去。
+ */
+export function safeDecodeHref(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
+}
+
+/**
  * 組出可讀取 repo 檔案原始內容的 URL。
  * rawBase 例如 "/raw" 或 "/rawt/GRANT"；project 例如 "interagent-io/global-doc"（整個做一次 encodeURIComponent）。
  * repoPath 會先 normalizeRepoPath 再逐段編碼，確保 ".." 不能逃出 repo。
@@ -110,11 +138,13 @@ export function insertSnippetFor(repoPath: string): string {
   const filename = lastSlash >= 0 ? normalized.slice(lastSlash + 1) : normalized;
   const dotIdx = filename.lastIndexOf(".");
   const name = dotIdx > 0 ? filename.slice(0, dotIdx) : filename;
+  const linkText = escapeLinkText(name);
+  const destination = formatLinkDestination(fullPath);
 
   if (isImagePath(repoPath)) {
-    return `![${name}](${fullPath})`;
+    return `![${linkText}](${destination})`;
   }
-  return `[${name}](${fullPath})`;
+  return `[${linkText}](${destination})`;
 }
 
 /** 是不是一個 http/https 網址（用於 URL 卡片判定）。 */
