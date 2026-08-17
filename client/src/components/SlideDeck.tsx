@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { renderMarkdown, splitSlides } from "../lib/markdown";
+import { renderMarkdown, splitSlides, type LinkContext } from "../lib/markdown";
 
 /** 簡報殼：--- 切頁、鍵盤/點擊翻頁、進度點。docUrl 是「文件模式」返回連結。 */
-export default function SlideDeck({ content, docUrl }: { content: string; docUrl: string }) {
+export default function SlideDeck({
+  content,
+  docUrl,
+  linkCtx,
+}: {
+  content: string;
+  docUrl: string;
+  linkCtx?: LinkContext;
+}) {
   const [idx, setIdx] = useState(0);
   const slides = useMemo(() => splitSlides(content), [content]);
 
@@ -39,7 +47,7 @@ export default function SlideDeck({ content, docUrl }: { content: string; docUrl
         <div className="h-full overflow-y-auto grid place-items-center px-4 sm:px-10 md:px-24 py-12">
           <article
             className="doc max-w-4xl w-full"
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(slides[idx] ?? "") }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(slides[idx] ?? "", linkCtx) }}
           />
         </div>
       </div>

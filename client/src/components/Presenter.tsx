@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { renderMarkdown } from "../lib/markdown";
+import { renderMarkdown, type LinkContext } from "../lib/markdown";
 import { fileIcon } from "./FileTree";
 
 /** 多檔連續展示器。播放清單依資料夾排序；.md 直接渲染、.html 走
@@ -35,14 +35,23 @@ interface Props {
   loadText: (path: string) => Promise<string>;
   rawUrl: (path: string) => string;
   exitUrl?: string;
+  linkCtx?: LinkContext;
 }
 
-export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: Props) {
+export default function Presenter({ title, items, loadText, rawUrl, exitUrl, linkCtx }: Props) {
   const [idx, setIdx] = useState(0);
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const path = items[idx] ?? "";
   const kind = useMemo(() => kindOf(path), [path]);
+
+  const effectiveLinkCtx = useMemo(() => {
+    if (!linkCtx) return undefined;
+    return {
+      ...linkCtx,
+      currentPath: path,
+    };
+  }, [linkCtx, path]);
 
   const go = useCallback(
     (d: number) => setIdx((i) => Math.max(0, Math.min(items.length - 1, i + d))),
@@ -112,7 +121,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl }: P
           <div className="h-full overflow-y-auto">
             <article
               className="doc max-w-4xl mx-auto px-4 sm:px-8 py-10"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(text, effectiveLinkCtx) }}
             />
           </div>
         ) : (

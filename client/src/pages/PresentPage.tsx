@@ -31,6 +31,13 @@ export default function PresentPage() {
       loadText={(p) => api.readFile(refPath, p).then((f) => f.content)}
       rawUrl={(p) => `${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}`}
       exitUrl={`/edit/${refPath}`}
+      linkCtx={{
+        provider,
+        project,
+        currentPath: "",
+        files: [],
+        rawBase,
+      }}
     />
   );
 }

@@ -52,5 +52,13 @@ export default function DirectSlidesPage() {
   if (content === null)
     return <div className="min-h-screen grid place-items-center text-zinc-600">載入中…</div>;
 
-  return <SlideDeck content={content} docUrl={`/edit/${refPath}?f=${encodeURIComponent(filePath)}`} />;
+  const linkCtx = {
+    provider,
+    project: projectPath,
+    currentPath: filePath,
+    files: [],
+    rawBase: "/raw",
+  };
+
+  return <SlideDeck content={content} docUrl={`/edit/${refPath}?f=${encodeURIComponent(filePath)}`} linkCtx={linkCtx} />;
 }

@@ -1,13 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type PublicDoc } from "../lib/api";
-import { renderMarkdown } from "../lib/markdown";
+import { renderMarkdown, type LinkContext } from "../lib/markdown";
 import Presenter from "../components/Presenter";
 
 export default function SharePage() {
   const { token } = useParams();
   const [doc, setDoc] = useState<PublicDoc | null>(null);
   const [error, setError] = useState("");
+
+  const linkCtx = useMemo<LinkContext>(() => ({
+    provider: "",
+    project: "",
+    currentPath: doc?.path ?? "",
+    files: [],
+    rawBase: `/api/public/${token}/raw`,
+  }), [doc?.path, token]);
 
   useEffect(() => {
     if (!token) return;
@@ -41,6 +49,7 @@ export default function SharePage() {
         items={doc.items ?? []}
         loadText={(p) => api.publicSetFile(token!, p).then((f) => f.content)}
         rawUrl={(p) => `/api/public/${token}/raw/${p.split("/").map(encodeURIComponent).join("/")}`}
+        linkCtx={linkCtx}
       />
     );
   }
@@ -63,7 +72,7 @@ export default function SharePage() {
         </Link>
       </header>
       <main className="max-w-3xl mx-auto px-4 sm:px-6 py-10">
-        <article className="doc" dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.content ?? "") }} />
+        <article className="doc" dangerouslySetInnerHTML={{ __html: renderMarkdown(doc.content ?? "", linkCtx) }} />
         <footer className="mt-16 pt-6 border-t border-zinc-900 text-xs text-zinc-600">
           以 <span className="font-mono">note-bridge</span> 分享 — 文件原文存放於 Git repo（{doc.repo}）
         </footer>

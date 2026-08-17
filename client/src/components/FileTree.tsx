@@ -98,6 +98,8 @@ interface Props {
   onCheckedChange: (next: Set<string>) => void;
   rawBase?: string;
   refPath?: string;
+  /** 把某個檔案插入編輯區（拖曳或按「＋」鈕）。不給就不顯示插入鈕、也不開啟拖曳。 */
+  onInsertFile?: (path: string) => void;
 }
 
 export default function FileTree({
@@ -111,6 +113,7 @@ export default function FileTree({
   onCheckedChange,
   rawBase,
   refPath,
+  onInsertFile,
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -170,7 +173,17 @@ export default function FileTree({
         return (
           <li key={(isFolder ? "d:" : "f:") + node.path}>
             <div
-              className={`flex items-center gap-1.5 rounded pr-1 text-sm font-mono cursor-pointer select-none ${
+              draggable={!isFolder && Boolean(onInsertFile)}
+              onDragStart={
+                !isFolder && onInsertFile
+                  ? (e) => {
+                      e.dataTransfer.setData("application/x-note-path", node.path);
+                      e.dataTransfer.setData("text/plain", node.path);
+                      e.dataTransfer.effectAllowed = "copy";
+                    }
+                  : undefined
+              }
+              className={`group/row flex items-center gap-1.5 rounded pr-1 text-sm font-mono cursor-pointer select-none ${
                 isFolder
                   ? node.path === activeFolder
                     ? "bg-zinc-800/80 text-zinc-100"
@@ -203,6 +216,19 @@ export default function FileTree({
               <span className="w-3 shrink-0 text-zinc-600">{isFolder ? (isOpen ? "▾" : "▸") : ""}</span>
               <span className="shrink-0">{isFolder ? (isOpen ? "📂" : "📁") : fileIcon(node.name)}</span>
               <span className="truncate py-1 min-w-0 flex-1">{node.name}</span>
+              {!isFolder && onInsertFile && (
+                <button
+                  type="button"
+                  title={`插入 ${node.name} 到編輯區`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onInsertFile(node.path);
+                  }}
+                  className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
+                >
+                  <span className="text-base leading-none">＋</span>
+                </button>
+              )}
               {rawBase && refPath && (
                 <a
                   href={downloadUrl}
@@ -272,14 +298,37 @@ export default function FileTree({
                   return (
                     <li key={p}>
                       <div
+                        draggable={Boolean(onInsertFile)}
+                        onDragStart={
+                          onInsertFile
+                            ? (e) => {
+                                e.dataTransfer.setData("application/x-note-path", p);
+                                e.dataTransfer.setData("text/plain", p);
+                                e.dataTransfer.effectAllowed = "copy";
+                              }
+                            : undefined
+                        }
                         onClick={() => onSelectFile(p)}
                         title={p}
-                        className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono cursor-pointer select-none truncate ${
+                        className={`group/row flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono cursor-pointer select-none truncate ${
                           isSelected ? "bg-sky-950 text-sky-300" : "text-zinc-400 hover:bg-zinc-900"
                         }`}
                       >
                         <span className="shrink-0 text-xs">{fileIcon(fileName)}</span>
                         <span className="truncate flex-1 min-w-0">{highlightMatch(p, searchQuery.trim())}</span>
+                        {onInsertFile && (
+                          <button
+                            type="button"
+                            title={`插入 ${fileName} 到編輯區`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onInsertFile(p);
+                            }}
+                            className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
+                          >
+                            <span className="text-base leading-none">＋</span>
+                          </button>
+                        )}
                         {rawBase && refPath && (
                           <a
                             href={`${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}?download=1`}

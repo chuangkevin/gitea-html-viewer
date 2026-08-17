@@ -1,5 +1,11 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import {
+  classifyHref,
+  resolveRepoHref,
+  buildAssetUrl,
+  urlCardInfo,
+} from "./doc-paths.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -8,20 +14,8 @@ export interface LinkContext {
   project: string; // 原始 projectPath，例如 interagent-io/global-doc
   currentPath: string; // 目前開啟的檔案路徑，例如 docs/a/b.md
   files: string[]; // 這個 repo 的所有檔案路徑
-}
-
-function normalizePathParts(pathStr: string): string {
-  const parts = pathStr.split("/");
-  const stack: string[] = [];
-  for (const p of parts) {
-    if (p === "" || p === ".") continue;
-    if (p === "..") {
-      stack.pop();
-    } else {
-      stack.push(p);
-    }
-  }
-  return stack.join("/");
+  /** 把 repo 路徑解析成可讀取的資產 URL（圖片用）。不給就不改寫 <img src>。 */
+  rawBase?: string;
 }
 
 export function renderMarkdown(md: string, ctx?: LinkContext): string {
@@ -36,35 +30,21 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
       const href = a.getAttribute("href");
       if (!href) return;
 
-      // 1. # 開頭（純錨點）→ 完全不動
-      if (href.startsWith("#")) return;
+      const kind = classifyHref(href);
 
-      // 2. mailto: / tel: → 不動
-      if (href.startsWith("mailto:") || href.startsWith("tel:")) return;
+      // 1. 純錨點與通訊協定連結（mailto:, tel:, data:）→ 不動
+      if (kind === "anchor" || kind === "protocol") return;
 
-      // 3. http:// 或 https:// 或 // 開頭 → 加上 target="_blank" 與 rel="noopener noreferrer"
-      if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+      // 2. 外部連結（http://, https://, //）→ 加上 target="_blank" 與 rel="noopener noreferrer"
+      if (kind === "external") {
         a.setAttribute("target", "_blank");
         a.setAttribute("rel", "noopener noreferrer");
         return;
       }
 
-      // 4. 其他（相對路徑）：需有 ctx 才能解析
-      if (ctx) {
-        const hashIdx = href.indexOf("#");
-        const cleanPath = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
-        const anchor = hashIdx >= 0 ? href.slice(hashIdx) : "";
-
-        let targetPath: string;
-        if (cleanPath.startsWith("/")) {
-          targetPath = cleanPath.slice(1);
-        } else {
-          const parts = ctx.currentPath.split("/");
-          const currentDir = parts.length > 1 ? parts.slice(0, -1).join("/") : "";
-          targetPath = currentDir ? `${currentDir}/${cleanPath}` : cleanPath;
-        }
-
-        const resolvedPath = normalizePathParts(targetPath);
+      // 3. repo 內路徑：需有 ctx 才能解析
+      if (kind === "repo" && ctx) {
+        const { path: resolvedPath, anchor } = resolveRepoHref(href, ctx.currentPath);
         const encodedProject = encodeURIComponent(ctx.project);
 
         if (ctx.files.includes(resolvedPath)) {
@@ -82,13 +62,60 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
       }
     });
 
+    // 處理 <img> 標籤
+    const images = doc.querySelectorAll("img");
+    images.forEach((img) => {
+      const src = img.getAttribute("src");
+      if (src) {
+        const kind = classifyHref(src);
+        if (kind === "repo") {
+          if (ctx?.rawBase) {
+            const { path: resolvedPath } = resolveRepoHref(src, ctx.currentPath);
+            img.setAttribute("src", buildAssetUrl(ctx.rawBase, ctx.provider, ctx.project, resolvedPath));
+          } else {
+            img.setAttribute("data-nb-unresolved", "1");
+          }
+        }
+      }
+      img.setAttribute("loading", "lazy");
+      img.classList.add("nb-img");
+    });
+
+    // 裸網址卡片處理
+    const paragraphs = doc.querySelectorAll("p");
+    paragraphs.forEach((p) => {
+      const meaningfulChildren = Array.from(p.childNodes).filter((n) => {
+        return n.nodeType !== Node.TEXT_NODE || (n.textContent ?? "").trim().length > 0;
+      });
+      if (meaningfulChildren.length === 1 && meaningfulChildren[0].nodeType === Node.ELEMENT_NODE) {
+        const el = meaningfulChildren[0] as HTMLElement;
+        if (el.tagName.toLowerCase() === "a") {
+          const href = el.getAttribute("href") || "";
+          const linkText = el.textContent || "";
+          const card = urlCardInfo(href, linkText);
+          if (card) {
+            el.classList.add("nb-url-card");
+            el.textContent = "";
+            const domainSpan = doc.createElement("span");
+            domainSpan.className = "nb-url-card-domain";
+            domainSpan.textContent = card.domain;
+            const urlSpan = doc.createElement("span");
+            urlSpan.className = "nb-url-card-url";
+            urlSpan.textContent = card.display;
+            el.appendChild(domainSpan);
+            el.appendChild(urlSpan);
+          }
+        }
+      }
+    });
+
     return DOMPurify.sanitize(doc.body.innerHTML, {
-      ADD_ATTR: ["target", "rel", "data-nb-unresolved"],
+      ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading"],
     });
   }
 
   return DOMPurify.sanitize(raw, {
-    ADD_ATTR: ["target", "rel", "data-nb-unresolved"],
+    ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading"],
   });
 }
 

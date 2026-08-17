@@ -8,11 +8,26 @@ import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
+import { insertSnippetFor, isHttpUrl } from "../lib/doc-paths";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
 /** 內容變動後閒置多久自動寫回 GitLab（毫秒）。調這個值就能改自動存檔節奏。 */
 const AUTOSAVE_DELAY_MS = 3000;
+
+const NOTE_PATH_MIME = "application/x-note-path";
+
+/** 這次拖曳是不是「從檔案樹拖 repo 內的檔案」。 */
+function isInternalPathDrag(dt: DataTransfer | null): boolean {
+  return !!dt && Array.from(dt.types).includes(NOTE_PATH_MIME);
+}
+
+/** 這次拖曳是不是「從別的分頁拖網址」（且不是 OS 檔案）。 */
+function isUrlDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  const types = Array.from(dt.types);
+  return !types.includes("Files") && !types.includes(NOTE_PATH_MIME) && types.includes("text/uri-list");
+}
 
 /**
  * 主工作區。設計原則：public repo 誰都能直接讀（不登入 = 唯讀模式），
@@ -64,6 +79,8 @@ export default function Workspace() {
   activePathRef.current = activePath;
   const shaRef = useRef(sha);
   shaRef.current = sha;
+  const contentRef = useRef(content);
+  contentRef.current = content;
   const [dirViewMode, setDirViewMode] = useState<"continuous" | "list">("continuous");
   const [folderMdContents, setFolderMdContents] = useState<Record<string, string>>({});
   const [loadedCount, setLoadedCount] = useState(0);
@@ -466,6 +483,92 @@ export default function Workspace() {
     }
   }
 
+  /**
+   * 把一段 markdown 插進編輯區。at 是插入位置（字元 offset），不給就用目前游標位置、
+   * 再不行就插在文件末尾。插完要同步 pendingSaveRef，自動存檔才吃得到。
+   */
+  const insertIntoEditor = useCallback(
+    (snippet: string, at?: number) => {
+      if (!canWrite) return;
+      const el = editorRef.current;
+      const cur = contentRef.current;
+      const pos =
+        typeof at === "number" && at >= 0 && at <= cur.length
+          ? at
+          : el
+            ? el.selectionStart
+            : cur.length;
+
+      // 讓插入的內容自成一段：前後視情況補換行
+      const before = cur.slice(0, pos);
+      const after = cur.slice(pos);
+      const needLeadingNl = before.length > 0 && !before.endsWith("\n");
+      const needTrailingNl = after.length > 0 && !after.startsWith("\n");
+      const block = `${needLeadingNl ? "\n" : ""}${snippet}${needTrailingNl ? "\n" : ""}`;
+      const next = before + block + after;
+      const caret = pos + block.length;
+
+      setContent(next);
+      pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+      setSave((s) => (s === "conflict" ? s : "dirty"));
+
+      // 預覽模式沒有 textarea 可以放，切到看得到編輯器的模式
+      setView((v) => (v === "preview" ? (isDesktop ? "split" : "edit") : v));
+
+      setTimeout(() => {
+        const t = editorRef.current;
+        if (t) {
+          t.focus();
+          t.setSelectionRange(caret, caret);
+        }
+      }, 0);
+    },
+    [canWrite, isDesktop]
+  );
+
+  /** 拖到編輯區：檔案樹的檔案→插入 markdown；外部網址→插入裸網址。 */
+  const handleEditorDrop = useCallback(
+    (e: React.DragEvent<HTMLTextAreaElement>) => {
+      const dt = e.dataTransfer;
+      const internal = isInternalPathDrag(dt);
+      const urlDrag = isUrlDrag(dt);
+      if (!internal && !urlDrag) return; // OS 檔案拖放 → 讓既有的上傳流程接手
+      e.preventDefault();
+      e.stopPropagation();
+      if (!canWrite) {
+        setError("唯讀，無法插入");
+        return;
+      }
+
+      // 用滑鼠位置換算插入點；拿不到就交給 insertIntoEditor 自己決定
+      let at: number | undefined;
+      const docAny = document as unknown as {
+        caretRangeFromPoint?: (x: number, y: number) => { startOffset: number } | null;
+        caretPositionFromPoint?: (x: number, y: number) => { offset: number } | null;
+      };
+      try {
+        if (typeof docAny.caretRangeFromPoint === "function") {
+          at = docAny.caretRangeFromPoint(e.clientX, e.clientY)?.startOffset;
+        } else if (typeof docAny.caretPositionFromPoint === "function") {
+          at = docAny.caretPositionFromPoint(e.clientX, e.clientY)?.offset;
+        }
+      } catch {
+        at = undefined;
+      }
+
+      if (internal) {
+        const p = dt.getData(NOTE_PATH_MIME);
+        if (p) insertIntoEditor(insertSnippetFor(p), at);
+        return;
+      }
+
+      const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
+      const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
+      if (url && isHttpUrl(url)) insertIntoEditor(url, at);
+    },
+    [canWrite, insertIntoEditor]
+  );
+
   async function handleCreate() {
     let p = newFile.trim();
     if (!p) return;
@@ -582,8 +685,9 @@ export default function Workspace() {
       project: projectPath,
       currentPath: activePath,
       files: files || [],
+      rawBase,
     }),
-    [provider, projectPath, activePath, files]
+    [provider, projectPath, activePath, files, rawBase]
   );
   const html = useMemo(() => renderMarkdown(content, linkContext), [content, linkContext]);
 
@@ -787,6 +891,7 @@ export default function Workspace() {
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) return;
     dragCounter.current++;
     if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
       setIsDragging(true);
@@ -796,6 +901,7 @@ export default function Workspace() {
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) return;
     dragCounter.current--;
     if (dragCounter.current <= 0) {
       dragCounter.current = 0;
@@ -808,9 +914,26 @@ export default function Workspace() {
     e.stopPropagation();
   };
 
+  const handleMainDragOver = (e: React.DragEvent) => {
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      return;
+    }
+    handleDragOver(e);
+  };
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // 檔案樹內部拖曳／網址拖曳不是上傳，交給編輯區的 handler 處理
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
+      setIsDragging(false);
+      dragCounter.current = 0;
+      return;
+    }
+
     setIsDragging(false);
     dragCounter.current = 0;
 
@@ -861,10 +984,12 @@ export default function Workspace() {
       const promises: Promise<void>[] = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-        if (entry) {
-          hasEntryAPI = true;
-          promises.push(readEntry(entry, ""));
+        if (typeof item.webkitGetAsEntry === "function") {
+          const entry = item.webkitGetAsEntry();
+          if (entry) {
+            hasEntryAPI = true;
+            promises.push(readEntry(entry, ""));
+          }
         }
       }
 
@@ -891,6 +1016,30 @@ export default function Workspace() {
     if (files.length > 0) {
       await uploadFilesList(files);
     }
+  };
+
+  const handleMainDrop = (e: React.DragEvent) => {
+    const dt = e.dataTransfer;
+    if (isInternalPathDrag(dt) || isUrlDrag(dt)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+      dragCounter.current = 0;
+      if (!canWrite) {
+        setError("唯讀，無法插入");
+        return;
+      }
+      if (isInternalPathDrag(dt)) {
+        const p = dt.getData(NOTE_PATH_MIME);
+        if (p) insertIntoEditor(insertSnippetFor(p));
+        return;
+      }
+      const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
+      const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
+      if (url && isHttpUrl(url)) insertIntoEditor(url);
+      return;
+    }
+    void handleDrop(e);
   };
 
   const dirViewItems = useMemo(() => {
@@ -1874,6 +2023,7 @@ export default function Workspace() {
               onCheckedChange={setChecked}
               rawBase={rawBase}
               refPath={refPath}
+              onInsertFile={canWrite ? (p) => insertIntoEditor(insertSnippetFor(p)) : undefined}
             />
           )}
           {hasRepo && presentMode && (
@@ -1903,9 +2053,9 @@ export default function Workspace() {
         <main
           className="flex-1 flex flex-col min-w-0 min-h-0 relative overflow-hidden"
           onDragEnter={handleDragEnter}
-          onDragOver={handleDragOver}
+          onDragOver={handleMainDragOver}
           onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+          onDrop={handleMainDrop}
         >
           {hasRepo && isDragging && (
             <div
@@ -2052,6 +2202,7 @@ export default function Workspace() {
                     project: projectPath,
                     currentPath: p,
                     files: files || [],
+                    rawBase,
                   };
                   const itemHtml = renderMarkdown(rawMd, itemLinkCtx);
                   return (
@@ -2205,6 +2356,14 @@ export default function Workspace() {
                   }
                 }}
                 onKeyDown={handleTextareaKeyDown}
+                onDragOver={(e) => {
+                  if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "copy";
+                  }
+                }}
+                onDrop={handleEditorDrop}
                 onScroll={() => syncScroll(editorRef.current, previewRef.current)}
                 spellCheck={false}
                 className={`${effectiveView === "split" ? "w-1/2" : "w-full"} resize-none bg-zinc-950 p-5 font-mono text-base leading-7 outline-none border-r border-zinc-900`}
