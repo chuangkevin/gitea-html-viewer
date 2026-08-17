@@ -45,6 +45,9 @@ Docker：見 `docker-compose.yml`。
 短網址目標只接受同站相對的 Note UI path，例如 `/edit/...`、`/site/...`、`/p/...`、`/present/...`。`/api`、`/raw`、`/s`、`/go`、`/admin` 等系統路徑會被拒絕。redirect 會使用保存的 target path，包括原本的 query/fragment；使用者打在 `/go/<alias>` 後面的 query string 不會被帶到目標。
 
 `/go/<alias>` 只允許導向本站既有 UI，且回應不會被快取；所以重新指向或停用會立即生效。短網址不賦予任何讀取或寫入權限。被導向的頁面仍依原本 Note、repo、公開分享或登入權限判斷能不能開啟。
+## 相關文件
+- [部署與 repo 存取模式](DEPLOY.md)
+- [建立排程同步看板 how-to](docs/排程同步看板-how-to.md) —— 以客戶 POC 看板為範本，教你建一條自己的排程同步
 
 ## 架構
 
