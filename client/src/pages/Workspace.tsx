@@ -9,7 +9,10 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 
-type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
+type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
+
+/** 內容變動後閒置多久自動寫回 GitLab（毫秒）。調這個值就能改自動存檔節奏。 */
+const AUTOSAVE_DELAY_MS = 3000;
 
 /**
  * 主工作區。設計原則：public repo 誰都能直接讀（不登入 = 唯讀模式），
@@ -40,7 +43,8 @@ export default function Workspace() {
   const [content, setContent] = useState("");
   const [sha, setSha] = useState<string | undefined>();
   const [save, setSave] = useState<SaveState>("clean");
-  const [view, setView] = useState<"edit" | "split" | "preview">("split");
+  // 預設開「預覽模式」（給人看的），要編輯再自己切到 edit/split
+  const [view, setView] = useState<"edit" | "split" | "preview">("preview");
   const [error, setError] = useState("");
   const [newFile, setNewFile] = useState("");
   const [shareUrl, setShareUrl] = useState<{ url: string; slidesUrl: string } | null>(null);
@@ -50,6 +54,16 @@ export default function Workspace() {
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
   const [reloadKey, setReloadKey] = useState(0); // 換身分後強制重讀檔案樹與檔案內容
+
+  // 自動存檔用。pendingSaveRef ＝「還沒成功寫回 GitLab 的快照」。
+  // 用 ref 不用 state：切換檔案時 effect cleanup 必須拿得到「上一個檔案」的內容才能 flush。
+  const pendingSaveRef = useRef<{ path: string; content: string; sha?: string } | null>(null);
+  const savingRef = useRef(false);
+  // render 期間直接賦值，讓 async callback 永遠讀得到最新值
+  const activePathRef = useRef(activePath);
+  activePathRef.current = activePath;
+  const shaRef = useRef(sha);
+  shaRef.current = sha;
   const [dirViewMode, setDirViewMode] = useState<"continuous" | "list">("continuous");
   const [folderMdContents, setFolderMdContents] = useState<Record<string, string>>({});
   const [loadedCount, setLoadedCount] = useState(0);
@@ -198,6 +212,8 @@ export default function Workspace() {
       .then((f) => {
         setContent(f.content);
         setSha(f.sha);
+        // 遠端內容已載入，這個路徑的舊 pending 失效
+        if (pendingSaveRef.current?.path === activePath) pendingSaveRef.current = null;
       })
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
@@ -244,6 +260,8 @@ export default function Workspace() {
         if (path === activePath && contentStr !== undefined) {
           setSha(res.sha);
           setContent(contentStr);
+          // 已經寫回遠端了，清掉這個路徑的 pending，避免自動存檔再送一次舊內容
+          if (pendingSaveRef.current?.path === path) pendingSaveRef.current = null;
           setSave("saved");
           setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
         }
@@ -368,14 +386,80 @@ export default function Workspace() {
     return cleanup;
   }, [activeKind, activePath, refPath, sha, setParams]);
 
-  async function handleSave() {
-    if (!activePath || !canWrite) return;
-    setSave("saving");
+  /**
+   * 把一份快照寫回 GitLab。快照而非直接讀 state，是因為切檔案 / 關頁面時
+   * 要能把「上一個檔案」的內容補存回去。
+   */
+  async function saveSnapshot(
+    snap: { path: string; content: string; sha?: string },
+    opts?: { force?: boolean }
+  ) {
+    if (!snap.path || !canWrite) return;
+    if (savingRef.current) return; // 已有 in-flight，結束後 finally 會重新 arm
+    const isCurrent = () => snap.path === activePathRef.current;
+    savingRef.current = true;
+    if (isCurrent()) setSave("saving");
     try {
-      const r = await api.saveFile(refPath, activePath, content, sha);
-      setSha(r.sha);
-      setSave("saved");
-      setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
+      const r = await api.saveFile(refPath, snap.path, snap.content, opts?.force ? undefined : snap.sha);
+      if (pendingSaveRef.current?.path === snap.path) {
+        if (pendingSaveRef.current.content === snap.content) {
+          pendingSaveRef.current = null; // 完整寫回了
+        } else {
+          // 存檔期間又打了字：保留 pending，但要換成新的 sha，否則下一次會誤判 409
+          pendingSaveRef.current.sha = r.sha;
+        }
+      }
+      if (isCurrent()) {
+        setSha(r.sha);
+        // 存檔期間又打字的話 save 已經是 "dirty"，不要蓋掉
+        setSave((s) => (s === "saving" ? "saved" : s));
+        setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
+      }
+    } catch (e) {
+      const err = e as Error & { status?: number };
+      if (err.status === 409) {
+        // 遠端已被別人改過。停掉自動存檔，交給使用者決定，不要自動覆蓋別人的 commit。
+        setSave("conflict");
+        setError("這個檔案在遠端已被改過，自動存檔已暫停。請選擇「重新載入遠端版本」或「用我的版本覆蓋」。");
+      } else {
+        setSave("error");
+        setError(String(err.message || e));
+      }
+    } finally {
+      savingRef.current = false;
+      // 還有沒寫回的內容 → 重新標 dirty，讓 debounce effect 再排一次
+      if (pendingSaveRef.current) {
+        setSave((s) => (s === "conflict" || s === "error" ? s : "dirty"));
+      }
+    }
+  }
+
+  /** 手動存檔（按鈕 / Cmd+S）。 */
+  async function handleSave() {
+    const snap = pendingSaveRef.current ?? { path: activePath, content, sha };
+    await saveSnapshot(snap);
+  }
+
+  /** 409 衝突：放棄本機修改，重新載入遠端版本。 */
+  function handleConflictReload() {
+    pendingSaveRef.current = null;
+    setError("");
+    setSave("clean");
+    setReloadKey((k) => k + 1);
+  }
+
+  /** 409 衝突：用本機版本覆蓋遠端（先取最新 sha 再寫）。 */
+  async function handleConflictOverwrite() {
+    if (!activePath) return;
+    setError("");
+    try {
+      const cur = await api.readFile(refPath, activePath);
+      setSha(cur.sha);
+      const snap = pendingSaveRef.current ?? { path: activePath, content, sha: cur.sha };
+      snap.sha = cur.sha;
+      pendingSaveRef.current = snap;
+      setSave("dirty");
+      await saveSnapshot(snap);
     } catch (e) {
       setSave("error");
       setError(String((e as Error).message || e));
@@ -389,8 +473,10 @@ export default function Workspace() {
     setNewFile("");
     setFiles((f) => (f ? [...f, p] : [p]));
     setParams({ f: p });
-    setContent(`# ${p.replace(/\.md$/i, "").split("/").pop()}\n\n`);
+    const initial = `# ${p.replace(/\.md$/i, "").split("/").pop()}\n\n`;
+    setContent(initial);
     setSha(undefined);
+    pendingSaveRef.current = { path: p, content: initial, sha: undefined };
     setSave("dirty");
   }
 
@@ -438,6 +524,53 @@ export default function Workspace() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  // 自動存檔：內容變動後閒置 AUTOSAVE_DELAY_MS 就 commit 回 GitLab。
+  // conflict / error 狀態不自動重試，避免一直打 GitLab 或覆蓋別人的修改。
+  useEffect(() => {
+    if (save !== "dirty") return;
+    if (!activePath || !canWrite) return;
+    if (activeKind !== "md" && activeKind !== "html") return;
+    const t = setTimeout(() => {
+      const p = pendingSaveRef.current;
+      if (p) void saveSnapshot(p);
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [content, save, activePath, canWrite, activeKind]);
+
+  // 離開頁面 / 切到別的分頁 / 視窗失焦 → 立刻補存，不等 debounce
+  useEffect(() => {
+    const flush = () => {
+      const p = pendingSaveRef.current;
+      if (p) void saveSnapshot(p);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingSaveRef.current) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("blur", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("blur", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }); // 刻意不給 deps：每次 render 重綁，確保閉包拿到最新的 saveSnapshot（與上面 Cmd+S effect 同樣寫法）
+
+  // 切換檔案 / 元件卸載前，把上一個檔案還沒存的內容補回去
+  useEffect(() => {
+    return () => {
+      const p = pendingSaveRef.current;
+      if (p) void saveSnapshot(p);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePath]);
 
   const readOnly = !canWrite;
   const rawEffectiveView = readOnly ? "preview" : view;
@@ -1038,7 +1171,9 @@ export default function Workspace() {
       const newCursorPos = atPos + replacement.length;
 
       setContent(newContent);
-      setSave("dirty");
+      // 這條路徑不經過 textarea 的 onChange，要自己同步 pending 快照，否則自動存檔會漏掉這次插入
+      pendingSaveRef.current = { path: activePathRef.current, content: newContent, sha: shaRef.current };
+      setSave((s) => (s === "conflict" ? s : "dirty"));
       setMentionQuery(null);
 
       setTimeout(() => {
@@ -1240,9 +1375,20 @@ export default function Workspace() {
             <button
               onClick={handleSave}
               disabled={save === "saving"}
-              className="rounded-lg bg-sky-600 px-3 py-1 sm:px-4 sm:py-1.5 text-xs sm:text-sm font-semibold hover:bg-sky-500 disabled:opacity-50 whitespace-nowrap shrink-0"
+              title="編輯後會自動存檔；這個按鈕是立即存檔"
+              className={`rounded-lg px-3 py-1 sm:px-4 sm:py-1.5 text-xs sm:text-sm font-semibold disabled:opacity-50 whitespace-nowrap shrink-0 ${
+                save === "conflict" ? "bg-amber-600 hover:bg-amber-500" : "bg-sky-600 hover:bg-sky-500"
+              }`}
             >
-              {save === "saving" ? "commit 中…" : save === "saved" ? "已 commit ✓" : "存檔（commit）"}
+              {save === "saving"
+                ? "commit 中…"
+                : save === "saved"
+                  ? "已自動存檔 ✓"
+                  : save === "dirty"
+                    ? "待存檔…"
+                    : save === "conflict"
+                      ? "⚠️ 有衝突"
+                      : "存檔（commit）"}
             </button>
           </>
         )}
@@ -1526,6 +1672,23 @@ export default function Workspace() {
         <div className="border-b border-red-900/50 bg-red-950/40 px-4 py-2 text-sm text-red-300 flex">
           <span className="flex-1 whitespace-pre-wrap">{error}</span>
           <button onClick={() => setError("")}>✕</button>
+        </div>
+      )}
+      {save === "conflict" && (
+        <div className="border-b border-amber-700 bg-amber-950/60 px-4 py-2 flex flex-wrap items-center gap-2 text-sm text-amber-200">
+          <span className="flex-1 min-w-[12rem]">遠端版本較新，自動存檔已暫停。</span>
+          <button
+            onClick={handleConflictReload}
+            className="rounded border border-amber-600 px-3 py-1 text-xs hover:bg-amber-900 whitespace-nowrap"
+          >
+            重新載入遠端版本（放棄我的修改）
+          </button>
+          <button
+            onClick={() => void handleConflictOverwrite()}
+            className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-amber-50 hover:bg-amber-500 whitespace-nowrap"
+          >
+            用我的版本覆蓋
+          </button>
         </div>
       )}
       {uploadProgress && (
@@ -2027,9 +2190,11 @@ export default function Workspace() {
                 ref={editorRef}
                 value={content}
                 onChange={(e) => {
-                  setContent(e.target.value);
-                  setSave("dirty");
-                  updateMentionTrigger(e.target.value, e.target.selectionStart);
+                  const next = e.target.value;
+                  setContent(next);
+                  setSave((s) => (s === "conflict" ? s : "dirty"));
+                  pendingSaveRef.current = { path: activePath, content: next, sha: shaRef.current };
+                  updateMentionTrigger(next, e.target.selectionStart);
                 }}
                 onSelect={(e) => {
                   updateMentionTrigger(e.currentTarget.value, e.currentTarget.selectionStart);
