@@ -1130,7 +1130,8 @@ app.get("/site/:provider/:project", async (req, res) => {
       if (ext === ".html" || ext === ".htm") {
         const buf = await p.readFileRaw(actor.token, project, f);
         let html = buf.toString("utf8");
-        const dirName = path.dirname(f).replace(/\\/g, "/");
+        const previewPath = f.replace(/\\/g, "/").replace(/^\/+/, "");
+        const dirName = path.posix.dirname(previewPath);
         const folderPath = dirName === "." || dirName === "" ? "" : dirName + "/";
 
         const validGrant = determineEffectiveGrant(rawGrant, grantToken, usingGrant);
@@ -1143,7 +1144,7 @@ app.get("/site/:provider/:project", async (req, res) => {
 
         const pkgJson = await readClosestPackageJson(
           (filePath) => p.readFileRaw(actor.token, project, filePath),
-          f
+          previewPath
         );
         const importMap = pkgJson ? generateImportMap(pkgJson) : null;
 

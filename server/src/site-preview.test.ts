@@ -233,21 +233,35 @@ const str = "import './string.css'";
   });
 
   it("reads closest ancestor package.json for source previews and propagates non-404 provider errors", async () => {
-    const attempts: string[] = [];
-    const pkg = { dependencies: { three: "^0.160.0" } };
-    const found = await readClosestPackageJson(async (path) => {
-      attempts.push(path);
+    const directAttempts: string[] = [];
+    const directPkg = { dependencies: { three: "^0.160.0" } };
+    const direct = await readClosestPackageJson(async (path) => {
+      directAttempts.push(path);
       if (path === "ai-pair-programming-poc/package.json") {
-        throw new ProviderError(404, "File not found");
+        return JSON.stringify(directPkg);
       }
-      if (path === "package.json") {
-        return JSON.stringify(pkg);
-      }
-      throw new Error(`unexpected path: ${path}`);
+      throw new ProviderError(404, "File not found");
     }, "ai-pair-programming-poc/index.html");
 
-    assert.deepEqual(found, pkg);
-    assert.deepEqual(attempts, ["ai-pair-programming-poc/package.json", "package.json"]);
+    assert.deepEqual(direct, directPkg);
+    assert.deepEqual(directAttempts, ["ai-pair-programming-poc/package.json"]);
+
+    const fallbackAttempts: string[] = [];
+    const fallbackPkg = { dependencies: { three: "^0.161.0" } };
+    const fallback = await readClosestPackageJson(async (path) => {
+      fallbackAttempts.push(path);
+      if (path === "package.json") {
+        return JSON.stringify(fallbackPkg);
+      }
+      throw new ProviderError(404, "File not found");
+    }, "ai-pair-programming-poc/demo/index.html");
+
+    assert.deepEqual(fallback, fallbackPkg);
+    assert.deepEqual(fallbackAttempts, [
+      "ai-pair-programming-poc/demo/package.json",
+      "ai-pair-programming-poc/package.json",
+      "package.json",
+    ]);
 
     const failedAttempts: string[] = [];
     await assert.rejects(

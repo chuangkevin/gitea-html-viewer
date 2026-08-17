@@ -232,8 +232,8 @@ export async function readWithPublicFallback<T>(
 export async function readClosestPackageJson(
   readFn: (filePath: string) => Promise<Buffer | string>,
   filePath: string
-): Promise<any | null> {
-  const cleanPath = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+): Promise<unknown | null> {
+  const cleanPath = (filePath.split(/[?#]/, 1)[0] ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
   let currentDir = path.posix.dirname(cleanPath);
   if (currentDir === "." || currentDir === "/") {
     currentDir = "";
