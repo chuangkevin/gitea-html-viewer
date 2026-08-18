@@ -57,35 +57,63 @@ export function blockSourceRanges(md: string): BlockRange[] {
  *  - 落在兩個區塊之間的空隙 → 回上面那個區塊的 end
  *  - blocks 是空的 → 回 contentLength
  */
-export function insertOffsetForPoint(
+export interface InsertPoint {
+  /** 要插在 markdown 原始碼的哪個 offset */
+  offset: number;
+  /** 指示器要放在第幾個區塊旁邊；沒有區塊時是 -1 */
+  index: number;
+  /** 放在該區塊的前面還是後面 */
+  position: "before" | "after";
+}
+
+/**
+ * 依放開／hover 點的 Y 座標算出落點（offset ＋ 要把指示器放在哪個區塊的前／後）。
+ * 拖曳中的落點指示器與放開後的實際插入都呼叫這一個函式，
+ * 所以「拖曳時看到的位置」與「放開後插入的位置」保證一致。
+ */
+export function insertPointForY(
   blocks: Array<{ top: number; bottom: number; start: number; end: number }>,
   y: number,
   contentLength: number
-): number {
+): InsertPoint {
   if (blocks.length === 0) {
-    return contentLength;
+    return { offset: contentLength, index: -1, position: "after" };
   }
 
   if (y < blocks[0].top) {
-    return blocks[0].start;
+    return { offset: blocks[0].start, index: 0, position: "before" };
   }
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
     if (y >= block.top && y <= block.bottom) {
       const mid = (block.top + block.bottom) / 2;
-      return y < mid ? block.start : block.end;
+      return y < mid
+        ? { offset: block.start, index: i, position: "before" }
+        : { offset: block.end, index: i, position: "after" };
     }
 
     if (i < blocks.length - 1) {
       const nextBlock = blocks[i + 1];
       if (y > block.bottom && y < nextBlock.top) {
-        return block.end;
+        return { offset: block.end, index: i, position: "after" };
       }
     }
   }
 
-  return contentLength;
+  return { offset: contentLength, index: blocks.length - 1, position: "after" };
+}
+
+/**
+ * 依放開點的 Y 座標決定要插在原始碼的哪個 offset。
+ * 現在是 insertPointForY 的薄包裝——只取 offset，判定規則完全相同。
+ */
+export function insertOffsetForPoint(
+  blocks: Array<{ top: number; bottom: number; start: number; end: number }>,
+  y: number,
+  contentLength: number
+): number {
+  return insertPointForY(blocks, y, contentLength).offset;
 }
 
 export interface SourceSpan {

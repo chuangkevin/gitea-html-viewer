@@ -109,3 +109,15 @@ body {
   color: #71717a;
   overflow-wrap: anywhere;
 }
+
+/* 拖曳到預覽窗格時的落點指示器：純視覺佔位（不寫進 markdown），
+   上下區塊會被它撐開，讓使用者放開前就看到圖片會塞在哪裡。 */
+.nb-drop-gap {
+  height: 4.5rem;
+  margin: 0.4rem 0;
+  border: 2px dashed rgb(14 165 233);
+  border-radius: 0.5rem;
+  background: rgb(14 165 233 / 0.12);
+  transition: height 0.12s ease, margin 0.12s ease;
+  pointer-events: none; /* 不可以吃掉 dragover，否則落點會抖 */
+}

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { blockSourceRanges, imageSpansIn, insertOffsetForPoint, moveSpanInSource } from "./drop-position.js";
+import { blockSourceRanges, imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "./drop-position.js";
 
 describe("drop-position module", () => {
   describe("blockSourceRanges", () => {
@@ -107,6 +107,40 @@ describe("drop-position module", () => {
 
     it("returns contentLength when blocks array is empty", () => {
       assert.equal(insertOffsetForPoint([], 150, 100), 100);
+    });
+  });
+
+  describe("insertPointForY（拖曳中的落點指示器用）", () => {
+    const blocks = [
+      { top: 100, bottom: 200, start: 0, end: 50 },
+      { top: 250, bottom: 350, start: 52, end: 120 },
+      { top: 400, bottom: 500, start: 122, end: 200 },
+    ];
+    const contentLength = 200;
+
+    it("reports which block the indicator goes before or after", () => {
+      assert.deepEqual(insertPointForY(blocks, 120, contentLength), { offset: 0, index: 0, position: "before" });
+      assert.deepEqual(insertPointForY(blocks, 190, contentLength), { offset: 50, index: 0, position: "after" });
+      assert.deepEqual(insertPointForY(blocks, 270, contentLength), { offset: 52, index: 1, position: "before" });
+      assert.deepEqual(insertPointForY(blocks, 340, contentLength), { offset: 120, index: 1, position: "after" });
+    });
+
+    it("handles above-all, gap and below-all the same way the drop does", () => {
+      assert.deepEqual(insertPointForY(blocks, 20, contentLength), { offset: 0, index: 0, position: "before" });
+      assert.deepEqual(insertPointForY(blocks, 220, contentLength), { offset: 50, index: 0, position: "after" });
+      assert.deepEqual(insertPointForY(blocks, 900, contentLength), { offset: 200, index: 2, position: "after" });
+      assert.deepEqual(insertPointForY([], 900, 42), { offset: 42, index: -1, position: "after" });
+    });
+
+    it("拖曳時看到的落點 == 放開後插入的位置（逐 5px 掃過整個範圍）", () => {
+      // 指示器與實際插入必須永遠一致，不能指示在 A 卻插到 B
+      for (let y = 0; y <= 600; y += 5) {
+        assert.equal(
+          insertPointForY(blocks, y, contentLength).offset,
+          insertOffsetForPoint(blocks, y, contentLength),
+          `y=${y} 的落點不一致`
+        );
+      }
     });
   });
 

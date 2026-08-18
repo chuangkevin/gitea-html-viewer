@@ -9,7 +9,7 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, snippetFromDragData } from "../lib/doc-paths";
-import { imageSpansIn, insertOffsetForPoint, moveSpanInSource } from "../lib/drop-position";
+import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -601,19 +601,71 @@ export default function Workspace() {
    * 所以一律插在文件末尾，並留在預覽模式——setContent 後 html 這個 useMemo
    * 會重算，圖片當下就出現在預覽裡。
    */
+  /** 拖曳落點指示器的節點與目前指示的 offset；純視覺，不碰 markdown 原始碼。 */
+  const dropGapRef = useRef<HTMLDivElement | null>(null);
+  const dropGapOffsetRef = useRef<number | null>(null);
+  const dropGapRafRef = useRef<number | null>(null);
+
+  /** 移除落點指示器。drop／真的離開預覽／拖曳取消都要呼叫，不可殘留。 */
+  const clearDropGap = useCallback(() => {
+    if (dropGapRafRef.current !== null) {
+      cancelAnimationFrame(dropGapRafRef.current);
+      dropGapRafRef.current = null;
+    }
+    dropGapRef.current?.remove();
+    dropGapRef.current = null;
+    dropGapOffsetRef.current = null;
+  }, []);
+
+  /**
+   * 依游標 Y 更新落點指示器。用的是跟 drop 完全同一個 insertPointForY，
+   * 所以「拖曳時看到的落點」＝「放開後插入的位置」。
+   * dragover 觸發很密：用 requestAnimationFrame 節流，而且落點沒變就不動 DOM。
+   */
+  const updateDropGap = useCallback((container: HTMLElement, clientY: number) => {
+    if (dropGapRafRef.current !== null) return;
+    dropGapRafRef.current = requestAnimationFrame(() => {
+      dropGapRafRef.current = null;
+      const els = Array.from(container.querySelectorAll<HTMLElement>("[data-src-start]"));
+      if (els.length === 0) return;
+      const blocks = els.map((el) => {
+        const rect = el.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, start: Number(el.dataset.srcStart), end: Number(el.dataset.srcEnd) };
+      });
+      if (blocks.some((b) => Number.isNaN(b.start) || Number.isNaN(b.end))) return;
+      const point = insertPointForY(blocks, clientY, contentRef.current.length);
+      if (point.index < 0) return;
+      if (dropGapOffsetRef.current === point.offset && dropGapRef.current?.isConnected) return;
+      let gap = dropGapRef.current;
+      if (!gap) {
+        gap = document.createElement("div");
+        gap.className = "nb-drop-gap";
+        dropGapRef.current = gap;
+      }
+      const target = els[point.index];
+      if (point.position === "before") target.before(gap);
+      else target.after(gap);
+      dropGapOffsetRef.current = point.offset;
+    });
+  }, []);
+
   const handlePreviewDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer) && !isImageMoveDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = isImageMoveDrag(e.dataTransfer) ? "move" : "copy";
     setPreviewDropActive(true);
-  }, []);
+    updateDropGap(e.currentTarget, e.clientY);
+  }, [updateDropGap]);
 
   const handlePreviewDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer) && !isImageMoveDrag(e.dataTransfer)) return;
     e.stopPropagation();
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return; // 只是移到子元素，不算離開
     setPreviewDropActive(false);
-  }, []);
+    clearDropGap();
+  }, [clearDropGap]);
 
   /**
    * 從預覽窗格拖動「文件裡已經存在的圖片」＝移動，不是新增。
@@ -666,6 +718,7 @@ export default function Workspace() {
       if (!isInternalPathDrag(dt) && !isUrlDrag(dt) && !isImageMoveDrag(dt)) return; // OS 檔案 → 交給既有的上傳流程
       e.preventDefault();
       e.stopPropagation(); // 別讓 <main> 再處理一次，否則會插入兩份
+      clearDropGap(); // 指示器是視覺的，插入前先移掉，免得影響任何量測
       setPreviewDropActive(false);
       if (!claimDrop(e.nativeEvent)) return; // 保險：就算冒泡擋不住也只插一次
       if (!canWrite) {
@@ -687,7 +740,7 @@ export default function Workspace() {
       if (at === null) insertIntoEditor(snippet, { atEnd: true });
       else insertIntoEditor(snippet, { at });
     },
-    [canWrite, claimDrop, insertIntoEditor, previewInsertOffset, replaceContent, snippetFromDrag]
+    [canWrite, claimDrop, clearDropGap, insertIntoEditor, previewInsertOffset, replaceContent, snippetFromDrag]
   );
 
   async function handleCreate() {
@@ -2558,6 +2611,7 @@ export default function Workspace() {
                     onScroll={() => syncScroll(previewRef.current, editorRef.current)}
                     onClick={handlePreviewClick}
                     onDragStart={handlePreviewDragStart}
+                    onDragEnd={clearDropGap}
                     onDragOver={handlePreviewDragOver}
                     onDragLeave={handlePreviewDragLeave}
                     onDrop={handlePreviewDrop}
