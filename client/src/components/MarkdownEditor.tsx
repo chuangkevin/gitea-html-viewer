@@ -4,6 +4,7 @@ import { EditorView, drawSelection, keymap } from "@codemirror/view";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
 
 /**
  * Workspace 對編輯器的最小介面。
@@ -30,6 +31,8 @@ interface Props {
   onDrop(e: DragEvent): void;
   onDragOver(e: DragEvent): void;
   onScroll(scroller: HTMLElement): void;
+  /** 行內渲染要用的連結脈絡（圖片路徑解析）。null = 不渲染圖片。 */
+  livePreviewContext: LivePreviewContext | null;
   className?: string;
 }
 
@@ -56,6 +59,53 @@ const noteTheme = EditorView.theme(
       backgroundColor: "#27272a",
     },
     ".cm-cursor": { borderLeftWidth: "2px" },
+
+    // ── 行內渲染（live preview）的樣式 ──
+    // 只改外觀，不改文件內容；游標移到該行時 cm-live-preview 會把裝飾拿掉。
+    ".cm-nb-h": { fontWeight: "700", lineHeight: "1.35", color: "#fafafa" },
+    ".cm-nb-h1": { fontSize: "1.9em", marginTop: "0.6em", marginBottom: "0.2em" },
+    ".cm-nb-h2": { fontSize: "1.55em", marginTop: "0.55em", marginBottom: "0.2em" },
+    ".cm-nb-h3": { fontSize: "1.3em", marginTop: "0.5em", marginBottom: "0.15em" },
+    ".cm-nb-h4": { fontSize: "1.15em", marginTop: "0.45em" },
+    ".cm-nb-h5": { fontSize: "1.05em" },
+    ".cm-nb-h6": { fontSize: "1em", color: "#a1a1aa" },
+    ".cm-nb-strong": { fontWeight: "700", color: "#fafafa" },
+    ".cm-nb-em": { fontStyle: "italic" },
+    ".cm-nb-strike": { textDecoration: "line-through", opacity: "0.65" },
+    ".cm-nb-inline-code": {
+      backgroundColor: "#27272a",
+      borderRadius: "4px",
+      padding: "0.1em 0.35em",
+      color: "#fbbf24",
+    },
+    ".cm-nb-link": { color: "#38bdf8", textDecoration: "underline" },
+    ".cm-nb-listmark": { color: "#38bdf8" },
+    ".cm-nb-tabledelim": { color: "#52525b" },
+    ".cm-nb-quote": {
+      borderLeft: "3px solid #3f3f46",
+      paddingLeft: "0.85em",
+      color: "#a1a1aa",
+      fontStyle: "italic",
+    },
+    ".cm-nb-code": {
+      backgroundColor: "#18181b",
+      fontSize: "0.92em",
+    },
+    ".cm-nb-img": { display: "inline-block", maxWidth: "100%", verticalAlign: "top" },
+    // 圖片不可以撐破窄畫面——RWD 的硬性要求
+    ".cm-nb-img img": {
+      display: "block",
+      maxWidth: "100%",
+      height: "auto",
+      borderRadius: "6px",
+      border: "1px solid #27272a",
+    },
+    ".cm-nb-hr": {
+      display: "inline-block",
+      width: "100%",
+      borderTop: "2px solid #3f3f46",
+      verticalAlign: "middle",
+    },
   },
   { dark: true }
 );
@@ -82,6 +132,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           EditorView.lineWrapping,
           markdown({ base: markdownLanguage }),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          livePreview(() => cb.current.livePreviewContext),
           // Cmd/Ctrl+S 不在這裡綁：Workspace 已有 window keydown 的存檔處理，
           // CM 的 keydown 會冒泡上去。兩邊都綁會存兩次。
           keymap.of([...defaultKeymap, ...historyKeymap]),

@@ -926,6 +926,13 @@ export default function Workspace() {
   );
   const html = useMemo(() => renderMarkdown(content, linkContext), [content, linkContext]);
 
+  // 編輯器行內渲染的圖片路徑解析：刻意跟預覽窗格共用同一組 doc-paths 函式，
+  // 才不會變成兩套相對路徑規則。
+  const livePreviewContext = useMemo(
+    () => (rawBase ? { provider, project: projectPath, currentPath: activePath, rawBase } : null),
+    [provider, projectPath, activePath, rawBase]
+  );
+
   const handlePreviewClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement | null;
@@ -2724,6 +2731,7 @@ export default function Workspace() {
                 onDragOver={handleEditorDragOver}
                 onDrop={handleEditorDrop}
                 onScroll={(scroller) => syncScroll(scroller, previewRef.current)}
+                livePreviewContext={livePreviewContext}
                 className="h-full w-full"
               />
               </Suspense>
