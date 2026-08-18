@@ -1362,7 +1362,8 @@ export default function Workspace() {
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) return;
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer) || isImageMoveDrag(e.dataTransfer))
+      return;
     dragCounter.current++;
     if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
       setIsDragging(true);
@@ -1372,7 +1373,8 @@ export default function Workspace() {
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) return;
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer) || isImageMoveDrag(e.dataTransfer))
+      return;
     dragCounter.current--;
     if (dragCounter.current <= 0) {
       dragCounter.current = 0;
