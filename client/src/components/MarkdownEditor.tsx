@@ -91,10 +91,10 @@ const noteTheme = EditorView.theme(
       color: "#a1a1aa",
       fontStyle: "italic",
     },
-    ".cm-nb-code": {
-      backgroundColor: "#18181b",
-      fontSize: "0.92em",
-    },
+    // 只給底色，**不要動 font-size**：CodeMirror 用高度圖決定虛擬捲動，
+    // 行內裝飾一旦改變行高，長文件（例如上千行的程式碼區塊）就會算錯高度，
+    // 捲到中段會出現大片空白。實測 customers.md（1993 行）就是這樣破的。
+    ".cm-nb-code": { backgroundColor: "#18181b" },
     ".cm-nb-img": { display: "inline-block", maxWidth: "100%", verticalAlign: "top" },
     // 圖片不可以撐破窄畫面——RWD 的硬性要求
     ".cm-nb-img img": {
