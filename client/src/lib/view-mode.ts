@@ -25,5 +25,6 @@ export function resolveViewMode(
   if (opts.readOnly) return "preview";
   // 手機沒有左右分割的空間；退回 preview（它本身就能編輯）而不是原始碼模式
   if (!opts.isDesktop && view === "split") return "preview";
+  if (view === "split") return "preview";
   return view;
 }

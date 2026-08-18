@@ -5,6 +5,7 @@ import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
+import type { LineBlock } from "../lib/block-insert";
 
 /**
  * Workspace 對編輯器的最小介面。
@@ -17,6 +18,8 @@ export interface MarkdownEditorHandle {
   focus(): void;
   /** 螢幕座標 → markdown 原始碼 offset。算不出來回 null。 */
   posAtCoords(x: number, y: number): number | null;
+  /** 目前視窗內每一行的螢幕位置與原始碼範圍，依畫面順序排列。 */
+  lineBlocksInViewport(): LineBlock[];
   /** 捲動同步用的元素（CM 的 scroller，不是最外層容器）。 */
   getScrollDOM(): HTMLElement | null;
 }
@@ -237,6 +240,17 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       },
       focus: () => viewRef.current?.focus(),
       posAtCoords: (x, y) => viewRef.current?.posAtCoords({ x, y }) ?? null,
+      lineBlocksInViewport: () => {
+        const view = viewRef.current;
+        if (!view) return [];
+        const docTop = view.documentTop;
+        return view.viewportLineBlocks.map((b) => ({
+          from: b.from,
+          to: b.to,
+          top: b.top + docTop,
+          bottom: b.top + b.height + docTop,
+        }));
+      },
       getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
     }),
     []

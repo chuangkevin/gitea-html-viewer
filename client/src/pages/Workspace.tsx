@@ -7,7 +7,7 @@ import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
-import { insertAsBlock, snapToLineBoundary } from "../lib/block-insert";
+import { boundaryOffsetForY, insertAsBlock } from "../lib/block-insert";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
@@ -634,10 +634,8 @@ export default function Workspace() {
         const start = Number(rawStart);
         const end = Number(rawEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
-        const at = snapToLineBoundary(
-          contentRef.current,
-          editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length
-        );
+        const blocks = editorRef.current?.lineBlocksInViewport() ?? [];
+        const at = boundaryOffsetForY(blocks, e.clientY, contentRef.current.length);
         replaceContent(moveSpanInSource(contentRef.current, { start, end }, at));
         return true;
       }
@@ -655,11 +653,9 @@ export default function Workspace() {
 
       const snippet = dt ? snippetFromDrag(dt) : null;
       if (!snippet) return true;
-      // CodeMirror 能把放開的螢幕座標換成精確的原始碼 offset，所以插在「放開的地方」
-      // 而不是「目前游標」。算不出來（例如放在最後一行下方的空白）才退回游標。
-      const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? null;
-      if (at === null) insertIntoEditor(snippet);
-      else insertIntoEditor(snippet, { at });
+      const blocks = editorRef.current?.lineBlocksInViewport() ?? [];
+      const at = boundaryOffsetForY(blocks, e.clientY, contentRef.current.length);
+      insertIntoEditor(snippet, { at });
       return true;
     },
     [canWrite, claimDrop, insertIntoEditor, replaceContent, snippetFromDrag]
@@ -933,8 +929,7 @@ export default function Workspace() {
   // 「預覽」本身就是可編輯的所見即所得畫面：可寫的人在 preview 看到的是開了
   // 行內渲染的 CodeMirror，不是唯讀 HTML。唯讀訪客才走原本的 marked 預覽。
   const showEditor = effectiveView !== "preview" || canWrite;
-  const showMarkedPreview =
-    effectiveView === "split" || (effectiveView === "preview" && !canWrite);
+  const showMarkedPreview = effectiveView === "preview" && !canWrite;
   const editorLivePreview = effectiveView === "preview";
 
   const linkContext = useMemo<LinkContext>(
@@ -1849,7 +1844,7 @@ export default function Workspace() {
         <div className="flex-1 min-w-0" />
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
           <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
-            {(isDesktop ? (["preview", "split", "edit"] as const) : (["preview", "edit"] as const)).map((v) => (
+            {(["preview", "edit"] as const).map((v) => (
               <button
                 key={v}
                 onClick={() => {
@@ -1862,7 +1857,7 @@ export default function Workspace() {
                 }}
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
-                {v === "edit" ? "原始碼" : v === "split" ? "分割" : "編輯"}
+                {v === "edit" ? "原始碼" : "預覽"}
               </button>
             ))}
           </div>
@@ -2801,7 +2796,7 @@ export default function Workspace() {
               </div>
             )}
             {showMarkedPreview && (
-              <div className={`${effectiveView === "split" ? "w-1/2" : "w-full"} flex flex-col min-h-0 overflow-hidden`}>
+              <div className="w-full flex flex-col min-h-0 overflow-hidden">
                 {activeKind === "html" ? (
                   <div className="flex-1 flex flex-col min-h-0">
                     <div className="border-b border-zinc-800 px-4 py-2 flex items-center justify-between bg-zinc-950/50 shrink-0">

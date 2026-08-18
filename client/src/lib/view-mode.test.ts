@@ -35,5 +35,9 @@ describe("view-mode module", () => {
     it("resolves mobile split to preview (which is itself editable)", () => {
       assert.equal(resolveViewMode("split", { readOnly: false, isDesktop: false }), "preview");
     });
+
+    it("split on desktop is also resolved to preview", () => {
+      assert.equal(resolveViewMode("split", { readOnly: false, isDesktop: true }), "preview");
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { insertAsBlock, snapToLineBoundary } from "./block-insert.js";
+import { boundaryOffsetForY, insertAsBlock, snapToLineBoundary, type LineBlock } from "./block-insert.js";
 
 const snippet = "![img](x.png)";
 
@@ -139,6 +139,55 @@ describe("block-insert module", () => {
       assertSnippetLine(result.text);
       assertOriginalNonEmptyLinesIntact(doc, result.text);
       assertNoTripleNewline(result.text);
+    });
+  });
+
+  describe("boundaryOffsetForY", () => {
+    const doc = "test\ndfwef\nwefwfip";
+    const blocks: LineBlock[] = [
+      { from: 0, to: 4, top: 100, bottom: 120 },
+      { from: 5, to: 10, top: 120, bottom: 140 },
+      { from: 11, to: 18, top: 140, bottom: 160 },
+    ];
+
+    it("maps upper and lower halves to paragraph boundaries", () => {
+      assert.equal(boundaryOffsetForY(blocks, 105, doc.length), 0);
+      assert.equal(boundaryOffsetForY(blocks, 115, doc.length), 4);
+      assert.equal(boundaryOffsetForY(blocks, 125, doc.length), 4);
+      assert.equal(boundaryOffsetForY(blocks, 135, doc.length), 10);
+      assert.equal(boundaryOffsetForY(blocks, 145, doc.length), 10);
+      assert.equal(boundaryOffsetForY(blocks, 155, doc.length), 18);
+    });
+
+    it("uses document edges when y is outside all visible lines", () => {
+      assert.equal(boundaryOffsetForY(blocks, 0, doc.length), 0);
+      assert.equal(boundaryOffsetForY(blocks, 999, doc.length), 18);
+      assert.equal(boundaryOffsetForY([], 125, doc.length), 18);
+    });
+
+    it("uses the upper line end for visual gaps between lines", () => {
+      const blocksWithGap: LineBlock[] = [
+        { from: 0, to: 4, top: 100, bottom: 120 },
+        { from: 5, to: 10, top: 130, bottom: 150 },
+      ];
+      assert.equal(boundaryOffsetForY(blocksWithGap, 125, doc.length), 4);
+    });
+
+    it("only returns complete line boundaries across the drop band", () => {
+      const allowed = new Set([0, 4, 10, 18]);
+      for (let y = 90; y <= 170; y++) {
+        const at = boundaryOffsetForY(blocks, y, doc.length);
+        assert.equal(allowed.has(at), true, `y=${y} returned ${at}`);
+      }
+    });
+
+    it("feeds safe boundaries into insertAsBlock without splitting source lines", () => {
+      for (const at of [0, 4, 10, 18]) {
+        const result = insertAsBlock(doc, at, "![](x.png)");
+        for (const line of ["test", "dfwef", "wefwfip"]) {
+          assert.ok(result.text.split("\n").includes(line), `offset ${at} split or removed ${line}`);
+        }
+      }
     });
   });
 });
