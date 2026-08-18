@@ -7,6 +7,7 @@ import {
   safeDecodeHref,
   urlCardInfo,
 } from "./doc-paths.js";
+import { blockSourceRanges } from "./drop-position.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -112,13 +113,22 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
       }
     });
 
+    const ranges = blockSourceRanges(md);
+    const children = Array.from(doc.body.children);
+    if (children.length === ranges.length) {
+      children.forEach((el, idx) => {
+        el.setAttribute("data-src-start", String(ranges[idx].start));
+        el.setAttribute("data-src-end", String(ranges[idx].end));
+      });
+    }
+
     return DOMPurify.sanitize(doc.body.innerHTML, {
-      ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading"],
+      ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading", "data-src-start", "data-src-end"],
     });
   }
 
   return DOMPurify.sanitize(raw, {
-    ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading"],
+    ADD_ATTR: ["target", "rel", "data-nb-unresolved", "loading", "data-src-start", "data-src-end"],
   });
 }
 

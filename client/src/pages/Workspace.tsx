@@ -9,6 +9,7 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, snippetFromDragData } from "../lib/doc-paths";
+import { insertOffsetForPoint } from "../lib/drop-position";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -595,6 +596,28 @@ export default function Workspace() {
     setPreviewDropActive(false);
   }, []);
 
+  /**
+   * 從預覽窗格的放開座標換算出「要插在 markdown 原始碼的哪個 offset」。
+   * 預覽的每個 top-level 區塊在 renderMarkdown 時被標上 data-src-start / data-src-end，
+   * 這裡把它們的畫面位置收集起來交給 insertOffsetForPoint 判斷。
+   * 沒有標記（例如渲染時對不上）就回 null，呼叫端 fallback 成插在末尾。
+   */
+  const previewInsertOffset = useCallback((container: HTMLElement, clientY: number): number | null => {
+    const marked = Array.from(container.querySelectorAll<HTMLElement>("[data-src-start]"));
+    if (marked.length === 0) return null;
+    const blocks = marked.map((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        top: rect.top,
+        bottom: rect.bottom,
+        start: Number(el.dataset.srcStart),
+        end: Number(el.dataset.srcEnd),
+      };
+    });
+    if (blocks.some((b) => Number.isNaN(b.start) || Number.isNaN(b.end))) return null;
+    return insertOffsetForPoint(blocks, clientY, contentRef.current.length);
+  }, []);
+
   const handlePreviewDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       const dt = e.dataTransfer;
@@ -608,9 +631,12 @@ export default function Workspace() {
         return;
       }
       const snippet = snippetFromDrag(dt);
-      if (snippet) insertIntoEditor(snippet, { atEnd: true });
+      if (!snippet) return;
+      const at = previewInsertOffset(e.currentTarget, e.clientY);
+      if (at === null) insertIntoEditor(snippet, { atEnd: true });
+      else insertIntoEditor(snippet, { at });
     },
-    [canWrite, claimDrop, insertIntoEditor, snippetFromDrag]
+    [canWrite, claimDrop, insertIntoEditor, previewInsertOffset, snippetFromDrag]
   );
 
   async function handleCreate() {
