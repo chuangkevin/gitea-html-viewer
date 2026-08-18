@@ -4,12 +4,12 @@ import { defaultViewMode, initialViewMode, resolveViewMode } from "./view-mode.j
 
 describe("view-mode module", () => {
   describe("defaultViewMode", () => {
-    it("defaults desktop to split", () => {
-      assert.equal(defaultViewMode(true), "split");
+    it("defaults desktop to preview (the editable rendered view)", () => {
+      assert.equal(defaultViewMode(true), "preview");
     });
 
-    it("defaults mobile to edit", () => {
-      assert.equal(defaultViewMode(false), "edit");
+    it("defaults mobile to preview too", () => {
+      assert.equal(defaultViewMode(false), "preview");
     });
   });
 
@@ -21,8 +21,8 @@ describe("view-mode module", () => {
     });
 
     it("falls back to the device default for invalid stored values", () => {
-      assert.equal(initialViewMode("invalid", true), "split");
-      assert.equal(initialViewMode(null, false), "edit");
+      assert.equal(initialViewMode("invalid", true), "preview");
+      assert.equal(initialViewMode(null, false), "preview");
     });
   });
 
@@ -32,8 +32,8 @@ describe("view-mode module", () => {
       assert.equal(resolveViewMode("split", { readOnly: true, isDesktop: false }), "preview");
     });
 
-    it("resolves mobile split to edit, not preview", () => {
-      assert.equal(resolveViewMode("split", { readOnly: false, isDesktop: false }), "edit");
+    it("resolves mobile split to preview (which is itself editable)", () => {
+      assert.equal(resolveViewMode("split", { readOnly: false, isDesktop: false }), "preview");
     });
   });
 });

@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { EditorState } from "@codemirror/state";
-import { EditorView, drawSelection, keymap } from "@codemirror/view";
+import { Compartment, EditorState } from "@codemirror/state";
+import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -33,6 +33,8 @@ interface Props {
   onScroll(scroller: HTMLElement): void;
   /** 行內渲染要用的連結脈絡（圖片路徑解析）。null = 不渲染圖片。 */
   livePreviewContext: LivePreviewContext | null;
+  /** true = 所見即所得（游標行露原文、其餘行渲染）；false = 純 markdown 原始碼。 */
+  livePreview: boolean;
   className?: string;
 }
 
@@ -113,6 +115,7 @@ const noteTheme = EditorView.theme(
 const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function MarkdownEditor(props, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const liveCompartmentRef = useRef(new Compartment());
 
   // domEventHandlers / updateListener 會被關進 extension 的 closure 裡，
   // 直接塞 props 會永遠抓到第一次 render 的舊值，所以一律走 ref。
@@ -123,16 +126,22 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     const host = hostRef.current;
     if (!host) return;
 
+    const liveCompartment = liveCompartmentRef.current;
     const view = new EditorView({
       state: EditorState.create({
         doc: cb.current.value,
         extensions: [
           history(),
           drawSelection(),
+          dropCursor(), // 拖曳時顯示落點游標＝落點指示
           EditorView.lineWrapping,
           markdown({ base: markdownLanguage }),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-          livePreview(() => cb.current.livePreviewContext),
+          // 用 Compartment 才能在不重建 EditorView 的情況下切換行內渲染——
+          // 重建會掉游標位置與 undo 歷史。
+          liveCompartment.of(
+            cb.current.livePreview ? livePreview(() => cb.current.livePreviewContext) : []
+          ),
           // Cmd/Ctrl+S 不在這裡綁：Workspace 已有 window keydown 的存檔處理，
           // CM 的 keydown 會冒泡上去。兩邊都綁會存兩次。
           keymap.of([...defaultKeymap, ...historyKeymap]),
@@ -169,6 +178,17 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       viewRef.current = null;
     };
   }, []);
+
+  // 切換「所見即所得 / 原始碼」時只 reconfigure 那個 compartment，view 不重建。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: liveCompartmentRef.current.reconfigure(
+        props.livePreview ? livePreview(() => cb.current.livePreviewContext) : []
+      ),
+    });
+  }, [props.livePreview]);
 
   // 受控同步：只有外部帶進來的 value 跟 CM 目前內容不同才覆寫。
   // 少了這個判斷，使用者自己打的字會被自己的 onChange 再 dispatch 一次，游標會跳。

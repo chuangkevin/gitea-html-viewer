@@ -914,6 +914,13 @@ export default function Workspace() {
   const readOnly = !canWrite;
   const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
 
+  // 「預覽」本身就是可編輯的所見即所得畫面：可寫的人在 preview 看到的是開了
+  // 行內渲染的 CodeMirror，不是唯讀 HTML。唯讀訪客才走原本的 marked 預覽。
+  const showEditor = effectiveView !== "preview" || canWrite;
+  const showMarkedPreview =
+    effectiveView === "split" || (effectiveView === "preview" && !canWrite);
+  const editorLivePreview = effectiveView === "preview";
+
   const linkContext = useMemo<LinkContext>(
     () => ({
       provider,
@@ -1812,7 +1819,7 @@ export default function Workspace() {
         <div className="flex-1 min-w-0" />
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
           <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
-            {(isDesktop ? (["edit", "split", "preview"] as const) : (["edit", "preview"] as const)).map((v) => (
+            {(isDesktop ? (["preview", "split", "edit"] as const) : (["preview", "edit"] as const)).map((v) => (
               <button
                 key={v}
                 onClick={() => {
@@ -1825,7 +1832,7 @@ export default function Workspace() {
                 }}
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
-                {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
+                {v === "edit" ? "原始碼" : v === "split" ? "分割" : "編輯"}
               </button>
             ))}
           </div>
@@ -2712,9 +2719,9 @@ export default function Workspace() {
               </div>
             ) : (
               <>
-            {effectiveView !== "preview" && (
+            {showEditor && (
               <div
-                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} min-w-0 bg-zinc-950 border-r border-zinc-900 overflow-hidden`}
+                className={`${effectiveView === "split" ? "w-1/2 border-r border-zinc-900" : "w-full"} min-w-0 bg-zinc-950 overflow-hidden`}
               >
               <Suspense fallback={<div className="h-full w-full bg-zinc-950" />}>
               <MarkdownEditor
@@ -2732,6 +2739,7 @@ export default function Workspace() {
                 onDrop={handleEditorDrop}
                 onScroll={(scroller) => syncScroll(scroller, previewRef.current)}
                 livePreviewContext={livePreviewContext}
+                livePreview={editorLivePreview}
                 className="h-full w-full"
               />
               </Suspense>
@@ -2762,7 +2770,7 @@ export default function Workspace() {
                 ))}
               </div>
             )}
-            {effectiveView !== "edit" && (
+            {showMarkedPreview && (
               <div className={`${effectiveView === "split" ? "w-1/2" : "w-full"} flex flex-col min-h-0 overflow-hidden`}>
                 {activeKind === "html" ? (
                   <div className="flex-1 flex flex-col min-h-0">
