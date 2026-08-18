@@ -5,7 +5,6 @@ import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
-import type { LineBlock } from "../lib/block-insert";
 
 /**
  * Workspace 對編輯器的最小介面。
@@ -18,8 +17,6 @@ export interface MarkdownEditorHandle {
   focus(): void;
   /** 螢幕座標 → markdown 原始碼 offset。算不出來回 null。 */
   posAtCoords(x: number, y: number): number | null;
-  /** 目前視窗內每一行的螢幕位置與原始碼範圍，依畫面順序排列。 */
-  lineBlocksInViewport(): LineBlock[];
   /** 捲動同步用的元素（CM 的 scroller，不是最外層容器）。 */
   getScrollDOM(): HTMLElement | null;
 }
@@ -159,6 +156,13 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           EditorView.domEventHandlers({
             keydown: (e) => cb.current.onKeyDown(e),
             paste: (e) => cb.current.onPaste(e),
+            drop: (e) => cb.current.onDrop(e),
+            // dragover 一定要回傳 falsy：CM 的 dropCursor（落點游標）是靠它自己的
+            // dragover handler 更新的，回傳 true 會把落點指示整個擋掉。
+            dragover: (e) => {
+              cb.current.onDragOver(e);
+              return false;
+            },
           }),
           noteTheme,
           EditorView.contentAttributes.of({ spellcheck: "false" }),
@@ -169,16 +173,6 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
 
     viewRef.current = view;
 
-    const onHostDragEnter = (e: DragEvent) => cb.current.onDragOver(e);
-    const onHostDragOver = (e: DragEvent) => cb.current.onDragOver(e);
-    const onHostDrop = (e: DragEvent) => cb.current.onDrop(e);
-    const onHostDragLeave = () => {};
-    const dragOptions = { capture: true };
-    host.addEventListener("dragenter", onHostDragEnter, dragOptions);
-    host.addEventListener("dragover", onHostDragOver, dragOptions);
-    host.addEventListener("drop", onHostDrop, dragOptions);
-    host.addEventListener("dragleave", onHostDragLeave, dragOptions);
-
     // scroll 事件不冒泡，掛在 view.dom 或走 domEventHandlers 都收不到，
     // 必須直接掛在真正會捲動的 scroller 上。
     const scroller = view.scrollDOM;
@@ -186,10 +180,6 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     scroller.addEventListener("scroll", onScroll, { passive: true });
 
     return () => {
-      host.removeEventListener("dragenter", onHostDragEnter, dragOptions);
-      host.removeEventListener("dragover", onHostDragOver, dragOptions);
-      host.removeEventListener("drop", onHostDrop, dragOptions);
-      host.removeEventListener("dragleave", onHostDragLeave, dragOptions);
       scroller.removeEventListener("scroll", onScroll);
       view.destroy();
       viewRef.current = null;
@@ -240,34 +230,6 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       },
       focus: () => viewRef.current?.focus(),
       posAtCoords: (x, y) => viewRef.current?.posAtCoords({ x, y }) ?? null,
-      lineBlocksInViewport: () => {
-        const view = viewRef.current;
-        if (!view) return [];
-        const blocks = view.viewportLineBlocks;
-        if (blocks.length === 0) return [];
-
-        // BlockInfo.top 是「文件座標」。用 documentTop 相加換算成螢幕座標會漏掉
-        // .cm-content 的內距與第一行的 margin——實測差 38px，比一個行高（28px）
-        // 還多，落點就會整整偏一行。所以直接讀真正渲染出來的 .cm-line 螢幕位置：
-        // CodeMirror 對 viewport 內每一行剛好渲染一個 .cm-line，順序一致。
-        const lineEls = view.contentDOM.querySelectorAll(".cm-line");
-        if (lineEls.length === blocks.length) {
-          return blocks.map((b, i) => {
-            const r = lineEls[i].getBoundingClientRect();
-            return { from: b.from, to: b.to, top: r.top, bottom: r.bottom };
-          });
-        }
-
-        // 數量對不上（理論上不該發生）才退回幾何換算，並用實際量到的第一行位置校正。
-        const probe = view.coordsAtPos(blocks[0].from);
-        const delta = probe ? probe.top - blocks[0].top : view.documentTop;
-        return blocks.map((b) => ({
-          from: b.from,
-          to: b.to,
-          top: b.top + delta,
-          bottom: b.top + b.height + delta,
-        }));
-      },
       getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
     }),
     []
