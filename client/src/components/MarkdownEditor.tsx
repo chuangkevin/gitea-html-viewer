@@ -190,14 +190,20 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
+    // 關掉行內渲染時圖片 widget 會消失、文件高度驟縮，scrollTop 被夾回 0，
+    // 使用者就「掉了看的位置」。所以先記下「現在視窗最上緣是文件的哪個位置」，
+    // 切換後再把那個位置捲回最上緣。用視窗頂端而不是游標——使用者可能根本
+    // 還沒點過任何地方（游標在 0），那樣會直接跳回文件開頭。
+    const box = view.scrollDOM.getBoundingClientRect();
+    const anchor =
+      view.posAtCoords({ x: box.left + 8, y: box.top + 8 }) ?? view.state.selection.main.head;
+
     view.dispatch({
       effects: [
         liveCompartmentRef.current.reconfigure(
           props.livePreview ? livePreview(() => cb.current.livePreviewContext) : []
         ),
-        // 關掉行內渲染時圖片 widget 會消失，文件高度驟縮，scrollTop 被夾回 0，
-        // 使用者就「掉了看的位置」。切換後把游標捲回視野，位置才不會跑掉。
-        EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }),
+        EditorView.scrollIntoView(anchor, { y: "start" }),
       ],
     });
   }, [props.livePreview]);
