@@ -51,13 +51,15 @@ class ImageWidget extends WidgetType {
     );
   }
 
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement("span");
     wrap.className = "cm-nb-img";
     const img = document.createElement("img");
     img.src = this.src;
     img.alt = this.alt;
-    img.loading = "lazy";
+    // 不要 lazy：CodeMirror 的高度圖需要知道每一行多高，延後載入會讓它一直用舊高度。
+    img.addEventListener("load", () => view.requestMeasure());
+    img.addEventListener("error", () => view.requestMeasure());
     // 拖動已渲染的圖片＝把這段 markdown 搬到別的位置（不是複製）
     img.draggable = true;
     const span = `${this.from},${this.to}`;
