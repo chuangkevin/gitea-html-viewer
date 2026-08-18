@@ -243,12 +243,29 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       lineBlocksInViewport: () => {
         const view = viewRef.current;
         if (!view) return [];
-        const docTop = view.documentTop;
-        return view.viewportLineBlocks.map((b) => ({
+        const blocks = view.viewportLineBlocks;
+        if (blocks.length === 0) return [];
+
+        // BlockInfo.top 是「文件座標」。用 documentTop 相加換算成螢幕座標會漏掉
+        // .cm-content 的內距與第一行的 margin——實測差 38px，比一個行高（28px）
+        // 還多，落點就會整整偏一行。所以直接讀真正渲染出來的 .cm-line 螢幕位置：
+        // CodeMirror 對 viewport 內每一行剛好渲染一個 .cm-line，順序一致。
+        const lineEls = view.contentDOM.querySelectorAll(".cm-line");
+        if (lineEls.length === blocks.length) {
+          return blocks.map((b, i) => {
+            const r = lineEls[i].getBoundingClientRect();
+            return { from: b.from, to: b.to, top: r.top, bottom: r.bottom };
+          });
+        }
+
+        // 數量對不上（理論上不該發生）才退回幾何換算，並用實際量到的第一行位置校正。
+        const probe = view.coordsAtPos(blocks[0].from);
+        const delta = probe ? probe.top - blocks[0].top : view.documentTop;
+        return blocks.map((b) => ({
           from: b.from,
           to: b.to,
-          top: b.top + docTop,
-          bottom: b.top + b.height + docTop,
+          top: b.top + delta,
+          bottom: b.top + b.height + delta,
         }));
       },
       getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
