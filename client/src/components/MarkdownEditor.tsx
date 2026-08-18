@@ -191,9 +191,14 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({
-      effects: liveCompartmentRef.current.reconfigure(
-        props.livePreview ? livePreview(() => cb.current.livePreviewContext) : []
-      ),
+      effects: [
+        liveCompartmentRef.current.reconfigure(
+          props.livePreview ? livePreview(() => cb.current.livePreviewContext) : []
+        ),
+        // 關掉行內渲染時圖片 widget 會消失，文件高度驟縮，scrollTop 被夾回 0，
+        // 使用者就「掉了看的位置」。切換後把游標捲回視野，位置才不會跑掉。
+        EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }),
+      ],
     });
   }, [props.livePreview]);
 
