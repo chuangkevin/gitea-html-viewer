@@ -1,4 +1,4 @@
-import { type ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
 import { renderMarkdown, type LinkContext } from "../lib/markdown";
@@ -22,6 +22,11 @@ import {
   type ViewMode,
   VIEW_MODE_STORAGE_KEY,
 } from "../lib/view-mode";
+import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
+
+// CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
+// 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
+const MarkdownEditor = lazy(() => import("../components/MarkdownEditor"));
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -555,7 +560,7 @@ export default function Workspace() {
         : typeof at === "number" && at >= 0 && at <= cur.length
           ? at
           : el
-            ? el.selectionStart
+            ? el.getSelectionStart()
             : cur.length;
 
       // 讓插入的內容自成一段：前後視情況補換行
@@ -572,12 +577,12 @@ export default function Workspace() {
       pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
       setSave((s) => (s === "conflict" ? s : "dirty"));
 
-      // 只有原本就看得到編輯器時才移動游標；純預覽模式沒有 textarea，不做任何事
+      // 只有原本就看得到編輯器時才移動游標；純預覽模式沒有編輯器，不做任何事
       setTimeout(() => {
         const t = editorRef.current;
         if (t) {
           t.focus();
-          t.setSelectionRange(caret, caret);
+          t.setSelection(caret);
         }
       }, 0);
       return caret;
@@ -616,7 +621,7 @@ export default function Workspace() {
 
   /** 拖到編輯區：檔案樹的檔案→插入 markdown；外部網址→插入裸網址。 */
   const handleEditorDrop = useCallback(
-    (e: React.DragEvent<HTMLTextAreaElement>) => {
+    (e: DragEvent) => {
       const dt = e.dataTransfer;
       if (isImageMoveDrag(dt)) {
         e.preventDefault();
@@ -628,17 +633,30 @@ export default function Workspace() {
       if (!internal && !urlDrag) return; // OS 檔案拖放 → 讓既有的上傳流程接手
       e.preventDefault();
       e.stopPropagation();
-      if (!claimDrop(e.nativeEvent)) return; // 這次拖放已經被別的 handler 插過了
+      if (!claimDrop(e)) return; // 這次拖放已經被別的 handler 插過了
       if (!canWrite) {
         setError("唯讀，無法插入");
         return;
       }
 
-      const snippet = snippetFromDrag(dt);
-      if (snippet) insertIntoEditor(snippet);
+      const snippet = dt ? snippetFromDrag(dt) : null;
+      if (!snippet) return;
+      // CodeMirror 能把放開的螢幕座標換成精確的原始碼 offset，所以插在「放開的地方」
+      // 而不是「目前游標」。算不出來（例如放在最後一行下方的空白）才退回游標。
+      const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? null;
+      if (at === null) insertIntoEditor(snippet);
+      else insertIntoEditor(snippet, { at });
     },
     [canWrite, claimDrop, insertIntoEditor, snippetFromDrag]
   );
+
+  const handleEditorDragOver = useCallback((e: DragEvent) => {
+    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
 
   /**
    * 拖到「預覽窗格」：預覽是渲染後的 HTML，沒有 caret 可對應放開位置，
@@ -1094,10 +1112,12 @@ export default function Workspace() {
   };
 
   const handleEditorPaste = useCallback(
-    async (e: ClipboardEvent<HTMLTextAreaElement>) => {
-      let images = Array.from(e.clipboardData.files || []).filter((file) => isImageMime(file.type));
+    async (e: ClipboardEvent) => {
+      const cd = e.clipboardData;
+      if (!cd) return;
+      let images = Array.from(cd.files || []).filter((file) => isImageMime(file.type));
       if (images.length === 0) {
-        images = Array.from(e.clipboardData.items || [])
+        images = Array.from(cd.items || [])
           .filter((item) => item.kind === "file")
           .map((item) => item.getAsFile())
           .filter((file): file is File => !!file && isImageMime(file.type));
@@ -1105,7 +1125,7 @@ export default function Workspace() {
 
       if (images.length === 0) return;
 
-      const insertAt = e.currentTarget.selectionStart;
+      const insertAt = editorRef.current?.getSelectionStart() ?? 0;
       e.preventDefault();
 
       if (!canWrite) {
@@ -1621,8 +1641,8 @@ export default function Workspace() {
       const editor = editorRef.current;
       if (!editor) return;
 
-      const val = editor.value;
-      const cursorPos = editor.selectionStart;
+      const val = contentRef.current;
+      const cursorPos = editor.getSelectionStart();
       const textBefore = val.slice(0, cursorPos);
       const match = textBefore.match(/(?:^|\s)@([^\s]*)$/);
       if (!match) return;
@@ -1651,47 +1671,48 @@ export default function Workspace() {
       setTimeout(() => {
         if (editorRef.current) {
           editorRef.current.focus();
-          editorRef.current.setSelectionRange(newCursorPos, newCursorPos);
+          editorRef.current.setSelection(newCursorPos);
         }
       }, 0);
     },
     []
   );
 
-  const handleTextareaKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  /**
+   * @ 選單開著時，方向鍵/Enter/Tab/Escape 要歸選單用。
+   * 回傳 true = 已處理，CodeMirror 不要再吃這個鍵。
+   */
+  const handleEditorKeyDown = useCallback(
+    (e: KeyboardEvent) => {
       if (mentionQuery !== null && filteredMentions.length > 0) {
         if (e.key === "ArrowDown") {
-          e.preventDefault();
           setMentionIndex((i) => (i + 1) % filteredMentions.length);
-          return;
+          return true;
         }
         if (e.key === "ArrowUp") {
-          e.preventDefault();
           setMentionIndex((i) => (i - 1 + filteredMentions.length) % filteredMentions.length);
-          return;
+          return true;
         }
         if (e.key === "Enter" || e.key === "Tab") {
-          e.preventDefault();
           const safeIndex = Math.max(0, Math.min(mentionIndex, filteredMentions.length - 1));
           const item = filteredMentions[safeIndex];
           if (item) {
             selectMention(item);
           }
-          return;
+          return true;
         }
         if (e.key === "Escape") {
-          e.preventDefault();
           setMentionQuery(null);
-          return;
+          return true;
         }
       }
+      return false;
     },
     [mentionQuery, filteredMentions, mentionIndex, selectMention]
   );
 
   // ── 分割檢視：編輯區與預覽區依捲動比例雙向同步 ──
-  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   // 同步旗標：記住「現在是哪一邊在帶動」加一段冷卻時間。被帶動的那一邊會因為
   // scrollTop 被改而回彈一個 scroll 事件，冷卻期內直接忽略，避免兩邊互相觸發。
@@ -2685,38 +2706,28 @@ export default function Workspace() {
             ) : (
               <>
             {effectiveView !== "preview" && (
-              <textarea
+              <div
+                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} min-w-0 bg-zinc-950 border-r border-zinc-900 overflow-hidden`}
+              >
+              <Suspense fallback={<div className="h-full w-full bg-zinc-950" />}>
+              <MarkdownEditor
                 ref={editorRef}
                 value={content}
-                onChange={(e) => {
-                  const next = e.target.value;
+                onChange={(next) => {
                   setContent(next);
                   setSave((s) => (s === "conflict" ? s : "dirty"));
                   pendingSaveRef.current = { path: activePath, content: next, sha: shaRef.current };
-                  updateMentionTrigger(next, e.target.selectionStart);
                 }}
-                onSelect={(e) => {
-                  updateMentionTrigger(e.currentTarget.value, e.currentTarget.selectionStart);
-                }}
-                onKeyUp={(e) => {
-                  if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                    updateMentionTrigger(e.currentTarget.value, e.currentTarget.selectionStart);
-                  }
-                }}
-                onKeyDown={handleTextareaKeyDown}
+                onSelectionChange={updateMentionTrigger}
+                onKeyDown={handleEditorKeyDown}
                 onPaste={handleEditorPaste}
-                onDragOver={(e) => {
-                  if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = "copy";
-                  }
-                }}
+                onDragOver={handleEditorDragOver}
                 onDrop={handleEditorDrop}
-                onScroll={() => syncScroll(editorRef.current, previewRef.current)}
-                spellCheck={false}
-                className={`${effectiveView === "split" ? "w-1/2" : "w-full"} resize-none bg-zinc-950 p-5 font-mono text-base leading-7 outline-none border-r border-zinc-900`}
+                onScroll={(scroller) => syncScroll(scroller, previewRef.current)}
+                className="h-full w-full"
               />
+              </Suspense>
+              </div>
             )}
             {mentionQuery !== null && filteredMentions.length > 0 && (
               <div className="absolute left-2 right-2 w-auto sm:left-6 sm:right-auto sm:w-80 max-w-[calc(100vw-1rem)] top-14 z-50 max-h-64 overflow-y-auto rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
@@ -2780,7 +2791,7 @@ export default function Workspace() {
                 ) : (
                   <div
                     ref={previewRef}
-                    onScroll={() => syncScroll(previewRef.current, editorRef.current)}
+                    onScroll={() => syncScroll(previewRef.current, editorRef.current?.getScrollDOM() ?? null)}
                     onClick={handlePreviewClick}
                     onDragStart={handlePreviewDragStart}
                     onDragEnd={clearDropGap}
