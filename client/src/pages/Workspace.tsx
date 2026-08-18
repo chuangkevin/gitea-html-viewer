@@ -7,6 +7,7 @@ import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
+import { insertAsBlock, snapToLineBoundary } from "../lib/block-insert";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
@@ -565,14 +566,7 @@ export default function Workspace() {
             ? el.getSelectionStart()
             : cur.length;
 
-      // 讓插入的內容自成一段：前後視情況補換行
-      const before = cur.slice(0, pos);
-      const after = cur.slice(pos);
-      const needLeadingNl = before.length > 0 && !before.endsWith("\n");
-      const needTrailingNl = after.length > 0 && !after.startsWith("\n");
-      const block = `${needLeadingNl ? "\n" : ""}${snippet}${needTrailingNl ? "\n" : ""}`;
-      const next = before + block + after;
-      const caret = pos + block.length;
+      const { text: next, caret } = insertAsBlock(cur, pos, snippet);
 
       contentRef.current = next;
       setContent(next);
@@ -640,7 +634,10 @@ export default function Workspace() {
         const start = Number(rawStart);
         const end = Number(rawEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
-        const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length;
+        const at = snapToLineBoundary(
+          contentRef.current,
+          editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length
+        );
         replaceContent(moveSpanInSource(contentRef.current, { start, end }, at));
         return true;
       }

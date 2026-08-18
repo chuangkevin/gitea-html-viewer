@@ -156,13 +156,6 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           EditorView.domEventHandlers({
             keydown: (e) => cb.current.onKeyDown(e),
             paste: (e) => cb.current.onPaste(e),
-            drop: (e) => cb.current.onDrop(e),
-            // dragover 一定要回傳 falsy：CM 的 dropCursor（落點游標）是靠它自己的
-            // dragover handler 更新的，回傳 true 會把落點指示整個擋掉。
-            dragover: (e) => {
-              cb.current.onDragOver(e);
-              return false;
-            },
           }),
           noteTheme,
           EditorView.contentAttributes.of({ spellcheck: "false" }),
@@ -173,6 +166,16 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
 
     viewRef.current = view;
 
+    const onHostDragEnter = (e: DragEvent) => cb.current.onDragOver(e);
+    const onHostDragOver = (e: DragEvent) => cb.current.onDragOver(e);
+    const onHostDrop = (e: DragEvent) => cb.current.onDrop(e);
+    const onHostDragLeave = () => {};
+    const dragOptions = { capture: true };
+    host.addEventListener("dragenter", onHostDragEnter, dragOptions);
+    host.addEventListener("dragover", onHostDragOver, dragOptions);
+    host.addEventListener("drop", onHostDrop, dragOptions);
+    host.addEventListener("dragleave", onHostDragLeave, dragOptions);
+
     // scroll 事件不冒泡，掛在 view.dom 或走 domEventHandlers 都收不到，
     // 必須直接掛在真正會捲動的 scroller 上。
     const scroller = view.scrollDOM;
@@ -180,6 +183,10 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     scroller.addEventListener("scroll", onScroll, { passive: true });
 
     return () => {
+      host.removeEventListener("dragenter", onHostDragEnter, dragOptions);
+      host.removeEventListener("dragover", onHostDragOver, dragOptions);
+      host.removeEventListener("drop", onHostDrop, dragOptions);
+      host.removeEventListener("dragleave", onHostDragLeave, dragOptions);
       scroller.removeEventListener("scroll", onScroll);
       view.destroy();
       viewRef.current = null;

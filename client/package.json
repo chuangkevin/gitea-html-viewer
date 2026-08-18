@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/doc-paths.test.ts src/lib/drop-position.test.ts src/lib/view-mode.test.ts src/lib/paste-image.test.ts src/lib/cm-live-preview.test.ts"
+    "test": "tsx --test src/lib/doc-paths.test.ts src/lib/drop-position.test.ts src/lib/view-mode.test.ts src/lib/paste-image.test.ts src/lib/cm-live-preview.test.ts src/lib/block-insert.test.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",
