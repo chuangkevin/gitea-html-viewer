@@ -9,7 +9,8 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
-import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
+import { imageSpansIn, insertPointForY, moveSpanInSource } from "../lib/drop-position";
+import { boundaryOffsetForY, insertAsBlock, type LineBox } from "../lib/block-insert";
 import {
   isImageMime,
   pastedImageFilename,
@@ -63,6 +64,93 @@ function isUrlDrag(dt: DataTransfer | null): boolean {
 function isNewFileLoadError(e: unknown): boolean {
   const err = e as { status?: unknown; code?: unknown };
   return (typeof err.status === "number" && isNewFileResponse(err.status)) || err.code === "not_found";
+}
+
+/**
+ * 掃描預覽窗格裡所有帶 data-src-start/data-src-end 的區塊，算出「每一個原始碼行」
+ * 在畫面上的位置。段落內若有 <br>（marked 的 breaks:true 會把單一換行變成 <br>），
+ * 就用 Range 量出每一段的 rect，這樣同一個段落裡的每一行都能各自當落點。
+ * 沒有 <br> 的區塊就整塊當成一個 LineBox（行為與現況相同）。
+ */
+function previewLineBoxes(container: HTMLElement, doc: string): LineBox[] {
+  const boxes: LineBox[] = [];
+  const elements = container.querySelectorAll<HTMLElement>("[data-src-start]");
+
+  for (const el of elements) {
+    const start = Number(el.dataset.srcStart);
+    const end = Number(el.dataset.srcEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+    const source = doc.slice(start, end);
+    const hasBr = el.getElementsByTagName("br").length > 0;
+    if (hasBr) {
+      const fragments = brSeparatedRects(el);
+      const lines = matchingSourceLines(source, fragments.length);
+      if (lines) {
+        let offset = start;
+        for (let i = 0; i < lines.length; i++) {
+          const from = offset;
+          const to = offset + lines[i].length;
+          const rect = fragments[i];
+          boxes.push({ from, to, top: rect.top, bottom: rect.bottom });
+          offset = to + 1;
+        }
+        continue;
+      }
+    }
+
+    const rect = el.getBoundingClientRect();
+    boxes.push({ from: start, to: end, top: rect.top, bottom: rect.bottom });
+  }
+
+  return boxes;
+}
+
+/**
+ * 片段數必須對得上原始碼行數才配對。
+ * 先試 source.split("\n")；對不上且區塊以換行結尾時（marked token.raw 常含段末 \n），
+ * 再試去掉最後一個空字串。兩次都對不上就回 null，呼叫端退回整塊 LineBox。
+ */
+function matchingSourceLines(source: string, fragmentCount: number): string[] | null {
+  const raw = source.split("\n");
+  if (raw.length === fragmentCount) return raw;
+  if (source.endsWith("\n") && raw.length > 0 && raw[raw.length - 1] === "") {
+    const trimmed = raw.slice(0, -1);
+    if (trimmed.length === fragmentCount) return trimmed;
+  }
+  return null;
+}
+
+function brSeparatedRects(el: HTMLElement): DOMRect[] {
+  const groups: Node[][] = [[]];
+
+  function visit(node: Node): void {
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === "BR") {
+      groups.push([]);
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      groups[groups.length - 1].push(node);
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const children = node.childNodes;
+    if (children.length === 0) {
+      groups[groups.length - 1].push(node);
+      return;
+    }
+    for (let i = 0; i < children.length; i++) visit(children[i]);
+  }
+
+  for (let i = 0; i < el.childNodes.length; i++) visit(el.childNodes[i]);
+
+  return groups.map((nodes) => {
+    if (nodes.length === 0) return new DOMRect();
+    const range = document.createRange();
+    range.setStartBefore(nodes[0]);
+    range.setEndAfter(nodes[nodes.length - 1]);
+    return range.getBoundingClientRect();
+  });
 }
 
 /**
@@ -578,14 +666,7 @@ export default function Workspace() {
             ? el.getSelectionStart()
             : cur.length;
 
-      // 讓插入的內容自成一段：前後視情況補換行
-      const before = cur.slice(0, pos);
-      const after = cur.slice(pos);
-      const needLeadingNl = before.length > 0 && !before.endsWith("\n");
-      const needTrailingNl = after.length > 0 && !after.startsWith("\n");
-      const block = `${needLeadingNl ? "\n" : ""}${snippet}${needTrailingNl ? "\n" : ""}`;
-      const next = before + block + after;
-      const caret = pos + block.length;
+      const { text: next, caret } = insertAsBlock(cur, pos, snippet);
 
       contentRef.current = next;
       setContent(next);
@@ -786,24 +867,12 @@ export default function Workspace() {
 
   /**
    * 從預覽窗格的放開座標換算出「要插在 markdown 原始碼的哪個 offset」。
-   * 預覽的每個 top-level 區塊在 renderMarkdown 時被標上 data-src-start / data-src-end，
-   * 這裡把它們的畫面位置收集起來交給 insertOffsetForPoint 判斷。
-   * 沒有標記（例如渲染時對不上）就回 null，呼叫端 fallback 成插在末尾。
+   * 用行級 LineBox（含段落內 <br> 切開的每一行），所以連續三行同一段也能插在行與行之間。
+   * 沒有標記時 boxes 為空，boundaryOffsetForY 回文件末尾。
    */
-  const previewInsertOffset = useCallback((container: HTMLElement, clientY: number): number | null => {
-    const marked = Array.from(container.querySelectorAll<HTMLElement>("[data-src-start]"));
-    if (marked.length === 0) return null;
-    const blocks = marked.map((el) => {
-      const rect = el.getBoundingClientRect();
-      return {
-        top: rect.top,
-        bottom: rect.bottom,
-        start: Number(el.dataset.srcStart),
-        end: Number(el.dataset.srcEnd),
-      };
-    });
-    if (blocks.some((b) => Number.isNaN(b.start) || Number.isNaN(b.end))) return null;
-    return insertOffsetForPoint(blocks, clientY, contentRef.current.length);
+  const previewInsertOffset = useCallback((container: HTMLElement, clientY: number): number => {
+    const boxes = previewLineBoxes(container, contentRef.current);
+    return boundaryOffsetForY(boxes, clientY, contentRef.current.length);
   }, []);
 
   const handlePreviewDrop = useCallback(
