@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ClipboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
 import { renderMarkdown, type LinkContext } from "../lib/markdown";
@@ -10,6 +10,18 @@ import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
+import {
+  isImageMime,
+  pastedImageFilename,
+  pastedImagePath,
+  uniqueRepoPath,
+} from "../lib/paste-image";
+import {
+  initialViewMode,
+  resolveViewMode,
+  type ViewMode,
+  VIEW_MODE_STORAGE_KEY,
+} from "../lib/view-mode";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -18,6 +30,7 @@ const AUTOSAVE_DELAY_MS = 3000;
 
 const NOTE_PATH_MIME = "application/x-note-path";
 const NOTE_IMG_MOVE_MIME = "application/x-note-img-move";
+const MAX_SINGLE = 20 * 1024 * 1024;
 
 /** 這次拖曳是不是「從檔案樹拖 repo 內的檔案」。 */
 function isInternalPathDrag(dt: DataTransfer | null): boolean {
@@ -64,14 +77,23 @@ export default function Workspace() {
   const [me, setMe] = useState<Me | null>(null);
   const [files, setFiles] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
+  const [accessReady, setAccessReady] = useState(false);
   const [accessMode, setAccessMode] = useState<AccessMode>("login");
   const [guestName, setGuestName] = useState("");
   const [needLogin, setNeedLogin] = useState(false);
   const [content, setContent] = useState("");
   const [sha, setSha] = useState<string | undefined>();
   const [save, setSave] = useState<SaveState>("clean");
-  // 預設開「預覽模式」（給人看的），要編輯再自己切到 edit/split
-  const [view, setView] = useState<"edit" | "split" | "preview">("preview");
+  const [view, setView] = useState<ViewMode>(() => {
+    let stored: string | null = null;
+    try {
+      stored = typeof window !== "undefined" ? window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) : null;
+    } catch {
+      stored = null;
+    }
+    const isDesktopNow = typeof window !== "undefined" ? window.innerWidth >= 1024 : true;
+    return initialViewMode(stored, isDesktopNow);
+  });
   const [error, setError] = useState("");
   const [newFile, setNewFile] = useState("");
   const [shareUrl, setShareUrl] = useState<{ url: string; slidesUrl: string } | null>(null);
@@ -187,7 +209,10 @@ export default function Workspace() {
   }, [refreshMe]);
 
   const loadFiles = useCallback(() => {
-    if (!hasRepo) return;
+    if (!hasRepo) {
+      setAccessReady(true);
+      return;
+    }
     setNeedLogin(false);
     api
       .files(refPath)
@@ -202,8 +227,13 @@ export default function Workspace() {
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
-      });
+      })
+      .finally(() => setAccessReady(true));
   }, [refPath, reloadKey, hasRepo, provider, projectPath]);
+
+  useEffect(() => {
+    setAccessReady(false);
+  }, [refPath, reloadKey, hasRepo]);
 
   useEffect(loadFiles, [loadFiles]);
 
@@ -537,6 +567,7 @@ export default function Workspace() {
       const next = before + block + after;
       const caret = pos + block.length;
 
+      contentRef.current = next;
       setContent(next);
       pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
       setSave((s) => (s === "conflict" ? s : "dirty"));
@@ -549,6 +580,7 @@ export default function Workspace() {
           t.setSelectionRange(caret, caret);
         }
       }, 0);
+      return caret;
     },
     [canWrite]
   );
@@ -862,8 +894,7 @@ export default function Workspace() {
   }, [activePath]);
 
   const readOnly = !canWrite;
-  const rawEffectiveView = readOnly ? "preview" : view;
-  const effectiveView = !isDesktop && rawEffectiveView === "split" ? "preview" : rawEffectiveView;
+  const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -986,7 +1017,6 @@ export default function Workspace() {
       return;
     }
 
-    const MAX_SINGLE = 20 * 1024 * 1024;
     const MAX_TOTAL = 50 * 1024 * 1024;
     let totalSize = 0;
 
@@ -1062,6 +1092,110 @@ export default function Workspace() {
     uploadFilesList(items);
     e.target.value = "";
   };
+
+  const handleEditorPaste = useCallback(
+    async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      let images = Array.from(e.clipboardData.files || []).filter((file) => isImageMime(file.type));
+      if (images.length === 0) {
+        images = Array.from(e.clipboardData.items || [])
+          .filter((item) => item.kind === "file")
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => !!file && isImageMime(file.type));
+      }
+
+      if (images.length === 0) return;
+
+      const insertAt = e.currentTarget.selectionStart;
+      e.preventDefault();
+
+      if (!canWrite) {
+        setError("唯讀，無法上傳");
+        return;
+      }
+      if (isUploading) return;
+
+      for (const file of images) {
+        if (file.size > MAX_SINGLE) {
+          setError(`檔案「${file.name || "貼上的圖片"}」大小 (${(file.size / (1024 * 1024)).toFixed(1)}MB) 超過單檔 20MB 限制`);
+          return;
+        }
+      }
+
+      setUploadFailures(null);
+      setError("");
+      setIsUploading(true);
+
+      const targetDir = getCurrentDirContext();
+      const usedPaths = [...(files || [])];
+      const now = new Date();
+      const payloadFiles: Array<{ path: string; contentBase64: string; filename: string }> = [];
+
+      try {
+        for (let i = 0; i < images.length; i++) {
+          const file = images[i];
+          const filename = pastedImageFilename(file.type, now, i);
+          const fullPath = uniqueRepoPath(pastedImagePath(targetDir, filename), usedPaths);
+          usedPaths.push(fullPath);
+          setUploadProgress(`正在讀取貼上的圖片 (${i + 1}/${images.length})：${filename}`);
+
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const res = reader.result as string;
+              const b64 = res.includes(",") ? res.split(",")[1] : res;
+              resolve(b64);
+            };
+            reader.onerror = (err) => reject(err);
+            reader.readAsDataURL(file);
+          });
+
+          payloadFiles.push({ path: fullPath, contentBase64: base64, filename });
+        }
+
+        setUploadProgress(`正在提交 ${payloadFiles.length} 張圖片至伺服器...`);
+        const commitMsg =
+          payloadFiles.length === 1
+            ? `docs: 貼上圖片 ${payloadFiles[0].filename}`
+            : `docs: 貼上 ${payloadFiles.length} 張圖片`;
+        const res = await api.batchUpload(
+          refPath,
+          payloadFiles.map(({ path, contentBase64 }) => ({ path, contentBase64 })),
+          commitMsg
+        );
+
+        setUploadProgress(null);
+        setIsUploading(false);
+
+        if (res.count > 0) {
+          await loadFiles();
+        }
+
+        if (res.failed && res.failed.length > 0) {
+          setUploadFailures(res.failed);
+        }
+
+        const failedPaths = new Set((res.failed || []).map((failure) => failure.path));
+        let at = insertAt;
+        for (const uploaded of payloadFiles) {
+          if (failedPaths.has(uploaded.path)) continue;
+          const snippet = insertSnippetFor(uploaded.path);
+          const nextAt = insertIntoEditor(snippet, { at });
+          at = typeof nextAt === "number" ? nextAt : at + snippet.length;
+        }
+      } catch (err: any) {
+        setUploadProgress(null);
+        setIsUploading(false);
+        let msg = err.message || "上傳失敗";
+        if (err.status === 413 || err.code === "file_too_large") {
+          msg = err.message || "檔案或總量超過大小限制";
+        } else if (err.status === 401 || err.status === 403) {
+          msg = "沒有寫入權限，請先登入或選擇身分";
+        }
+        setError(`上傳失敗：${msg}`);
+      }
+    },
+    [canWrite, files, getCurrentDirContext, insertIntoEditor, isUploading, loadFiles, refPath]
+  );
 
   const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -1653,7 +1787,14 @@ export default function Workspace() {
             {(isDesktop ? (["edit", "split", "preview"] as const) : (["edit", "preview"] as const)).map((v) => (
               <button
                 key={v}
-                onClick={() => setView(v)}
+                onClick={() => {
+                  setView(v);
+                  try {
+                    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, v);
+                  } catch {
+                    // localStorage can throw in private browsing or blocked storage modes.
+                  }
+                }}
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "edit" ? "編輯" : v === "split" ? "分割" : "預覽"}
@@ -2525,6 +2666,24 @@ export default function Workspace() {
           </div>
         ) : (
           <div className="flex-1 flex min-w-0 min-h-0 relative overflow-hidden">
+            {!accessReady && activePath ? (
+              <div className="flex-1 min-w-0 min-h-0 overflow-hidden bg-zinc-950 p-4 sm:p-5">
+                <div className="h-full w-full min-w-0 animate-pulse space-y-4 overflow-hidden">
+                  <div className="h-4 w-2/3 max-w-full rounded bg-zinc-800/80" />
+                  <div className="space-y-3">
+                    <div className="h-3 w-full rounded bg-zinc-900" />
+                    <div className="h-3 w-11/12 max-w-full rounded bg-zinc-900" />
+                    <div className="h-3 w-4/5 max-w-full rounded bg-zinc-900" />
+                  </div>
+                  <div className="space-y-3 pt-4">
+                    <div className="h-3 w-5/6 max-w-full rounded bg-zinc-900" />
+                    <div className="h-3 w-3/4 max-w-full rounded bg-zinc-900" />
+                    <div className="h-3 w-10/12 max-w-full rounded bg-zinc-900" />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
             {effectiveView !== "preview" && (
               <textarea
                 ref={editorRef}
@@ -2545,6 +2704,7 @@ export default function Workspace() {
                   }
                 }}
                 onKeyDown={handleTextareaKeyDown}
+                onPaste={handleEditorPaste}
                 onDragOver={(e) => {
                   if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
                     e.preventDefault();
@@ -2634,6 +2794,8 @@ export default function Workspace() {
                   />
                 )}
               </div>
+            )}
+              </>
             )}
           </div>
         )}
