@@ -81,3 +81,52 @@ function padToBlankLine(side: string, where: "end" | "start"): string {
   const hasOne = where === "end" ? side.endsWith("\n") : side.startsWith("\n");
   return hasOne ? "\n" : "\n\n";
 }
+
+export interface SourceSpan {
+  start: number;
+  end: number;
+}
+
+/**
+ * 把 doc 裡 [span.start, span.end) 這段內容搬到 at 的位置，並讓它自成一塊
+ * （前後各隔一個空行），語意與 insertAsBlock 一致。
+ *
+ * 規則：
+ *  - at 落在 span 內部或邊界（span.start <= at <= span.end）→ 原樣回傳 doc（放回原地不動）
+ *  - 先把該段從 doc 移除，移除後把接縫處多餘的換行收斂（不可留下三個以上連續換行、
+ *    也不可讓原本分開的兩段黏在一起）
+ *  - 移除後 at 要跟著位移：at >= span.end 時要減去該段長度；at <= span.start 時不變
+ *  - 再用 insertAsBlock(removed, 位移後的 at, 被搬的內容) 插回去
+ *  - 被搬的內容取 doc.slice(span.start, span.end) 後要 trim 掉頭尾換行（避免把原本的
+ *    換行一起搬過去而產生多餘空行）
+ * 回傳新的完整內容字串。
+ */
+export function moveSpanAsBlock(doc: string, span: SourceSpan, at: number): string {
+  if (at >= span.start && at <= span.end) return doc;
+
+  const snippet = doc.slice(span.start, span.end).replace(/^\n+/, "").replace(/\n+$/, "");
+  const spanLen = span.end - span.start;
+  let targetAt = at >= span.end ? at - spanLen : at;
+
+  let before = doc.slice(0, span.start);
+  let after = doc.slice(span.end);
+
+  const beforeNls = (before.match(/\n+$/) ?? [""])[0].length;
+  const afterNls = (after.match(/^\n+/) ?? [""])[0].length;
+  const excess = beforeNls + afterNls - 2;
+  let trimmedBefore = 0;
+  let trimmedAfter = 0;
+  if (excess > 0) {
+    trimmedAfter = Math.min(afterNls, excess);
+    trimmedBefore = excess - trimmedAfter;
+    if (trimmedAfter > 0) after = after.slice(trimmedAfter);
+    if (trimmedBefore > 0) before = before.slice(0, before.length - trimmedBefore);
+  }
+
+  // 接縫收斂拿掉的字元若落在 at 之前，位移後的 at 要再跟著減，否則會指到錯位。
+  if (at >= span.end) targetAt -= trimmedAfter + trimmedBefore;
+
+  const removed = before + after;
+  targetAt = Math.max(0, Math.min(removed.length, targetAt));
+  return insertAsBlock(removed, targetAt, snippet).text;
+}

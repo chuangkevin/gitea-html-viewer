@@ -9,8 +9,8 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
-import { imageSpansIn, insertPointForY, moveSpanInSource } from "../lib/drop-position";
-import { boundaryOffsetForY, insertAsBlock, type LineBox } from "../lib/block-insert";
+import { imageSpansIn, insertPointForY } from "../lib/drop-position";
+import { boundaryOffsetForY, insertAsBlock, moveSpanAsBlock, type LineBox } from "../lib/block-insert";
 import {
   isImageMime,
   pastedImageFilename,
@@ -735,7 +735,7 @@ export default function Workspace() {
         const end = Number(rawEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
         const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length;
-        replaceContent(moveSpanInSource(contentRef.current, { start, end }, at));
+        replaceContent(moveSpanAsBlock(contentRef.current, { start, end }, at));
         return true;
       }
 
@@ -893,7 +893,7 @@ export default function Workspace() {
         const [s, en] = raw.split(",").map(Number);
         if (Number.isNaN(s) || Number.isNaN(en)) return;
         const at = previewInsertOffset(e.currentTarget, e.clientY);
-        const next = moveSpanInSource(contentRef.current, { start: s, end: en }, at ?? contentRef.current.length);
+        const next = moveSpanAsBlock(contentRef.current, { start: s, end: en }, at ?? contentRef.current.length);
         if (next !== contentRef.current) replaceContent(next);
         return;
       }

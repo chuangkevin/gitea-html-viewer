@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   boundaryOffsetForY,
   insertAsBlock,
+  moveSpanAsBlock,
   snapToLineBoundary,
   type LineBox,
 } from "./block-insert.js";
@@ -129,5 +130,81 @@ describe("block-insert module", () => {
       assert.equal(text.includes("test\n\n[README](/README.md)\n\ndfwef"), true);
       assert.equal(/\n{3,}/.test(text), false);
     });
+  });
+});
+
+describe("moveSpanAsBlock", () => {
+  const IMG = "![img](/a.png)";
+  const doc = `test\ndfwef\nwefwfip\n\n${IMG}\n`;
+  const imgStart = doc.indexOf(IMG);
+  const span = { start: imgStart, end: imgStart + IMG.length };
+
+  function assertMovedBlock(result: string) {
+    assert.equal(result.split(IMG).length - 1, 1, `IMG not exactly once: ${JSON.stringify(result)}`);
+    const lines = result.split("\n");
+    assert.ok(lines.includes(IMG), `IMG not its own line: ${JSON.stringify(result)}`);
+    assert.ok(lines.includes("test"), `missing test: ${JSON.stringify(result)}`);
+    assert.ok(lines.includes("dfwef"), `missing dfwef: ${JSON.stringify(result)}`);
+    assert.ok(lines.includes("wefwfip"), `missing wefwfip: ${JSON.stringify(result)}`);
+  }
+
+  it("移到中間邊界：test 與 dfwef 之間 (offset 4)", () => {
+    const result = moveSpanAsBlock(doc, span, 4);
+    assertMovedBlock(result);
+    const lines = result.split("\n");
+    const idx = lines.indexOf(IMG);
+    assert.equal(lines[idx - 1], "", `prev not blank: ${JSON.stringify(result)}`);
+    assert.equal(lines[idx + 1], "", `next not blank: ${JSON.stringify(result)}`);
+    assert.equal(/\n{3,}/.test(result), false, `triple newline: ${JSON.stringify(result)}`);
+  });
+
+  it("移到中間邊界：dfwef 與 wefwfip 之間 (offset 10)", () => {
+    const result = moveSpanAsBlock(doc, span, 10);
+    assertMovedBlock(result);
+    const lines = result.split("\n");
+    const idx = lines.indexOf(IMG);
+    assert.equal(lines[idx - 1], "", `prev not blank: ${JSON.stringify(result)}`);
+    assert.equal(lines[idx + 1], "", `next not blank: ${JSON.stringify(result)}`);
+    assert.equal(/\n{3,}/.test(result), false, `triple newline: ${JSON.stringify(result)}`);
+  });
+
+  it("移到最前面 (offset 0)", () => {
+    const result = moveSpanAsBlock(doc, span, 0);
+    const lines = result.split("\n");
+    assert.equal(lines[0], IMG);
+    assert.equal(lines[1], "", `no blank after IMG: ${JSON.stringify(result)}`);
+    assertMovedBlock(result);
+  });
+
+  it("移到最後面", () => {
+    const result = moveSpanAsBlock(doc, span, doc.length);
+    const lines = result.split("\n");
+    const lastNonEmpty = [...lines].reverse().find((line) => line !== "");
+    assert.equal(lastNonEmpty, IMG);
+    const idx = lines.indexOf(IMG);
+    assert.equal(lines[idx - 1], "", `no blank before IMG: ${JSON.stringify(result)}`);
+    assertMovedBlock(result);
+  });
+
+  it("放回原地：at 落在 span 內部或邊界 → 回傳值 === doc", () => {
+    assert.equal(moveSpanAsBlock(doc, span, span.start), doc);
+    assert.equal(moveSpanAsBlock(doc, span, span.end), doc);
+    assert.equal(moveSpanAsBlock(doc, span, span.start + 1), doc);
+  });
+
+  it("契約（掃描式）：[0, 4, 10, 18] 每次都是移動且獨佔一行、無三連換行", () => {
+    for (const at of [0, 4, 10, 18]) {
+      const result = moveSpanAsBlock(doc, span, at);
+      assertMovedBlock(result);
+      assert.equal(/\n{3,}/.test(result), false, `triple newline at ${at}: ${JSON.stringify(result)}`);
+    }
+  });
+
+  it("與 boundaryOffsetForY 串起來的契約：y 從 90 掃到 170", () => {
+    for (let y = 90; y <= 170; y++) {
+      const at = boundaryOffsetForY(boxes, y, 18);
+      const result = moveSpanAsBlock(doc, span, at);
+      assertMovedBlock(result);
+    }
   });
 });
