@@ -23,6 +23,7 @@ import {
   VIEW_MODE_STORAGE_KEY,
 } from "../lib/view-mode";
 import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
+import { IMAGE_MOVE_MIME } from "../lib/drag-mime";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -34,7 +35,8 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 const AUTOSAVE_DELAY_MS = 3000;
 
 const NOTE_PATH_MIME = "application/x-note-path";
-const NOTE_IMG_MOVE_MIME = "application/x-note-img-move";
+// 跟 CodeMirror 圖片 widget 共用同一個值，兩邊才認得同一種拖曳
+const NOTE_IMG_MOVE_MIME = IMAGE_MOVE_MIME;
 const MAX_SINGLE = 20 * 1024 * 1024;
 
 /** 這次拖曳是不是「從檔案樹拖 repo 內的檔案」。 */
@@ -621,41 +623,58 @@ export default function Workspace() {
 
   /** 拖到編輯區：檔案樹的檔案→插入 markdown；外部網址→插入裸網址。 */
   const handleEditorDrop = useCallback(
-    (e: DragEvent) => {
+    (e: DragEvent): boolean => {
       const dt = e.dataTransfer;
+
+      // 拖動文件裡既有的圖片＝移動（刪原處＋插新處，總數不變）
       if (isImageMoveDrag(dt)) {
         e.preventDefault();
         e.stopPropagation();
-        return;
+        if (!claimDrop(e)) return true;
+        if (!canWrite) {
+          setError("唯讀，無法移動");
+          return true;
+        }
+        const raw = dt?.getData(NOTE_IMG_MOVE_MIME) ?? "";
+        const [rawStart, rawEnd] = raw.split(",");
+        const start = Number(rawStart);
+        const end = Number(rawEnd);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
+        const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length;
+        replaceContent(moveSpanInSource(contentRef.current, { start, end }, at));
+        return true;
       }
+
       const internal = isInternalPathDrag(dt);
       const urlDrag = isUrlDrag(dt);
-      if (!internal && !urlDrag) return; // OS 檔案拖放 → 讓既有的上傳流程接手
+      if (!internal && !urlDrag) return false; // OS 檔案拖放 → 讓既有的上傳流程接手
       e.preventDefault();
       e.stopPropagation();
-      if (!claimDrop(e)) return; // 這次拖放已經被別的 handler 插過了
+      if (!claimDrop(e)) return true; // 這次拖放已經被別的 handler 插過了
       if (!canWrite) {
         setError("唯讀，無法插入");
-        return;
+        return true;
       }
 
       const snippet = dt ? snippetFromDrag(dt) : null;
-      if (!snippet) return;
+      if (!snippet) return true;
       // CodeMirror 能把放開的螢幕座標換成精確的原始碼 offset，所以插在「放開的地方」
       // 而不是「目前游標」。算不出來（例如放在最後一行下方的空白）才退回游標。
       const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? null;
       if (at === null) insertIntoEditor(snippet);
       else insertIntoEditor(snippet, { at });
+      return true;
     },
-    [canWrite, claimDrop, insertIntoEditor, snippetFromDrag]
+    [canWrite, claimDrop, insertIntoEditor, replaceContent, snippetFromDrag]
   );
 
   const handleEditorDragOver = useCallback((e: DragEvent) => {
-    if (isInternalPathDrag(e.dataTransfer) || isUrlDrag(e.dataTransfer)) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
-    }
+    const dt = e.dataTransfer;
+    const move = isImageMoveDrag(dt);
+    if (!move && !isInternalPathDrag(dt) && !isUrlDrag(dt)) return;
+    e.preventDefault();
+    // 不 stopPropagation：CM 的 dropCursor 要靠同一個事件更新落點指示
+    if (dt) dt.dropEffect = move ? "move" : "copy";
   }, []);
 
   /**
@@ -1125,29 +1144,9 @@ export default function Workspace() {
     e.target.value = "";
   };
 
-  const handleEditorPaste = useCallback(
-    async (e: ClipboardEvent) => {
-      const cd = e.clipboardData;
-      if (!cd) return;
-      let images = Array.from(cd.files || []).filter((file) => isImageMime(file.type));
-      if (images.length === 0) {
-        images = Array.from(cd.items || [])
-          .filter((item) => item.kind === "file")
-          .map((item) => item.getAsFile())
-          .filter((file): file is File => !!file && isImageMime(file.type));
-      }
-
-      if (images.length === 0) return;
-
-      const insertAt = editorRef.current?.getSelectionStart() ?? 0;
-      e.preventDefault();
-
-      if (!canWrite) {
-        setError("唯讀，無法上傳");
-        return;
-      }
-      if (isUploading) return;
-
+  /** 真正做上傳與插入的部分（非同步）。同步的判斷留在 handleEditorPaste。 */
+  const uploadPastedImages = useCallback(
+    async (images: File[], insertAt: number) => {
       for (const file of images) {
         if (file.size > MAX_SINGLE) {
           setError(`檔案「${file.name || "貼上的圖片"}」大小 (${(file.size / (1024 * 1024)).toFixed(1)}MB) 超過單檔 20MB 限制`);
@@ -1228,7 +1227,41 @@ export default function Workspace() {
         setError(`上傳失敗：${msg}`);
       }
     },
-    [canWrite, files, getCurrentDirContext, insertIntoEditor, isUploading, loadFiles, refPath]
+    [files, getCurrentDirContext, insertIntoEditor, loadFiles, refPath]
+  );
+
+  /**
+   * CodeMirror 的 paste handler 必須**同步**回傳 boolean（true = 我們接手了），
+   * 所以這裡只做同步判斷與 preventDefault，實際上傳丟給 uploadPastedImages。
+   */
+  const handleEditorPaste = useCallback(
+    (e: ClipboardEvent): boolean => {
+      const cd = e.clipboardData;
+      if (!cd) return false;
+      let images = Array.from(cd.files || []).filter((file) => isImageMime(file.type));
+      if (images.length === 0) {
+        images = Array.from(cd.items || [])
+          .filter((item) => item.kind === "file")
+          .map((item) => item.getAsFile())
+          .filter((file): file is File => !!file && isImageMime(file.type));
+      }
+
+      // 剪貼簿沒有圖片 → 完全不攔截，純文字照瀏覽器原生行為貼上
+      if (images.length === 0) return false;
+
+      const insertAt = editorRef.current?.getSelectionStart() ?? 0;
+      e.preventDefault();
+
+      if (!canWrite) {
+        setError("唯讀，無法上傳");
+        return true;
+      }
+      if (isUploading) return true;
+
+      void uploadPastedImages(images, insertAt);
+      return true;
+    },
+    [canWrite, isUploading, uploadPastedImages]
   );
 
   const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {

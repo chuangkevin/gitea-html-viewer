@@ -27,8 +27,10 @@ interface Props {
   onSelectionChange(value: string, cursorPos: number): void;
   /** 回傳 true = 已處理，CM 不要再處理這個鍵（@ 選單導航靠這個）。 */
   onKeyDown(e: KeyboardEvent): boolean;
-  onPaste(e: ClipboardEvent): void;
-  onDrop(e: DragEvent): void;
+  /** 回傳 true = 我們處理掉了，CodeMirror 不要再跑它自己的 paste。 */
+  onPaste(e: ClipboardEvent): boolean;
+  /** 回傳 true = 我們處理掉了，CodeMirror 不要再跑它自己的 drop。 */
+  onDrop(e: DragEvent): boolean;
   onDragOver(e: DragEvent): void;
   onScroll(scroller: HTMLElement): void;
   /** 行內渲染要用的連結脈絡（圖片路徑解析）。null = 不渲染圖片。 */
@@ -155,7 +157,12 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
             keydown: (e) => cb.current.onKeyDown(e),
             paste: (e) => cb.current.onPaste(e),
             drop: (e) => cb.current.onDrop(e),
-            dragover: (e) => cb.current.onDragOver(e),
+            // dragover 一定要回傳 falsy：CM 的 dropCursor（落點游標）是靠它自己的
+            // dragover handler 更新的，回傳 true 會把落點指示整個擋掉。
+            dragover: (e) => {
+              cb.current.onDragOver(e);
+              return false;
+            },
           }),
           noteTheme,
           EditorView.contentAttributes.of({ spellcheck: "false" }),

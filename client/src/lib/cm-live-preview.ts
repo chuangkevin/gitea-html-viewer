@@ -9,6 +9,7 @@ import {
 } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { buildAssetUrl, classifyHref, resolveRepoHref, safeDecodeHref } from "./doc-paths.js";
+import { IMAGE_MOVE_MIME } from "./drag-mime.js";
 
 /**
  * 行內渲染（live preview）：把 markdown 語法符號藏起來、套上該有的樣式，
@@ -32,13 +33,22 @@ export interface LivePreviewContext {
 class ImageWidget extends WidgetType {
   constructor(
     readonly src: string,
-    readonly alt: string
+    readonly alt: string,
+    /** 這張圖在 markdown 原始碼的範圍，拖曳移動時要用 */
+    readonly from: number,
+    readonly to: number
   ) {
     super();
   }
 
   eq(other: ImageWidget): boolean {
-    return other.src === this.src && other.alt === this.alt;
+    // from/to 也要比：文件改過之後 offset 會變，不比會沿用過期的範圍
+    return (
+      other.src === this.src &&
+      other.alt === this.alt &&
+      other.from === this.from &&
+      other.to === this.to
+    );
   }
 
   toDOM(): HTMLElement {
@@ -48,6 +58,14 @@ class ImageWidget extends WidgetType {
     img.src = this.src;
     img.alt = this.alt;
     img.loading = "lazy";
+    // 拖動已渲染的圖片＝把這段 markdown 搬到別的位置（不是複製）
+    img.draggable = true;
+    const span = `${this.from},${this.to}`;
+    img.addEventListener("dragstart", (e) => {
+      if (!e.dataTransfer) return;
+      e.dataTransfer.setData(IMAGE_MOVE_MIME, span);
+      e.dataTransfer.effectAllowed = "move";
+    });
     wrap.appendChild(img);
     return wrap;
   }
@@ -167,7 +185,9 @@ function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): Bui
           // alt = `![` 與 `]` 之間那段
           const open = node.node.getChild("LinkMark");
           const alt = open ? state.sliceDoc(open.to, Math.max(open.to, urlNode.from - 2)).replace(/[\]([]/g, "").trim() : "";
-          const imageDeco = Decoration.replace({ widget: new ImageWidget(src, alt) });
+          const imageDeco = Decoration.replace({
+            widget: new ImageWidget(src, alt, node.from, node.to),
+          });
           marks.push(imageDeco.range(node.from, node.to));
           // 讓整張圖成為一個不可進入的單位：方向鍵會跳過它，Backspace 會整段刪掉
           atomicRanges.push(imageDeco.range(node.from, node.to));
