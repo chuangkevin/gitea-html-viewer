@@ -17,8 +17,12 @@ import {
   uniqueRepoPath,
 } from "../lib/paste-image";
 import {
+  initialPaneMode,
   initialViewMode,
+  PANE_MODE_STORAGE_KEY,
+  resolvePaneMode,
   resolveViewMode,
+  type PaneMode,
   type ViewMode,
   VIEW_MODE_STORAGE_KEY,
 } from "../lib/view-mode";
@@ -100,6 +104,15 @@ export default function Workspace() {
     }
     const isDesktopNow = typeof window !== "undefined" ? window.innerWidth >= 1024 : true;
     return initialViewMode(stored, isDesktopNow);
+  });
+  const [paneMode, setPaneMode] = useState<PaneMode>(() => {
+    let stored: string | null = null;
+    try {
+      stored = typeof window !== "undefined" ? window.localStorage.getItem(PANE_MODE_STORAGE_KEY) : null;
+    } catch {
+      stored = null;
+    }
+    return initialPaneMode(stored);
   });
   const [error, setError] = useState("");
   const [newFile, setNewFile] = useState("");
@@ -932,12 +945,14 @@ export default function Workspace() {
 
   const readOnly = !canWrite;
   const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
+  const effectivePane = resolvePaneMode(paneMode, { view: effectiveView, canWrite });
 
   // 「預覽」本身就是可編輯的所見即所得畫面：可寫的人在 preview 看到的是開了
   // 行內渲染的 CodeMirror，不是唯讀 HTML。唯讀訪客才走原本的 marked 預覽。
-  const showEditor = effectiveView !== "preview" || canWrite;
+  // preview + images 則改顯示全寬 marked 窗格（這一步只做顯示切換）。
+  const showEditor = effectivePane === "text" && (effectiveView !== "preview" || canWrite);
   const showMarkedPreview =
-    effectiveView === "split" || (effectiveView === "preview" && !canWrite);
+    effectiveView === "split" || (effectiveView === "preview" && (!canWrite || effectivePane === "images"));
   const editorLivePreview = effectiveView === "preview";
 
   const linkContext = useMemo<LinkContext>(
@@ -1866,6 +1881,34 @@ export default function Workspace() {
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "edit" ? "原始碼" : v === "split" ? "分割" : "預覽"}
+              </button>
+            ))}
+          </div>
+        )}
+        {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
+          <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
+            {(["text", "images"] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => {
+                  setPaneMode(v);
+                  try {
+                    window.localStorage.setItem(PANE_MODE_STORAGE_KEY, v);
+                  } catch {
+                    // localStorage can throw in private browsing or blocked storage modes.
+                  }
+                  if (v === "images") {
+                    setView("preview");
+                    try {
+                      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, "preview");
+                    } catch {
+                      // localStorage can throw in private browsing or blocked storage modes.
+                    }
+                  }
+                }}
+                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectivePane === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+              >
+                {v === "text" ? "✍️ 即時編輯文字" : "🖼️ 圖片排版"}
               </button>
             ))}
           </div>

@@ -27,3 +27,29 @@ export function resolveViewMode(
   if (!opts.isDesktop && view === "split") return "preview";
   return view;
 }
+
+export type PaneMode = "text" | "images";
+
+export const PANE_MODE_STORAGE_KEY = "note.paneMode";
+
+export function isPaneMode(v: unknown): v is PaneMode {
+  return v === "text" || v === "images";
+}
+
+export function initialPaneMode(stored: string | null): PaneMode {
+  return isPaneMode(stored) ? stored : "text";
+}
+
+/**
+ * 實際生效的子狀態。**按鈕高亮一定要讀這個推導值，不是原始 state**，
+ * 這樣「顯示的」與「實際生效的」結構上不可能不一致。
+ * 規則：
+ *  - view 不是 "preview" → 一律 "text"（原始碼／分割模式沒有排圖狀態）
+ *  - !canWrite（唯讀訪客）→ 一律 "text"
+ *  - 其餘 → 回 paneMode 本身
+ */
+export function resolvePaneMode(paneMode: PaneMode, opts: { view: ViewMode; canWrite: boolean }): PaneMode {
+  if (opts.view !== "preview") return "text";
+  if (!opts.canWrite) return "text";
+  return paneMode;
+}
