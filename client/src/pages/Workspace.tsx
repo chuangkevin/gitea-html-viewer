@@ -1865,7 +1865,7 @@ export default function Workspace() {
                 }}
                 className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
-                {v === "edit" ? "原始碼" : v === "split" ? "分割" : "編輯"}
+                {v === "edit" ? "原始碼" : v === "split" ? "分割" : "預覽"}
               </button>
             ))}
           </div>
