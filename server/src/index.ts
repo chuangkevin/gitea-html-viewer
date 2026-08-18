@@ -216,6 +216,11 @@ function handleError(res: express.Response, e: unknown): void {
   }
 }
 
+/** 上游 provider 的錯誤訊息是不是「檔案不存在」（新檔情境，正常狀況，不該當錯誤）。 */
+export function isProviderNotFound(message: string): boolean {
+  return /\b404\b/.test(message);
+}
+
 // ── auth ───────────────────────────────────────────────
 // /api/auth/login?provider=github|gitlab&next=/edit/...
 app.get("/api/auth/login", (req, res) => {
@@ -663,6 +668,7 @@ app.get("/api/files/:provider/:project", async (req, res) => {
 
 app.get("/api/file/:provider/:project/*", async (req, res) => {
   let actor: Actor | null = null;
+  let filePath: string | null = null;
   try {
     const provider = routeProvider(req);
     const p = getProvider(provider);
@@ -673,10 +679,14 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
-    const filePath = (req.params as Record<string, string>)[0] || "";
+    filePath = (req.params as Record<string, string>)[0] || "";
     const f = await p.readFile(actor.token, project, filePath);
     res.json(f);
   } catch (e) {
+    if (filePath !== null && e instanceof ProviderError && e.status === 404 && isProviderNotFound(e.message)) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
     if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;

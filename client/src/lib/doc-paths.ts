@@ -96,6 +96,15 @@ export function safeDecodeHref(href: string): string {
 }
 
 /**
+ * 載入檔案的回應該不該當成「新檔」而不是錯誤。
+ * repo 裡還沒有這個檔案時 GitLab 會回 404，那是新檔的正常情況，不可以彈紅色錯誤橫幅；
+ * 其他狀態碼（401／403／5xx）仍然是真的錯誤。
+ */
+export function isNewFileResponse(status: number): boolean {
+  return status === 404;
+}
+
+/**
  * 組出可讀取 repo 檔案原始內容的 URL。
  * rawBase 例如 "/raw" 或 "/rawt/GRANT"；project 例如 "interagent-io/global-doc"（整個做一次 encodeURIComponent）。
  * repoPath 會先 normalizeRepoPath 再逐段編碼，確保 ".." 不能逃出 repo。

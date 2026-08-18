@@ -8,7 +8,7 @@ import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
-import { createDropClaim, insertSnippetFor, snippetFromDragData } from "../lib/doc-paths";
+import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertOffsetForPoint, insertPointForY, moveSpanInSource } from "../lib/drop-position";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
@@ -34,6 +34,11 @@ function isUrlDrag(dt: DataTransfer | null): boolean {
   if (!dt) return false;
   const types = Array.from(dt.types);
   return !types.includes("Files") && !types.includes(NOTE_PATH_MIME) && types.includes("text/uri-list");
+}
+
+function isNewFileLoadError(e: unknown): boolean {
+  const err = e as { status?: unknown; code?: unknown };
+  return (typeof err.status === "number" && isNewFileResponse(err.status)) || err.code === "not_found";
 }
 
 /**
@@ -242,6 +247,13 @@ export default function Workspace() {
         if (pendingSaveRef.current?.path === activePath) pendingSaveRef.current = null;
       })
       .catch((e) => {
+        if (isNewFileLoadError(e)) {
+          const pending = pendingSaveRef.current?.path === activePath ? pendingSaveRef.current : null;
+          setContent(pending?.content ?? "");
+          setSha(undefined);
+          if (pending) setSave("dirty");
+          return;
+        }
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });

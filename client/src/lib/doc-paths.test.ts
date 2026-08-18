@@ -8,6 +8,7 @@ import {
   formatLinkDestination,
   escapeLinkText,
   safeDecodeHref,
+  isNewFileResponse,
   buildAssetUrl,
   isImagePath,
   insertSnippetFor,
@@ -220,6 +221,23 @@ describe("doc-paths module", () => {
 
     it("keeps ordinary strings unchanged", () => {
       assert.equal(safeDecodeHref("docs/a.png"), "docs/a.png");
+    });
+  });
+
+  describe("isNewFileResponse", () => {
+    it("treats 404 as a new file response", () => {
+      assert.equal(isNewFileResponse(404), true);
+    });
+
+    it("does not treat successful, auth, permission, or server responses as new files", () => {
+      for (const status of [200, 401, 403, 500, 502]) {
+        assert.equal(isNewFileResponse(status), false, String(status));
+      }
+    });
+
+    it("新檔載入回 404 不算錯誤，其他狀態才算", () => {
+      const statuses = [200, 401, 403, 404, 500, 502];
+      assert.deepEqual(statuses.filter(isNewFileResponse), [404]);
     });
   });
 
