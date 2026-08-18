@@ -94,8 +94,15 @@ export function imageSrc(rawUrl: string, ctx: LivePreviewContext | null): string
 
 const hidden = Decoration.replace({});
 
-function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): DecorationSet {
+interface BuiltDecorations {
+  decorations: DecorationSet;
+  /** 只含圖片 widget 的範圍：註冊成 atomicRanges，游標會停在圖片前後而不是跑進去。 */
+  atomic: DecorationSet;
+}
+
+function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): BuiltDecorations {
   const marks: Range<Decoration>[] = [];
+  const atomicRanges: Range<Decoration>[] = [];
   const { state } = view;
 
   // 游標（或選取範圍）碰到的行：這些行要顯示原文，不做任何隱藏。
@@ -144,7 +151,15 @@ function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): Dec
         }
 
         if (name === "Image") {
-          if (active) return;
+          // 圖片是 block 級 widget，**不套用「游標所在行露出原文」那條規則**——
+          // 點一下圖片就變回 ![](...) 文字是不能接受的。
+          //
+          // 唯一的例外：游標「嚴格落在語法內部」，代表使用者正在手打 ![](路徑)，
+          // 這時要讓他看得到自己在打什麼。因為圖片是 atomic 的，用滑鼠點只會把
+          // 游標放在圖片前或後（邊界不算內部），所以點擊永遠不會把圖變成文字。
+          const sel = state.selection.main;
+          if (sel.from > node.from && sel.to < node.to) return;
+
           const urlNode = node.node.getChild("URL");
           if (!urlNode) return;
           const src = imageSrc(state.sliceDoc(urlNode.from, urlNode.to), ctx);
@@ -152,9 +167,10 @@ function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): Dec
           // alt = `![` 與 `]` 之間那段
           const open = node.node.getChild("LinkMark");
           const alt = open ? state.sliceDoc(open.to, Math.max(open.to, urlNode.from - 2)).replace(/[\]([]/g, "").trim() : "";
-          marks.push(
-            Decoration.replace({ widget: new ImageWidget(src, alt) }).range(node.from, node.to)
-          );
+          const imageDeco = Decoration.replace({ widget: new ImageWidget(src, alt) });
+          marks.push(imageDeco.range(node.from, node.to));
+          // 讓整張圖成為一個不可進入的單位：方向鍵會跳過它，Backspace 會整段刪掉
+          atomicRanges.push(imageDeco.range(node.from, node.to));
           return false; // 整個節點被取代了，不用再看子節點
         }
 
@@ -221,7 +237,10 @@ function buildDecorations(view: EditorView, ctx: LivePreviewContext | null): Dec
     });
   }
 
-  return Decoration.set(marks, true);
+  return {
+    decorations: Decoration.set(marks, true),
+    atomic: Decoration.set(atomicRanges, true),
+  };
 }
 
 /**
@@ -232,18 +251,28 @@ export function livePreview(getContext: () => LivePreviewContext | null): Extens
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
+      atomic: DecorationSet;
 
       constructor(view: EditorView) {
-        this.decorations = buildDecorations(view, getContext());
+        const built = buildDecorations(view, getContext());
+        this.decorations = built.decorations;
+        this.atomic = built.atomic;
       }
 
       update(update: ViewUpdate) {
-        // 選取範圍變動也要重算：游標移到哪一行，那行就要還原成原文
+        // 選取範圍變動也要重算：游標移到哪一行，那行的 inline 格式就要還原成原文
+        // （圖片不在此列——它永遠是圖）
         if (update.docChanged || update.viewportChanged || update.selectionSet) {
-          this.decorations = buildDecorations(update.view, getContext());
+          const built = buildDecorations(update.view, getContext());
+          this.decorations = built.decorations;
+          this.atomic = built.atomic;
         }
       }
     },
-    { decorations: (v) => v.decorations }
+    {
+      decorations: (v) => v.decorations,
+      provide: (plugin) =>
+        EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomic ?? Decoration.none),
+    }
   );
 }
