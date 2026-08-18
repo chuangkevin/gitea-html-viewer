@@ -9,7 +9,7 @@ import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, snippetFromDragData } from "../lib/doc-paths";
-import { insertOffsetForPoint } from "../lib/drop-position";
+import { imageSpansIn, insertOffsetForPoint, moveSpanInSource } from "../lib/drop-position";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -17,10 +17,16 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 const AUTOSAVE_DELAY_MS = 3000;
 
 const NOTE_PATH_MIME = "application/x-note-path";
+const NOTE_IMG_MOVE_MIME = "application/x-note-img-move";
 
 /** 這次拖曳是不是「從檔案樹拖 repo 內的檔案」。 */
 function isInternalPathDrag(dt: DataTransfer | null): boolean {
   return !!dt && Array.from(dt.types).includes(NOTE_PATH_MIME);
+}
+
+/** 這次拖曳是不是「拖動文件裡已經存在的圖片」（＝移動，不是新增）。 */
+function isImageMoveDrag(dt: DataTransfer | null): boolean {
+  return !!dt && Array.from(dt.types).includes(NOTE_IMG_MOVE_MIME);
 }
 
 /** 這次拖曳是不是「從別的分頁拖網址」（且不是 OS 檔案）。 */
@@ -535,6 +541,14 @@ export default function Workspace() {
     [canWrite]
   );
 
+  /** 一次換掉整份內容（圖片移動用）。存檔簿記與 insertIntoEditor 相同。 */
+  const replaceContent = useCallback((next: string) => {
+    if (!canWrite) return;
+    setContent(next);
+    pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+    setSave((s) => (s === "conflict" ? s : "dirty"));
+  }, [canWrite]);
+
   /**
    * 從一次拖放事件取出要插入的 markdown。
    * 檔案樹的檔案 → 圖片 `![]()`／其他 `[]()`；外部網址 → 裸網址（預覽會渲染成卡片）。
@@ -560,6 +574,11 @@ export default function Workspace() {
   const handleEditorDrop = useCallback(
     (e: React.DragEvent<HTMLTextAreaElement>) => {
       const dt = e.dataTransfer;
+      if (isImageMoveDrag(dt)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       const internal = isInternalPathDrag(dt);
       const urlDrag = isUrlDrag(dt);
       if (!internal && !urlDrag) return; // OS 檔案拖放 → 讓既有的上傳流程接手
@@ -583,17 +602,40 @@ export default function Workspace() {
    * 會重算，圖片當下就出現在預覽裡。
    */
   const handlePreviewDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer)) return;
+    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer) && !isImageMoveDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect = "copy";
+    e.dataTransfer.dropEffect = isImageMoveDrag(e.dataTransfer) ? "move" : "copy";
     setPreviewDropActive(true);
   }, []);
 
   const handlePreviewDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer)) return;
+    if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer) && !isImageMoveDrag(e.dataTransfer)) return;
     e.stopPropagation();
     setPreviewDropActive(false);
+  }, []);
+
+  /**
+   * 從預覽窗格拖動「文件裡已經存在的圖片」＝移動，不是新增。
+   * 先用 data-src-start/end 找到這張圖所在的 top-level 區塊，
+   * 再用 imageSpansIn 找出區塊內第 n 張圖對應的原始碼範圍（n＝這張圖在該區塊裡的順序），
+   * 把範圍寫進 dataTransfer；找不到就不設，讓它退回瀏覽器原生行為。
+   */
+  const handlePreviewDragStart = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    const img = (e.target as HTMLElement | null)?.closest?.("img");
+    if (!img) return;
+    const block = img.closest("[data-src-start]") as HTMLElement | null;
+    if (!block) return;
+    const start = Number(block.dataset.srcStart);
+    const end = Number(block.dataset.srcEnd);
+    if (Number.isNaN(start) || Number.isNaN(end)) return;
+    const index = Array.from(block.querySelectorAll("img")).indexOf(img as HTMLImageElement);
+    if (index < 0) return;
+    const spans = imageSpansIn(contentRef.current, start, end);
+    const span = spans[index];
+    if (!span) return;
+    e.dataTransfer.setData(NOTE_IMG_MOVE_MIME, `${span.start},${span.end}`);
+    e.dataTransfer.effectAllowed = "move";
   }, []);
 
   /**
@@ -621,7 +663,7 @@ export default function Workspace() {
   const handlePreviewDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
       const dt = e.dataTransfer;
-      if (!isInternalPathDrag(dt) && !isUrlDrag(dt)) return; // OS 檔案 → 交給既有的上傳流程
+      if (!isInternalPathDrag(dt) && !isUrlDrag(dt) && !isImageMoveDrag(dt)) return; // OS 檔案 → 交給既有的上傳流程
       e.preventDefault();
       e.stopPropagation(); // 別讓 <main> 再處理一次，否則會插入兩份
       setPreviewDropActive(false);
@@ -630,13 +672,22 @@ export default function Workspace() {
         setError("唯讀，無法插入");
         return;
       }
+      if (isImageMoveDrag(dt)) {
+        const raw = dt.getData(NOTE_IMG_MOVE_MIME);
+        const [s, en] = raw.split(",").map(Number);
+        if (Number.isNaN(s) || Number.isNaN(en)) return;
+        const at = previewInsertOffset(e.currentTarget, e.clientY);
+        const next = moveSpanInSource(contentRef.current, { start: s, end: en }, at ?? contentRef.current.length);
+        if (next !== contentRef.current) replaceContent(next);
+        return;
+      }
       const snippet = snippetFromDrag(dt);
       if (!snippet) return;
       const at = previewInsertOffset(e.currentTarget, e.clientY);
       if (at === null) insertIntoEditor(snippet, { atEnd: true });
       else insertIntoEditor(snippet, { at });
     },
-    [canWrite, claimDrop, insertIntoEditor, previewInsertOffset, snippetFromDrag]
+    [canWrite, claimDrop, insertIntoEditor, previewInsertOffset, replaceContent, snippetFromDrag]
   );
 
   async function handleCreate() {
@@ -1090,6 +1141,13 @@ export default function Workspace() {
 
   const handleMainDrop = (e: React.DragEvent) => {
     const dt = e.dataTransfer;
+    if (isImageMoveDrag(dt)) {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragging(false);
+      dragCounter.current = 0;
+      return;
+    }
     if (isInternalPathDrag(dt) || isUrlDrag(dt)) {
       e.preventDefault();
       e.stopPropagation();
@@ -2499,6 +2557,7 @@ export default function Workspace() {
                     ref={previewRef}
                     onScroll={() => syncScroll(previewRef.current, editorRef.current)}
                     onClick={handlePreviewClick}
+                    onDragStart={handlePreviewDragStart}
                     onDragOver={handlePreviewDragOver}
                     onDragLeave={handlePreviewDragLeave}
                     onDrop={handlePreviewDrop}

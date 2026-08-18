@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { blockSourceRanges, insertOffsetForPoint } from "./drop-position.js";
+import { blockSourceRanges, imageSpansIn, insertOffsetForPoint, moveSpanInSource } from "./drop-position.js";
 
 describe("drop-position module", () => {
   describe("blockSourceRanges", () => {
@@ -52,6 +52,19 @@ describe("drop-position module", () => {
 
     it("returns empty array for empty string", () => {
       assert.deepEqual(blockSourceRanges(""), []);
+    });
+  });
+
+  describe("moveSpanInSource 不可破壞程式碼區塊", () => {
+    it("keeps blank lines inside fenced code blocks untouched when moving an image", () => {
+      // code fence 裡刻意留三個以上連續換行；移動圖片不可以把它壓掉
+      const md = "# 標題\n\n![a](</a.png>)\n\n```js\nconst x = 1;\n\n\n\nconst y = 2;\n```\n\n最後一段。\n";
+      const span = imageSpansIn(md, 0, md.length)[0];
+      const moved = moveSpanInSource(md, span, md.length);
+
+      assert.ok(moved.includes("const x = 1;\n\n\n\nconst y = 2;"), "code fence 內的空行必須原封不動");
+      assert.equal((moved.match(/!\[a\]/g) || []).length, 1, "圖片總數不變");
+      assert.ok(moved.indexOf("![a]") > moved.indexOf("最後一段。"), "圖片要在最後");
     });
   });
 
@@ -143,4 +156,132 @@ describe("drop-position module", () => {
       );
     });
   });
+
+  describe("imageSpansIn", () => {
+    it("returns spans for multiple images matching the complete ![...](...) syntax", () => {
+      const md = "第一段\n\n![圖一](/img1.png)\n\n文字\n\n![圖二](/img2.png)\n\n第二段";
+      const spans = imageSpansIn(md, 0, md.length);
+      assert.equal(spans.length, 2);
+      assert.equal(md.slice(spans[0].start, spans[0].end), "![圖一](/img1.png)");
+      assert.equal(md.slice(spans[1].start, spans[1].end), "![圖二](/img2.png)");
+    });
+
+    it("correctly captures angle bracket destination ![a](</有 空白/圖.png>)", () => {
+      const md = "前綴 ![a](</有 空白/圖.png>) 後綴";
+      const spans = imageSpansIn(md, 0, md.length);
+      assert.equal(spans.length, 1);
+      assert.equal(md.slice(spans[0].start, spans[0].end), "![a](</有 空白/圖.png>)");
+    });
+
+    it("correctly captures normal destination with paired parentheses ![a](/x(1).png)", () => {
+      const md = "前綴 ![a](/x(1).png) 後綴";
+      const spans = imageSpansIn(md, 0, md.length);
+      assert.equal(spans.length, 1);
+      assert.equal(md.slice(spans[0].start, spans[0].end), "![a](/x(1).png)");
+    });
+
+    it("skips unclosed/incomplete syntax without throwing exceptions", () => {
+      const md = "殘缺語法 ![a](/x.png 還有一般文字 ![正常](/ok.png)";
+      let spans: ReturnType<typeof imageSpansIn> = [];
+      assert.doesNotThrow(() => {
+        spans = imageSpansIn(md, 0, md.length);
+      });
+      assert.equal(spans.length, 1);
+      assert.equal(md.slice(spans[0].start, spans[0].end), "![正常](/ok.png)");
+    });
+
+    it("does not capture images outside from/to range", () => {
+      const md = "![圖0](/0.png)\n\n段落一\n\n![圖1](/1.png)\n\n段落二\n\n![圖2](/2.png)";
+      const span1Start = md.indexOf("![圖1]");
+      const span1End = md.indexOf("段落二");
+      const spans = imageSpansIn(md, span1Start, span1End);
+      assert.equal(spans.length, 1);
+      assert.equal(md.slice(spans[0].start, spans[0].end), "![圖1](/1.png)");
+    });
+  });
+
+  describe("moveSpanInSource", () => {
+    it("契約測試：移動圖片後在全文中總數不變（不是複製）且各段文字維持原樣", () => {
+      const p1 = "# 第一段標題\n這是第一段的內容。";
+      const p2 = "這是第二段的內容。";
+      const img = "![範例圖片](</assets/image 1.png>)";
+      const p3 = "這是第三段的中間說明文字。";
+      const p4 = "這是第四段的結尾文字。";
+      const md = `${p1}\n\n${p2}\n\n${img}\n\n${p3}\n\n${p4}\n`;
+
+      const spans = imageSpansIn(md, 0, md.length);
+      assert.equal(spans.length, 1);
+      const span = spans[0];
+
+      // 搬到最後一段之後的 offset（md.length）
+      const result = moveSpanInSource(md, span, md.length);
+
+      // ① 該圖片語法在結果中只出現一次（總數不變、不是複製）
+      const count = (result.match(/!\[範例圖片\]\(<\/assets\/image 1\.png>\)/g) || []).length;
+      assert.equal(count, 1, "搬移後圖片在全文中必須只出現一次");
+
+      // ② 原本的位置（p2 與 p3 之間）已經沒有它
+      const p2Idx = result.indexOf(p2);
+      const p3Idx = result.indexOf(p3);
+      const p4Idx = result.indexOf(p4);
+      const imgIdx = result.indexOf(img);
+
+      assert.ok(p2Idx !== -1 && p3Idx !== -1 && p4Idx !== -1 && imgIdx !== -1);
+      assert.ok(
+        p2Idx < p3Idx && p3Idx < p4Idx && p4Idx < imgIdx,
+        `圖片應被移到第四段之後 (p2Idx=${p2Idx}, p3Idx=${p3Idx}, p4Idx=${p4Idx}, imgIdx=${imgIdx})`
+      );
+
+      // ③ 新位置有它（已由 imgIdx > p4Idx 驗證）
+
+      // ④ 其他段落文字一字未動
+      assert.ok(result.includes(p1), "第一段文字必須完整保留");
+      assert.ok(result.includes(p2), "第二段文字必須完整保留");
+      assert.ok(result.includes(p3), "第三段文字必須完整保留");
+      assert.ok(result.includes(p4), "第四段文字必須完整保留");
+    });
+
+    it("搬到文件最前面（at = 0）時圖片在最前且總數為 1", () => {
+      const md = "# 標題\n\n段落一\n\n![圖](/img.png)\n\n段落二";
+      const spans = imageSpansIn(md, 0, md.length);
+      assert.equal(spans.length, 1);
+      const result = moveSpanInSource(md, spans[0], 0);
+
+      assert.ok(result.startsWith("![圖](/img.png)"));
+      const count = (result.match(/!\[圖\]\(\/img\.png\)/g) || []).length;
+      assert.equal(count, 1);
+      assert.ok(result.includes("# 標題"));
+      assert.ok(result.includes("段落一"));
+      assert.ok(result.includes("段落二"));
+    });
+
+    it("搬到同一段內／原地（at 落在 span 內部）回傳與輸入完全相同的字串", () => {
+      const md = "# 標題\n\n段落一\n\n![圖](/img.png)\n\n段落二";
+      const spans = imageSpansIn(md, 0, md.length);
+      const span = spans[0];
+      const midAt = Math.floor((span.start + span.end) / 2);
+
+      const result = moveSpanInSource(md, span, midAt);
+      assert.equal(result, md);
+    });
+
+    it("搬完後不會在刪除點或插入點生出連續三個以上的換行", () => {
+      const md = "# 標題\n\n段落一\n\n![圖](/img.png)\n\n段落二\n";
+      const spans = imageSpansIn(md, 0, md.length);
+      const result = moveSpanInSource(md, spans[0], md.length);
+
+      assert.equal(/\n{3,}/.test(result), false, "不可出現連續三個以上的換行");
+    });
+
+    it("不會動到跟這次移動無關的既有空行", () => {
+      // 使用者原本就留的空行是他的排版，移動圖片不可以順手把整份文件重排
+      const md = "# 標題\n\n\n段落一\n\n![圖](/img.png)\n\n段落二\n";
+      const spans = imageSpansIn(md, 0, md.length);
+      const result = moveSpanInSource(md, spans[0], md.length);
+
+      assert.ok(result.includes("# 標題\n\n\n段落一"), "原本就有的空行要留著");
+      assert.equal((result.match(/!\[圖\]/g) || []).length, 1, "圖片總數不變");
+    });
+  });
 });
+
