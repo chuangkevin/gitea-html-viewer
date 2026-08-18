@@ -8,7 +8,7 @@ import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
 import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
-import { insertSnippetFor, isHttpUrl } from "../lib/doc-paths";
+import { createDropClaim, insertSnippetFor, snippetFromDragData } from "../lib/doc-paths";
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
@@ -540,14 +540,20 @@ export default function Workspace() {
    * 取不到就回 null。
    */
   const snippetFromDrag = useCallback((dt: DataTransfer): string | null => {
-    if (isInternalPathDrag(dt)) {
-      const p = dt.getData(NOTE_PATH_MIME);
-      return p ? insertSnippetFor(p) : null;
-    }
-    const uriList = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
-    const url = uriList.split("\n").map((s) => s.trim()).find((s) => s && !s.startsWith("#")) || "";
-    return url && isHttpUrl(url) ? url : null;
+    // 本站的 /raw、/rawt/<grant> 資產 URL（例如抓著檔案樹的下載 icon 拖出來的原生連結拖曳）
+    // 會在 snippetFromDragData 裡被還原成 repo 相對路徑——markdown 不可以留下主機名或 grant token。
+    return snippetFromDragData(
+      {
+        notePath: isInternalPathDrag(dt) ? dt.getData(NOTE_PATH_MIME) : "",
+        uriList: dt.getData("text/uri-list"),
+        plain: dt.getData("text/plain"),
+      },
+      typeof window !== "undefined" ? window.location.origin : undefined
+    );
   }, []);
+
+  /** 同一個原生 drop 事件只讓一個 handler 插入內容（<main>／預覽窗格／編輯區都綁在同一棵 DOM 上）。 */
+  const claimDrop = useRef(createDropClaim()).current;
 
   /** 拖到編輯區：檔案樹的檔案→插入 markdown；外部網址→插入裸網址。 */
   const handleEditorDrop = useCallback(
@@ -558,6 +564,7 @@ export default function Workspace() {
       if (!internal && !urlDrag) return; // OS 檔案拖放 → 讓既有的上傳流程接手
       e.preventDefault();
       e.stopPropagation();
+      if (!claimDrop(e.nativeEvent)) return; // 這次拖放已經被別的 handler 插過了
       if (!canWrite) {
         setError("唯讀，無法插入");
         return;
@@ -566,7 +573,7 @@ export default function Workspace() {
       const snippet = snippetFromDrag(dt);
       if (snippet) insertIntoEditor(snippet);
     },
-    [canWrite, insertIntoEditor, snippetFromDrag]
+    [canWrite, claimDrop, insertIntoEditor, snippetFromDrag]
   );
 
   /**
@@ -595,6 +602,7 @@ export default function Workspace() {
       e.preventDefault();
       e.stopPropagation(); // 別讓 <main> 再處理一次，否則會插入兩份
       setPreviewDropActive(false);
+      if (!claimDrop(e.nativeEvent)) return; // 保險：就算冒泡擋不住也只插一次
       if (!canWrite) {
         setError("唯讀，無法插入");
         return;
@@ -602,7 +610,7 @@ export default function Workspace() {
       const snippet = snippetFromDrag(dt);
       if (snippet) insertIntoEditor(snippet, { atEnd: true });
     },
-    [canWrite, insertIntoEditor, snippetFromDrag]
+    [canWrite, claimDrop, insertIntoEditor, snippetFromDrag]
   );
 
   async function handleCreate() {
@@ -1061,6 +1069,7 @@ export default function Workspace() {
       e.stopPropagation();
       setIsDragging(false);
       dragCounter.current = 0;
+      if (!claimDrop(e.nativeEvent)) return; // 預覽窗格／編輯區已經接過同一次拖放就不再插一份
       if (!canWrite) {
         setError("唯讀，無法插入");
         return;

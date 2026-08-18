@@ -11,6 +11,9 @@ import {
   buildAssetUrl,
   isImagePath,
   insertSnippetFor,
+  repoPathFromAssetUrl,
+  snippetFromDragData,
+  createDropClaim,
   isHttpUrl,
   urlCardInfo,
 } from "./doc-paths.js";
@@ -287,6 +290,109 @@ describe("doc-paths module", () => {
     it("returns null on malformed URLs without throwing exceptions", () => {
       assert.equal(urlCardInfo("not a url", "not a url"), null);
       assert.equal(urlCardInfo("http://", "http://"), null);
+    });
+  });
+
+  describe("repoPathFromAssetUrl", () => {
+    // 線上實際會遇到的路徑：含中文與空白的截圖檔
+    const repoPath = "導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png";
+    const encoded = repoPath.split("/").map(encodeURIComponent).join("/");
+    const project = encodeURIComponent("interagent-io/global-doc");
+
+    it("restores repo path from an absolute note.ia raw URL", () => {
+      assert.equal(repoPathFromAssetUrl(`https://note.ia/raw/gitlab/${project}/${encoded}`), repoPath);
+    });
+
+    it("restores repo path from relative, grant-token and public-share asset URLs", () => {
+      assert.equal(repoPathFromAssetUrl(`/raw/gitlab/${project}/${encoded}`), repoPath);
+      assert.equal(repoPathFromAssetUrl(`/rawt/SOMEGRANT/gitlab/${project}/${encoded}`), repoPath);
+      assert.equal(repoPathFromAssetUrl(`/api/public/TOKEN123/raw/gitlab/${project}/${encoded}`), repoPath);
+    });
+
+    it("ignores query strings and hashes such as ?download=1", () => {
+      assert.equal(repoPathFromAssetUrl(`https://note.ia/raw/gitlab/${project}/${encoded}?download=1`), repoPath);
+      assert.equal(repoPathFromAssetUrl(`/raw/gitlab/${project}/${encoded}#view=FitH`), repoPath);
+    });
+
+    it("returns null for external URLs and non-asset paths", () => {
+      assert.equal(repoPathFromAssetUrl("https://example.com/a.png"), null);
+      assert.equal(repoPathFromAssetUrl("https://example.com/raw/gitlab/p/a.png", "https://note.ia"), null);
+      assert.equal(repoPathFromAssetUrl("/site/gitlab/x"), null);
+      assert.equal(repoPathFromAssetUrl("/raw/gitlab/only-project"), null);
+      assert.equal(repoPathFromAssetUrl(""), null);
+      assert.equal(repoPathFromAssetUrl("mailto:a@b.c"), null);
+    });
+
+    it("keeps same-origin asset URLs when an origin is given", () => {
+      assert.equal(repoPathFromAssetUrl(`https://note.ia/raw/gitlab/${project}/${encoded}`, "https://note.ia"), repoPath);
+    });
+  });
+
+  describe("snippetFromDragData（拖放插入的契約）", () => {
+    const repoPath = "導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png";
+    const encoded = repoPath.split("/").map(encodeURIComponent).join("/");
+    const project = encodeURIComponent("interagent-io/global-doc");
+    const expected = "![截圖 2026-08-13 下午2.13.51](</導入客戶/元信豐/截圖 2026-08-13 下午2.13.51.png>)";
+
+    /** 產出的 markdown 絕不能含主機名／rawBase／grant token（token 90 天會過期）。 */
+    function assertNoAbsoluteUrl(snippet: string | null) {
+      assert.ok(snippet, "應該要有 snippet");
+      const s = snippet as string;
+      assert.ok(!s.includes("http"), `不可含 http：${s}`);
+      assert.ok(!s.includes("note.ia"), `不可含 note.ia：${s}`);
+      assert.ok(!s.includes("/raw"), `不可含 /raw：${s}`);
+      assert.ok(!s.includes("rawt"), `不可含 rawt：${s}`);
+    }
+
+    it("produces a relative image embed from the file-tree payload", () => {
+      const snippet = snippetFromDragData({ notePath: repoPath, plain: repoPath });
+      assert.equal(snippet, expected);
+      assert.ok(snippet!.startsWith("!["));
+      assertNoAbsoluteUrl(snippet);
+    });
+
+    it("converts a dropped absolute raw URL back into a relative image embed", () => {
+      const url = `https://note.ia/raw/gitlab/${project}/${encoded}`;
+      const snippet = snippetFromDragData({ uriList: url, plain: url }, "https://note.ia");
+      assert.equal(snippet, expected);
+      assert.ok(snippet!.startsWith("!["));
+      assertNoAbsoluteUrl(snippet);
+    });
+
+    it("converts grant-token asset URLs too, so no token ever lands in markdown", () => {
+      const url = `https://note.ia/rawt/GRANT90D/gitlab/${project}/${encoded}?download=1`;
+      const snippet = snippetFromDragData({ uriList: url }, "https://note.ia");
+      assert.equal(snippet, expected);
+      assertNoAbsoluteUrl(snippet);
+    });
+
+    it("still inserts external URLs as bare URLs (url card)", () => {
+      assert.equal(
+        snippetFromDragData({ uriList: "https://example.com/a\n#comment" }),
+        "https://example.com/a"
+      );
+      assert.equal(snippetFromDragData({}), null);
+      assert.equal(snippetFromDragData({ uriList: "not a url" }), null);
+    });
+
+    it("uses a link (not an image) for non-image repo files", () => {
+      assert.equal(snippetFromDragData({ notePath: "docs/a b.md" }), "[a b](</docs/a b.md>)");
+    });
+  });
+
+  describe("createDropClaim（同一次 drop 只插一次）", () => {
+    it("lets only the first handler claim one native drop event", () => {
+      const claim = createDropClaim();
+      const dropEvent = { type: "drop" };
+      assert.equal(claim(dropEvent), true, "第一個 handler 應該接下");
+      assert.equal(claim(dropEvent), false, "同一個原生事件不可再插一次");
+      assert.equal(claim(dropEvent), false);
+    });
+
+    it("allows the next, different drop event", () => {
+      const claim = createDropClaim();
+      assert.equal(claim({ type: "drop" }), true);
+      assert.equal(claim({ type: "drop" }), true, "另一次拖放是另一個事件物件");
     });
   });
 });

@@ -147,6 +147,97 @@ export function insertSnippetFor(repoPath: string): string {
   return `[${linkText}](${destination})`;
 }
 
+/**
+ * 把「本站的資產 URL」還原成 repo 相對路徑。
+ * 認得的形式（可帶或不帶 origin，也吃 ?download=1 之類 query 與 #hash）：
+ *   https://note.ia/raw/<provider>/<project>/<repo/path>
+ *   /raw/<provider>/<project>/<repo/path>
+ *   /rawt/<grant>/<provider>/<project>/<repo/path>
+ *   /api/public/<token>/raw/<provider>/<project>/<repo/path>
+ * 給了 origin 時，帶主機名的 URL 必須同源才算數（別把外站的 /raw/... 當成自己的檔案）。
+ * 回傳 percent-decode 後的 repo 路徑（不含開頭斜線）；不是本站資產 URL 就回 null。
+ *
+ * 存在的理由：markdown 原始碼裡絕對不能出現 rawBase／主機名／grant token
+ * （grant 90 天會過期，寫進文件就永久壞掉），所以任何來源的資產 URL 都要先還原成相對路徑。
+ */
+export function repoPathFromAssetUrl(url: string, origin?: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed, "http://note.invalid");
+  } catch {
+    return null;
+  }
+
+  const hasHost = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) || trimmed.startsWith("//");
+  if (hasHost) {
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (origin && parsed.origin !== origin) return null;
+  }
+
+  const segs = parsed.pathname.split("/").filter((s) => s !== "");
+  let rest: string[] | null = null;
+  if (segs[0] === "raw") {
+    rest = segs.slice(1);
+  } else if (segs[0] === "rawt" && segs.length > 1) {
+    rest = segs.slice(2);
+  } else if (segs[0] === "api" && segs[1] === "public" && segs[3] === "raw") {
+    rest = segs.slice(4);
+  }
+  // rest = [<provider>, <project>, ...repo 路徑]，少於三段就不是檔案 URL
+  if (!rest || rest.length < 3) return null;
+
+  const repoPath = normalizeRepoPath(rest.slice(2).map(safeDecodeHref).join("/"));
+  return repoPath || null;
+}
+
+/**
+ * 一次拖放要插入的 markdown（純函式版本，給 UI 與測試共用）。
+ * 檔案樹的檔案（application/x-note-path）→ 圖片 `![]()`／其他 `[]()`；
+ * 本站資產 URL（例如抓著下載 icon 拖出來的 /raw/... 連結）→ 一樣還原成相對路徑嵌入；
+ * 外部網址 → 裸網址（預覽會渲染成卡片）。取不到就回 null。
+ */
+export function snippetFromDragData(
+  data: { notePath?: string | null; uriList?: string | null; plain?: string | null },
+  origin?: string
+): string | null {
+  const notePath = (data.notePath || "").trim();
+  if (notePath) {
+    const fromAsset = repoPathFromAssetUrl(notePath, origin);
+    if (fromAsset) return insertSnippetFor(fromAsset);
+    if (!isHttpUrl(notePath)) return insertSnippetFor(notePath);
+    // payload 竟然是外部網址 → 往下走網址那條路
+  }
+
+  const raw = data.uriList || data.plain || "";
+  const url =
+    raw
+      .split("\n")
+      .map((s) => s.trim())
+      .find((s) => s && !s.startsWith("#")) || "";
+  if (!url) return null;
+
+  const repoPath = repoPathFromAssetUrl(url, origin);
+  if (repoPath) return insertSnippetFor(repoPath);
+  return isHttpUrl(url) ? url : null;
+}
+
+/**
+ * 產生一個「同一個原生 drop 事件只放行一次」的把關函式。
+ * <main>、預覽窗格、編輯區三個 handler 都綁在同一棵 DOM 上，冒泡時可能被處理不只一次，
+ * 造成同一次拖放插入兩份內容；每個 handler 插入前先問過這個把關函式即可。
+ */
+export function createDropClaim(): (evt: unknown) => boolean {
+  let last: unknown = null;
+  return (evt: unknown) => {
+    if (evt != null && evt === last) return false;
+    last = evt;
+    return true;
+  };
+}
+
 /** 是不是一個 http/https 網址（用於 URL 卡片判定）。 */
 export function isHttpUrl(text: string): boolean {
   try {

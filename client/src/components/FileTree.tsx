@@ -177,6 +177,7 @@ export default function FileTree({
               onDragStart={
                 !isFolder && onInsertFile
                   ? (e) => {
+                      e.stopPropagation();
                       e.dataTransfer.setData("application/x-note-path", node.path);
                       e.dataTransfer.setData("text/plain", node.path);
                       e.dataTransfer.effectAllowed = "copy";
@@ -232,6 +233,7 @@ export default function FileTree({
               {rawBase && refPath && (
                 <a
                   href={downloadUrl}
+                  draggable={false}
                   download
                   title={isFolder ? `下載資料夾 ${node.name}.zip` : `下載檔案 ${node.name}`}
                   onClick={(e) => {
@@ -302,6 +304,7 @@ export default function FileTree({
                         onDragStart={
                           onInsertFile
                             ? (e) => {
+                                e.stopPropagation();
                                 e.dataTransfer.setData("application/x-note-path", p);
                                 e.dataTransfer.setData("text/plain", p);
                                 e.dataTransfer.effectAllowed = "copy";
@@ -332,6 +335,7 @@ export default function FileTree({
                         {rawBase && refPath && (
                           <a
                             href={`${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}?download=1`}
+                            draggable={false}
                             download
                             title={`下載檔案 ${fileName}`}
                             onClick={(e) => {
