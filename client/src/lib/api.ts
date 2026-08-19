@@ -259,6 +259,10 @@ export const api = {
     fetch(`/api/public/${token}/file/${path.split("/").map(encodeURIComponent).join("/")}`).then((r) =>
       j<{ path: string; content: string }>(r)
     ),
+  collabConfig: (doc: string) =>
+    fetch(`/api/collab/config?doc=${encodeURIComponent(doc)}`).then((r) =>
+      j<{ enabled: boolean; user: { name: string; color: string } | null }>(r)
+    ),
   getUserPrefs: () => fetch("/api/user-prefs").then((r) => j<UserPrefsResult>(r)),
   updateUserPrefs: (body: {
     action: "upsert" | "delete" | "merge";

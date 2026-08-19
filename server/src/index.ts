@@ -1520,6 +1520,26 @@ app.post("/api/upload/:provider/:project", async (req, res) => {
 });
 
 // ── guest & admin endpoints ───────────────────────────
+app.get("/api/collab/config", (req, res) => {
+  const docKey = typeof req.query.doc === "string" ? req.query.doc : "";
+  if (!docKey) {
+    res.json({ enabled: false, user: null });
+    return;
+  }
+  const opts = collabOptions();
+  const enabled = opts.featureEnabled() && opts.enabled(docKey);
+  if (!enabled) {
+    res.json({ enabled: false, user: null });
+    return;
+  }
+  const parts = docKey.split("/");
+  const provider = parts[0];
+  const project = parts.length >= 3 && isProviderName(provider) ? decodeURIComponent(parts[1]) : undefined;
+  const actor = project && isProviderName(provider) ? actorFor(req, provider, project) : {};
+  const name = collabUserName(req, actor);
+  res.json({ enabled: true, user: { name, color: collabColorFor(name) } });
+});
+
 app.post("/api/guest-name", (req, res) => {
   const rawName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const cleanName = rawName.slice(0, 40);
@@ -1968,11 +1988,7 @@ function collabOptions() {
       }
       if (!canPush) return { ok: false };
 
-      const name =
-        fake.nbSession?.login ||
-        actor.author?.name ||
-        (typeof cookies.nb_guest === "string" && cookies.nb_guest.trim()) ||
-        "訪客";
+      const name = collabUserName(fake, actor);
 
       return {
         ok: true,
@@ -1988,6 +2004,16 @@ function collabOptions() {
       };
     },
   };
+}
+
+/** 共筆顯示名：session login → 身分 author → 訪客 cookie → 「訪客」。 */
+function collabUserName(req: express.Request, actor: { author?: { name?: string } }): string {
+  return (
+    req.nbSession?.login ||
+    actor.author?.name ||
+    (typeof req.cookies?.nb_guest === "string" && req.cookies.nb_guest.trim()) ||
+    "訪客"
+  );
 }
 
 /** 由名字決定 presence 顏色：同一個人每次進來顏色一樣。 */

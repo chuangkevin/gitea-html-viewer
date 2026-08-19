@@ -48,6 +48,8 @@ export default defineConfig({
     port: 5210,
     proxy: {
       "/api": "http://localhost:3210",
+      // 共筆 WS：browser 連 location.host/collab，dev 時轉到 Express。
+      "/collab": { target: "http://localhost:3210", ws: true },
     },
   },
 });

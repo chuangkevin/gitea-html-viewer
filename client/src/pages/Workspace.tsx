@@ -30,6 +30,7 @@ import {
 } from "../lib/view-mode";
 import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
 import { IMAGE_MOVE_MIME } from "../lib/drag-mime";
+import type { CollabSession } from "../lib/collab";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -182,6 +183,7 @@ export default function Workspace() {
   const [me, setMe] = useState<Me | null>(null);
   const [files, setFiles] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
+  const [collab, setCollab] = useState<CollabSession | null>(null);
   const [accessReady, setAccessReady] = useState(false);
   const [accessMode, setAccessMode] = useState<AccessMode>("login");
   const [guestName, setGuestName] = useState("");
@@ -976,9 +978,45 @@ export default function Workspace() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // 共筆：查 config、連 /collab。預設關閉；失敗就退回單人，不擋編輯。
+  useEffect(() => {
+    collab?.destroy();
+    setCollab(null);
+    if (!activePath || !canWrite) return;
+
+    let cancelled = false;
+    let session: CollabSession | null = null;
+
+    void (async () => {
+      try {
+        const cfg = await api.collabConfig(editorDocKey);
+        if (cancelled) return;
+        if (!cfg.enabled || !cfg.user) return;
+        const { createCollabSession } = await import("../lib/collab");
+        if (cancelled) return;
+        session = createCollabSession(editorDocKey, cfg.user);
+        if (cancelled) {
+          session.destroy();
+          return;
+        }
+        setCollab(session);
+      } catch (err) {
+        console.warn("[collab]", err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      session?.destroy();
+    };
+    // collab 刻意不進 deps：連線建立後 setCollab 不該重跑這個 effect。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorDocKey, canWrite]);
+
   // 自動存檔：內容變動後閒置 AUTOSAVE_DELAY_MS 就 commit 回 GitLab。
   // conflict / error 狀態不自動重試，避免一直打 GitLab 或覆蓋別人的修改。
   useEffect(() => {
+    if (collab) return;
     if (save !== "dirty") return;
     if (!activePath || !canWrite) return;
     if (activeKind !== "md" && activeKind !== "html") return;
@@ -987,11 +1025,12 @@ export default function Workspace() {
       if (p) void saveSnapshot(p);
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(t);
-  }, [content, save, activePath, canWrite, activeKind]);
+  }, [content, save, activePath, canWrite, activeKind, collab]);
 
   // 離開頁面 / 切到別的分頁 / 視窗失焦 → 立刻補存，不等 debounce
   useEffect(() => {
     const flush = () => {
+      if (collab) return;
       const p = pendingSaveRef.current;
       if (p) void saveSnapshot(p);
     };
@@ -2873,9 +2912,18 @@ export default function Workspace() {
               >
               <Suspense fallback={<div className="h-full w-full bg-zinc-950" />}>
               <MarkdownEditor
-                key={editorDocKey}
+                key={`${editorDocKey}|${collab ? "collab" : "solo"}`}
                 ref={editorRef}
                 value={content}
+                collab={
+                  collab
+                    ? {
+                        text: collab.text,
+                        awareness: collab.provider.awareness,
+                        undoManager: collab.undoManager,
+                      }
+                    : null
+                }
                 onChange={(next) => {
                   setContent(next);
                   setSave((s) => (s === "conflict" ? s : "dirty"));

@@ -4,6 +4,9 @@ import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view"
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+import type * as Y from "yjs";
+import type { Awareness } from "y-protocols/awareness";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
 import { minimalEdit, type TextEdit } from "../lib/text-diff";
 
@@ -47,6 +50,12 @@ interface Props {
   /** true = 所見即所得（游標行露原文、其餘行渲染）；false = 純 markdown 原始碼。 */
   livePreview: boolean;
   className?: string;
+  /** 有值＝這份文件正在共筆：文件內容以 Y.Text 為準，不再走受控同步。 */
+  collab?: {
+    text: Y.Text;
+    awareness: Awareness;
+    undoManager: Y.UndoManager;
+  } | null;
 }
 
 /** 跟原本 textarea 的 Tailwind class 對齊：zinc-950 底、等寬、16px/1.75、p-5、無 outline。 */
@@ -119,6 +128,33 @@ const noteTheme = EditorView.theme(
       borderTop: "2px solid #3f3f46",
       verticalAlign: "middle",
     },
+
+    // ── 遠端游標（y-codemirror.next）；顏色由 inline style 帶入，這裡只定形狀 ──
+    ".cm-ySelection": {},
+    ".cm-ySelectionCaret": {
+      position: "relative",
+      borderLeft: "2px solid",
+      borderRight: "none",
+      marginLeft: "-1px",
+      marginRight: "-1px",
+      boxSizing: "border-box",
+    },
+    ".cm-ySelectionInfo": {
+      position: "absolute",
+      bottom: "100%",
+      left: "0",
+      fontSize: "11px",
+      lineHeight: "1.3",
+      borderRadius: "4px",
+      padding: "2px 6px",
+      zIndex: "101",
+      whiteSpace: "nowrap",
+      maxWidth: "min(12rem, 40vw)",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      pointerEvents: "none",
+      opacity: "1",
+    },
   },
   { dark: true }
 );
@@ -138,11 +174,14 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     if (!host) return;
 
     const liveCompartment = liveCompartmentRef.current;
+    const collab = cb.current.collab;
     const view = new EditorView({
       state: EditorState.create({
-        doc: cb.current.value,
+        doc: collab ? collab.text.toString() : cb.current.value,
         extensions: [
-          history(),
+          collab
+            ? yCollab(collab.text, collab.awareness, { undoManager: collab.undoManager })
+            : history(),
           drawSelection(),
           dropCursor(), // 拖曳時顯示落點游標＝落點指示
           EditorView.lineWrapping,
@@ -155,7 +194,11 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           ),
           // Cmd/Ctrl+S 不在這裡綁：Workspace 已有 window keydown 的存檔處理，
           // CM 的 keydown 會冒泡上去。兩邊都綁會存兩次。
-          keymap.of([...defaultKeymap, ...historyKeymap]),
+          keymap.of(
+            collab
+              ? [...defaultKeymap, ...yUndoManagerKeymap]
+              : [...defaultKeymap, ...historyKeymap]
+          ),
           EditorView.updateListener.of((u) => {
             if (u.docChanged) cb.current.onChange(u.state.doc.toString());
             if (u.docChanged || u.selectionSet) {
@@ -220,13 +263,14 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
   // 受控同步：外部 value 與 CM 目前內容不同時，只替換真正有變的那一段。
   // 整份刪掉重插會讓游標跳掉、undo 歷史被壓平，之後接 Yjs 即時共筆也會炸掉其他人的畫面。
   useEffect(() => {
+    if (props.collab) return; // 共筆時 Y.Text 才是真相，不可以再從 props.value 灌
     const view = viewRef.current;
     if (!view) return;
     const current = view.state.doc.toString();
     const edit = minimalEdit(current, props.value);
     if (!edit) return;
     view.dispatch({ changes: edit });
-  }, [props.value]);
+  }, [props.value, props.collab]);
 
   useImperativeHandle(
     ref,
