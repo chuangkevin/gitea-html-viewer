@@ -5,6 +5,7 @@ import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
+import { minimalEdit, type TextEdit } from "../lib/text-diff";
 
 /**
  * Workspace 對編輯器的最小介面。
@@ -19,6 +20,14 @@ export interface MarkdownEditorHandle {
   posAtCoords(x: number, y: number): number | null;
   /** 捲動同步用的元素（CM 的 scroller，不是最外層容器）。 */
   getScrollDOM(): HTMLElement | null;
+  /** 目前編輯器裡的原始碼。 */
+  getValue(): string;
+  /** 套用一組局部變更；不動範圍外的文字。selection 給了就一起設游標。 */
+  applyChanges(changes: TextEdit[], opts?: { selection?: number; scrollIntoView?: boolean }): void;
+  /** 在 pos 插入文字。 */
+  insertAt(pos: number, text: string, opts?: { selection?: number; scrollIntoView?: boolean }): void;
+  /** 把 [from, to) 換成 text。 */
+  replaceRange(from: number, to: number, text: string, opts?: { selection?: number; scrollIntoView?: boolean }): void;
 }
 
 interface Props {
@@ -208,30 +217,67 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
     });
   }, [props.livePreview]);
 
-  // 受控同步：只有外部帶進來的 value 跟 CM 目前內容不同才覆寫。
-  // 少了這個判斷，使用者自己打的字會被自己的 onChange 再 dispatch 一次，游標會跳。
+  // 受控同步：外部 value 與 CM 目前內容不同時，只替換真正有變的那一段。
+  // 整份刪掉重插會讓游標跳掉、undo 歷史被壓平，之後接 Yjs 即時共筆也會炸掉其他人的畫面。
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
     const current = view.state.doc.toString();
-    if (current === props.value) return;
-    view.dispatch({ changes: { from: 0, to: current.length, insert: props.value } });
+    const edit = minimalEdit(current, props.value);
+    if (!edit) return;
+    view.dispatch({ changes: edit });
   }, [props.value]);
 
   useImperativeHandle(
     ref,
-    (): MarkdownEditorHandle => ({
-      getSelectionStart: () => viewRef.current?.state.selection.main.head ?? 0,
-      setSelection: (pos) => {
+    (): MarkdownEditorHandle => {
+      const applyChanges = (
+        changes: TextEdit[],
+        opts?: { selection?: number; scrollIntoView?: boolean }
+      ) => {
         const view = viewRef.current;
         if (!view) return;
-        const clamped = Math.max(0, Math.min(pos, view.state.doc.length));
-        view.dispatch({ selection: { anchor: clamped }, scrollIntoView: true });
-      },
-      focus: () => viewRef.current?.focus(),
-      posAtCoords: (x, y) => viewRef.current?.posAtCoords({ x, y }) ?? null,
-      getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
-    }),
+        if (changes.length === 0) return;
+        const docLen = view.state.doc.length;
+        const clamped: TextEdit[] = [];
+        let newLen = docLen;
+        for (const change of changes) {
+          const from = Math.max(0, Math.min(change.from, docLen));
+          const to = Math.max(0, Math.min(change.to, docLen));
+          if (to < from) return;
+          clamped.push({ from, to, insert: change.insert });
+          newLen += change.insert.length - (to - from);
+        }
+        const spec: {
+          changes: TextEdit[];
+          selection?: { anchor: number };
+          scrollIntoView?: boolean;
+        } = { changes: clamped };
+        if (opts?.selection !== undefined) {
+          spec.selection = { anchor: Math.max(0, Math.min(opts.selection, newLen)) };
+        }
+        if (opts?.scrollIntoView) spec.scrollIntoView = true;
+        view.dispatch(spec);
+      };
+
+      return {
+        getSelectionStart: () => viewRef.current?.state.selection.main.head ?? 0,
+        setSelection: (pos) => {
+          const view = viewRef.current;
+          if (!view) return;
+          const clamped = Math.max(0, Math.min(pos, view.state.doc.length));
+          view.dispatch({ selection: { anchor: clamped }, scrollIntoView: true });
+        },
+        focus: () => viewRef.current?.focus(),
+        posAtCoords: (x, y) => viewRef.current?.posAtCoords({ x, y }) ?? null,
+        getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
+        getValue: () => viewRef.current?.state.doc.toString() ?? "",
+        applyChanges,
+        insertAt: (pos, text, opts) => applyChanges([{ from: pos, to: pos, insert: text }], opts),
+        replaceRange: (from, to, text, opts) =>
+          applyChanges([{ from, to, insert: text }], opts),
+      };
+    },
     []
   );
 
