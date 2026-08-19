@@ -28,6 +28,8 @@ export interface MarkdownEditorHandle {
   getValue(): string;
   /** 套用一組局部變更；不動範圍外的文字。selection 給了就一起設游標。 */
   applyChanges(changes: TextEdit[], opts?: { selection?: number; scrollIntoView?: boolean }): void;
+  /** EditorView 真的建好了沒。false 代表 handle 已存在但底層還沒掛上。 */
+  isReady(): boolean;
   /** 在 pos 插入文字。 */
   insertAt(pos: number, text: string, opts?: { selection?: number; scrollIntoView?: boolean }): void;
   /** 把 [from, to) 換成 text。 */
@@ -336,6 +338,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
         getScrollDOM: () => viewRef.current?.scrollDOM ?? null,
         getValue: () => viewRef.current?.state.doc.toString() ?? "",
         applyChanges,
+        isReady: () => viewRef.current !== null,
         insertAt: (pos, text, opts) => applyChanges([{ from: pos, to: pos, insert: text }], opts),
         replaceRange: (from, to, text, opts) =>
           applyChanges([{ from, to, insert: text }], opts),

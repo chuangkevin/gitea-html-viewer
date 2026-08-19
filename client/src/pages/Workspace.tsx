@@ -11,7 +11,8 @@ import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertPointForY } from "../lib/drop-position";
 import { boundaryOffsetForY, insertAsBlock, insertAsBlockEdit, moveSpanAsBlock, type LineBox } from "../lib/block-insert";
-import { minimalEdit } from "../lib/text-diff";
+import { minimalEdit, type TextEdit } from "../lib/text-diff";
+import { applyEditsToYText } from "../lib/collab-edit";
 import {
   isImageMime,
   pastedImageFilename,
@@ -242,6 +243,8 @@ export default function Workspace() {
   shaRef.current = sha;
   const contentRef = useRef(content);
   contentRef.current = content;
+  const collabRef = useRef(collab);
+  collabRef.current = collab;
   const [dirViewMode, setDirViewMode] = useState<"continuous" | "list">("continuous");
   const [folderMdContents, setFolderMdContents] = useState<Record<string, string>>({});
   const [loadedCount, setLoadedCount] = useState(0);
@@ -677,6 +680,38 @@ export default function Workspace() {
   }
 
   /**
+   * 這份文件當下的真相字串。
+   * 共筆時是 Y.Text（React state 會落後一拍，拖曳運算不能用它）；
+   * 單人時是編輯器，編輯器還沒掛好才退回 React 鏡像。
+   */
+  const docText = useCallback((): string => {
+    const c = collabRef.current;
+    if (c) return c.text.toString();
+    const e = editorRef.current;
+    if (e?.isReady()) return e.getValue();
+    return contentRef.current;
+  }, []);
+
+  /**
+   * 套用一組局部變更。共筆時一律以 Y.Text 為寫入目標，
+   * 但編輯器掛好時走 CM transaction（游標能併進同一步）。
+   */
+  const applyDocEdit = useCallback((edits: TextEdit[], caret?: number) => {
+    const e = editorRef.current;
+    const c = collabRef.current;
+    if (e?.isReady()) {
+      e.applyChanges(edits, caret === undefined ? undefined : { selection: caret, scrollIntoView: true });
+      return;
+    }
+    if (c) {
+      applyEditsToYText(c.text, edits);   // 觀察者會把 React state 同步過去
+      return;
+    }
+    // 單人且編輯器沒掛：維持既有的字串路徑（呼叫端自己做 setContent 簿記）
+    return "fallback" as const;
+  }, []);
+
+  /**
    * 把一段 markdown 插進文件原始碼。
    * at 是插入位置（字元 offset）；atEnd 強制插在文件末尾（拖到預覽窗格時用，
    * 因為預覽是渲染後的 HTML，沒有 caret 可以對應）。都不給就用目前游標位置。
@@ -689,49 +724,53 @@ export default function Workspace() {
   const insertIntoEditor = useCallback(
     (snippet: string, opts?: { at?: number; atEnd?: boolean }) => {
       if (!canWrite) return;
+      const cur = docText();
       const editor = editorRef.current;
-      const cur = editor ? editor.getValue() : contentRef.current;
+      const editorReady = editor?.isReady() ?? false;
       const at = opts?.at;
       const pos = opts?.atEnd
         ? cur.length
         : typeof at === "number" && at >= 0 && at <= cur.length
           ? at
-          : editor
+          : editorReady && editor
             ? editor.getSelectionStart()
             : cur.length;
 
-      if (editor) {
-        const { edit, caret } = insertAsBlockEdit(cur, pos, snippet);
-        editor.applyChanges([edit], { selection: caret, scrollIntoView: true });
+      const { edit, caret } = insertAsBlockEdit(cur, pos, snippet);
+      const result = applyDocEdit([edit], caret);
+      if (result === "fallback") {
+        const { text: next, caret: fallbackCaret } = insertAsBlock(cur, pos, snippet);
+        contentRef.current = next;
+        setContent(next);
+        pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+        setSave((s) => (s === "conflict" ? s : "dirty"));
+        return fallbackCaret;
+      }
+      if (editorReady && editor) {
         editor.focus();
         contentRef.current = editor.getValue();
-        return caret;
       }
-
-      const { text: next, caret } = insertAsBlock(cur, pos, snippet);
-      contentRef.current = next;
-      setContent(next);
-      pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
-      setSave((s) => (s === "conflict" ? s : "dirty"));
       return caret;
     },
-    [canWrite]
+    [canWrite, docText, applyDocEdit]
   );
 
   /** 一次換掉整份內容（圖片移動用）。存檔簿記與 insertIntoEditor 相同。 */
   const replaceContent = useCallback((next: string) => {
     if (!canWrite) return;
-    const editor = editorRef.current;
-    if (editor) {
-      const edit = minimalEdit(editor.getValue(), next);
-      if (edit) editor.applyChanges([edit]);
-      contentRef.current = editor.getValue();
+    const edit = minimalEdit(docText(), next);
+    const result = applyDocEdit(edit ? [edit] : []);
+    if (result === "fallback") {
+      setContent(next);
+      pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+      setSave((s) => (s === "conflict" ? s : "dirty"));
       return;
     }
-    setContent(next);
-    pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
-    setSave((s) => (s === "conflict" ? s : "dirty"));
-  }, [canWrite]);
+    const editor = editorRef.current;
+    if (editor?.isReady()) {
+      contentRef.current = editor.getValue();
+    }
+  }, [canWrite, docText, applyDocEdit]);
 
   /**
    * 從一次拖放事件取出要插入的 markdown。
@@ -773,8 +812,9 @@ export default function Workspace() {
         const start = Number(rawStart);
         const end = Number(rawEnd);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
-        const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? contentRef.current.length;
-        replaceContent(moveSpanAsBlock(contentRef.current, { start, end }, at));
+        const src = docText();
+        const at = editorRef.current?.posAtCoords(e.clientX, e.clientY) ?? src.length;
+        replaceContent(moveSpanAsBlock(src, { start, end }, at));
         return true;
       }
 
@@ -798,7 +838,7 @@ export default function Workspace() {
       else insertIntoEditor(snippet, { at });
       return true;
     },
-    [canWrite, claimDrop, insertIntoEditor, replaceContent, snippetFromDrag]
+    [canWrite, claimDrop, docText, insertIntoEditor, replaceContent, snippetFromDrag]
   );
 
   const handleEditorDragOver = useCallback((e: DragEvent) => {
@@ -847,7 +887,7 @@ export default function Workspace() {
         return { top: rect.top, bottom: rect.bottom, start: Number(el.dataset.srcStart), end: Number(el.dataset.srcEnd) };
       });
       if (blocks.some((b) => Number.isNaN(b.start) || Number.isNaN(b.end))) return;
-      const point = insertPointForY(blocks, clientY, contentRef.current.length);
+      const point = insertPointForY(blocks, clientY, docText().length);
       if (point.index < 0) return;
       if (dropGapOffsetRef.current === point.offset && dropGapRef.current?.isConnected) return;
       let gap = dropGapRef.current;
@@ -861,7 +901,7 @@ export default function Workspace() {
       else target.after(gap);
       dropGapOffsetRef.current = point.offset;
     });
-  }, []);
+  }, [docText]);
 
   const handlePreviewDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!isInternalPathDrag(e.dataTransfer) && !isUrlDrag(e.dataTransfer) && !isImageMoveDrag(e.dataTransfer)) return;
@@ -897,12 +937,12 @@ export default function Workspace() {
     if (Number.isNaN(start) || Number.isNaN(end)) return;
     const index = Array.from(block.querySelectorAll("img")).indexOf(img as HTMLImageElement);
     if (index < 0) return;
-    const spans = imageSpansIn(contentRef.current, start, end);
+    const spans = imageSpansIn(docText(), start, end);
     const span = spans[index];
     if (!span) return;
     e.dataTransfer.setData(NOTE_IMG_MOVE_MIME, `${span.start},${span.end}`);
     e.dataTransfer.effectAllowed = "move";
-  }, []);
+  }, [docText]);
 
   /**
    * 從預覽窗格的放開座標換算出「要插在 markdown 原始碼的哪個 offset」。
@@ -910,9 +950,9 @@ export default function Workspace() {
    * 沒有標記時 boxes 為空，boundaryOffsetForY 回文件末尾。
    */
   const previewInsertOffset = useCallback((container: HTMLElement, clientY: number): number => {
-    const boxes = previewLineBoxes(container, contentRef.current);
-    return boundaryOffsetForY(boxes, clientY, contentRef.current.length);
-  }, []);
+    const boxes = previewLineBoxes(container, docText());
+    return boundaryOffsetForY(boxes, clientY, docText().length);
+  }, [docText]);
 
   const handlePreviewDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -932,8 +972,9 @@ export default function Workspace() {
         const [s, en] = raw.split(",").map(Number);
         if (Number.isNaN(s) || Number.isNaN(en)) return;
         const at = previewInsertOffset(e.currentTarget, e.clientY);
-        const next = moveSpanAsBlock(contentRef.current, { start: s, end: en }, at ?? contentRef.current.length);
-        if (next !== contentRef.current) replaceContent(next);
+        const src = docText();
+        const next = moveSpanAsBlock(src, { start: s, end: en }, at ?? src.length);
+        if (next !== src) replaceContent(next);
         return;
       }
       const snippet = snippetFromDrag(dt);
@@ -942,7 +983,7 @@ export default function Workspace() {
       if (at === null) insertIntoEditor(snippet, { atEnd: true });
       else insertIntoEditor(snippet, { at });
     },
-    [canWrite, claimDrop, clearDropGap, insertIntoEditor, previewInsertOffset, replaceContent, snippetFromDrag]
+    [canWrite, claimDrop, clearDropGap, docText, insertIntoEditor, previewInsertOffset, replaceContent, snippetFromDrag]
   );
 
   async function handleCreate() {
@@ -1054,6 +1095,19 @@ export default function Workspace() {
     meta.observe(sync);
     return () => {
       meta.unobserve(sync);
+    };
+  }, [collab]);
+
+  // 圖片排版模式會把編輯器 unmount，遠端更新要靠這條觀察者灌進 React state。
+  useEffect(() => {
+    if (!collab) return;
+    const text = collab.text;
+    const handler = () => {
+      setContent(text.toString());
+    };
+    text.observe(handler);
+    return () => {
+      text.unobserve(handler);
     };
   }, [collab]);
 
