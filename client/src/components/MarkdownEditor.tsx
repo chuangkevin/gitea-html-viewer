@@ -8,6 +8,7 @@ import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
+import { presencePolish } from "../lib/cm-presence-polish";
 import { minimalEdit, type TextEdit } from "../lib/text-diff";
 
 /**
@@ -130,23 +131,37 @@ const noteTheme = EditorView.theme(
     },
 
     // ── 遠端游標（y-codemirror.next）；顏色由 inline style 帶入，這裡只定形狀 ──
-    ".cm-ySelection": {},
+    ".cm-ySelection": {
+      borderRadius: "2px",
+    },
     ".cm-ySelectionCaret": {
       position: "relative",
-      borderLeft: "2px solid",
+      borderLeft: "3px solid",
       borderRight: "none",
+      borderRadius: "1px",
       marginLeft: "-1px",
       marginRight: "-1px",
       boxSizing: "border-box",
+    },
+    ".cm-ySelectionCaretDot": {
+      position: "absolute",
+      width: "6px",
+      height: "6px",
+      borderRadius: "50%",
+      top: "0",
+      left: "0",
+      transform: "translate(-1.5px, -4px)",
+      pointerEvents: "none",
     },
     ".cm-ySelectionInfo": {
       position: "absolute",
       bottom: "100%",
       left: "0",
+      fontWeight: "700",
       fontSize: "11px",
       lineHeight: "1.3",
-      borderRadius: "4px",
-      padding: "2px 6px",
+      borderRadius: "5px",
+      padding: "2px 7px",
       zIndex: "101",
       whiteSpace: "nowrap",
       maxWidth: "min(12rem, 40vw)",
@@ -154,6 +169,7 @@ const noteTheme = EditorView.theme(
       textOverflow: "ellipsis",
       pointerEvents: "none",
       opacity: "1",
+      boxShadow: "0 1px 3px rgba(0,0,0,.55)",
     },
   },
   { dark: true }
@@ -180,7 +196,10 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
         doc: collab ? collab.text.toString() : cb.current.value,
         extensions: [
           collab
-            ? yCollab(collab.text, collab.awareness, { undoManager: collab.undoManager })
+            ? [
+                yCollab(collab.text, collab.awareness, { undoManager: collab.undoManager }),
+                presencePolish(),
+              ]
             : history(),
           drawSelection(),
           dropCursor(), // 拖曳時顯示落點游標＝落點指示

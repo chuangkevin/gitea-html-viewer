@@ -1,5 +1,8 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
+import { collabColorIndex, pickCollabColor } from "./collab-color.js";
+
+export { COLLAB_PALETTE, collabColorIndex, pickCollabColor } from "./collab-color.js";
 
 export interface CollabUser {
   name: string;
@@ -20,6 +23,42 @@ export function collabServerUrl(): string {
   return `${protocol}//${location.host}`;
 }
 
+function takenColors(provider: WebsocketProvider, myClientId: number): string[] {
+  const taken: string[] = [];
+  provider.awareness.getStates().forEach((state, clientId) => {
+    if (clientId === myClientId) return;
+    const color = state.user?.color;
+    if (typeof color === "string") taken.push(color);
+  });
+  return taken;
+}
+
+function applyLocalUserColor(provider: WebsocketProvider, name: string): void {
+  const myClientId = provider.awareness.doc.clientID;
+  const color = pickCollabColor(collabColorIndex(name), takenColors(provider, myClientId));
+  const current = provider.awareness.getLocalState()?.user;
+  if (current?.name === name && current?.color === color && current?.colorLight === color + "40") {
+    return;
+  }
+  provider.awareness.setLocalStateField("user", {
+    name,
+    color,
+    colorLight: color + "40",
+  });
+}
+
+function collidesWithSmallerClient(provider: WebsocketProvider): boolean {
+  const myClientId = provider.awareness.doc.clientID;
+  const myColor = provider.awareness.getLocalState()?.user?.color;
+  if (typeof myColor !== "string") return false;
+  let collided = false;
+  provider.awareness.getStates().forEach((state, clientId) => {
+    if (clientId >= myClientId) return;
+    if (state.user?.color === myColor) collided = true;
+  });
+  return collided;
+}
+
 /** 開一條共筆連線。docKey 就是 Workspace 的 editorDocKey。 */
 export function createCollabSession(docKey: string, user: CollabUser): CollabSession {
   const doc = new Y.Doc();
@@ -29,7 +68,11 @@ export function createCollabSession(docKey: string, user: CollabUser): CollabSes
     disableBc: true,
   });
   const undoManager = new Y.UndoManager(text);
-  provider.awareness.setLocalStateField("user", { name: user.name, color: user.color });
+  applyLocalUserColor(provider, user.name);
+  const onAwarenessChange = () => {
+    if (collidesWithSmallerClient(provider)) applyLocalUserColor(provider, user.name);
+  };
+  provider.awareness.on("change", onAwarenessChange);
   let destroyed = false;
   return {
     doc,
@@ -39,6 +82,7 @@ export function createCollabSession(docKey: string, user: CollabUser): CollabSes
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      provider.awareness.off("change", onAwarenessChange);
       provider.awareness.destroy?.();
       undoManager.destroy();
       provider.destroy();
