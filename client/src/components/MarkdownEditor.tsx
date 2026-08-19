@@ -1,10 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, drawSelection, dropCursor, keymap } from "@codemirror/view";
 import { defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import type * as Y from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import { livePreview, type LivePreviewContext } from "../lib/cm-live-preview";
@@ -58,6 +57,7 @@ interface Props {
     text: Y.Text;
     awareness: Awareness;
     undoManager: Y.UndoManager;
+    extensions: Extension[];
   } | null;
 }
 
@@ -197,12 +197,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
       state: EditorState.create({
         doc: collab ? collab.text.toString() : cb.current.value,
         extensions: [
-          collab
-            ? [
-                yCollab(collab.text, collab.awareness, { undoManager: collab.undoManager }),
-                presencePolish(),
-              ]
-            : history(),
+          collab ? [...collab.extensions, presencePolish()] : history(),
           drawSelection(),
           dropCursor(), // 拖曳時顯示落點游標＝落點指示
           EditorView.lineWrapping,
@@ -217,7 +212,7 @@ const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(function Markdown
           // CM 的 keydown 會冒泡上去。兩邊都綁會存兩次。
           keymap.of(
             collab
-              ? [...defaultKeymap, ...yUndoManagerKeymap]
+              ? [...defaultKeymap]
               : [...defaultKeymap, ...historyKeymap]
           ),
           EditorView.updateListener.of((u) => {

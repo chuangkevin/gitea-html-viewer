@@ -343,6 +343,19 @@ export default function Workspace() {
     }
     setNeedLogin(false);
     api
+      .access(refPath)
+      .then((r) => {
+        setCanWrite(r.canWrite);
+        setIsPrivate(r.private);
+        if (r.access) setAccessMode(r.access);
+        if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
+        setAccessReady(true);
+      })
+      .catch((e) => {
+        if ((e as Error).message === "login_required") setNeedLogin(true);
+        else console.warn(e);
+      });
+    api
       .files(refPath)
       .then((r) => {
         setFiles(r.files.map((f) => f.path));
@@ -351,6 +364,7 @@ export default function Workspace() {
         if (r.access) setAccessMode(r.access);
         if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
         touchRecent(provider, projectPath);
+        setAccessReady(true);
       })
       .catch((e) => {
         if ((e as Error).message === "login_required") setNeedLogin(true);
@@ -1061,7 +1075,7 @@ export default function Workspace() {
         if (!cfg.enabled || !cfg.user) return;
         const { createCollabSession } = await import("../lib/collab");
         if (cancelled) return;
-        session = createCollabSession(editorDocKey, cfg.user);
+        session = await createCollabSession(editorDocKey, cfg.user);
         if (cancelled) {
           session.destroy();
           return;
@@ -3036,6 +3050,7 @@ export default function Workspace() {
                         text: collab.text,
                         awareness: collab.provider.awareness,
                         undoManager: collab.undoManager,
+                        extensions: collab.extensions,
                       }
                     : null
                 }

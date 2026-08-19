@@ -637,6 +637,35 @@ function sendRaw(res: express.Response, filePath: string, buf: Buffer, asAttachm
 // 讀取端點採 optional auth：
 // - 有 session 且同 provider → 用使用者 token（能讀自己有權限的 private）
 // - 否則 → 用該 provider 後備 token / 匿名，且【必須】驗證 repo 為 public
+app.get("/api/access/:provider/:project", async (req, res) => {
+  let actor: Actor | null = null;
+  try {
+    const provider = routeProvider(req);
+    const p = getProvider(provider);
+    const project = projectParam(req);
+    actor = actorFor(req, provider, project);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required", reason: "private_repo" });
+      return;
+    }
+    const mode = getMode(provider, project);
+    res.json({
+      branch: info.defaultBranch,
+      private: info.private,
+      canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
+      access: mode,
+      guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
+    });
+  } catch (e) {
+    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+      res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
+      return;
+    }
+    handleError(res, e);
+  }
+});
+
 app.get("/api/files/:provider/:project", async (req, res) => {
   let actor: Actor | null = null;
   try {

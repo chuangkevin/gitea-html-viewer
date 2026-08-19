@@ -1,5 +1,7 @@
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
+import type { Extension } from "@codemirror/state";
+import { keymap } from "@codemirror/view";
 import { collabColorIndex, pickCollabColor } from "./collab-color.js";
 
 export { COLLAB_PALETTE, collabColorIndex, pickCollabColor } from "./collab-color.js";
@@ -16,6 +18,8 @@ export interface CollabSession {
   undoManager: Y.UndoManager;
   /** server snapshot 回 git 的時間戳（毫秒）；還沒存過是 null。 */
   meta: Y.Map<unknown>;
+  /** 要掛進 CodeMirror 的共筆 extension（含 yCollab 與 undo keymap）。 */
+  extensions: Extension[];
   destroy(): void;
 }
 
@@ -62,7 +66,8 @@ function collidesWithSmallerClient(provider: WebsocketProvider): boolean {
 }
 
 /** 開一條共筆連線。docKey 就是 Workspace 的 editorDocKey。 */
-export function createCollabSession(docKey: string, user: CollabUser): CollabSession {
+export async function createCollabSession(docKey: string, user: CollabUser): Promise<CollabSession> {
+  const { yCollab, yUndoManagerKeymap } = await import("y-codemirror.next");
   const doc = new Y.Doc();
   const text = doc.getText("content");
   const meta = doc.getMap("meta");
@@ -83,6 +88,10 @@ export function createCollabSession(docKey: string, user: CollabUser): CollabSes
     provider,
     undoManager,
     meta,
+    extensions: [
+      yCollab(text, provider.awareness, { undoManager }),
+      keymap.of(yUndoManagerKeymap),
+    ],
     destroy() {
       if (destroyed) return;
       destroyed = true;

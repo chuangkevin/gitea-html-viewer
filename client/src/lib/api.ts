@@ -163,6 +163,16 @@ export const api = {
         files: { path: string }[];
       }>(r)
     ),
+  access: (ref: string) =>
+    fetch(`/api/access/${ref}`).then((r) =>
+      j<{
+        branch: string;
+        private: boolean;
+        canWrite: boolean;
+        access: AccessMode;
+        guestName: string | null;
+      }>(r)
+    ),
   readFile: (ref: string, path: string) =>
     fetch(`/api/file/${ref}/${encFilePath(path)}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
   saveFile: (ref: string, path: string, content?: string, sha?: string, message?: string, contentBase64?: string) =>
