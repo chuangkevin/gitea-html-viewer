@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
+import http from "node:http";
 import * as archiverModule from "archiver";
 import { marked } from "marked";
 
@@ -91,6 +92,7 @@ import {
   shortLinkToResponse,
   updateShortLink,
 } from "./short-links.js";
+import { attachCollab } from "./collab.js";
 
 registerProvider(github);
 registerProvider(gitlab);
@@ -1918,7 +1920,80 @@ if (fs.existsSync(clientDist)) {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  app.listen(PORT, () => {
+  const server = http.createServer(app);
+  attachCollab(server, collabOptions());
+  server.listen(PORT, () => {
     console.log(`note-bridge server on :${PORT} (${BASE_URL})`);
   });
+}
+
+function collabEnvDocs(): Set<string> {
+  const raw = (process.env.NOTE_COLLAB_DOCS || "").trim();
+  if (!raw) return new Set();
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+}
+
+function collabOptions() {
+  return {
+    featureEnabled() {
+      return /^(1|true|yes)$/i.test(process.env.NOTE_COLLAB || "");
+    },
+    enabled(docKey: string) {
+      return collabEnvDocs().has(docKey);
+    },
+    async authorize({ cookies, docKey }: { cookies: Record<string, string>; docKey: string }) {
+      // docKey = `${provider}/${encodeURIComponent(projectPath)}/${filePath}`
+      // 前兩段是 provider 與 project，其餘（可能含 /）全部是檔案路徑
+      const parts = docKey.split("/");
+      if (parts.length < 3) return { ok: false };
+      const provider = parts[0];
+      const project = decodeURIComponent(parts[1]);
+      const filePath = parts.slice(2).join("/");
+      if (!isProviderName(provider)) return { ok: false };
+
+      const fake = { cookies } as unknown as express.Request;
+      fake.nbSession = await resolveLiveSession(fake);
+
+      const mode = getMode(provider, project);
+      if (mode === "admin" && !isAdmin(fake)) return { ok: false };
+      const actor = actorFor(fake, provider, project);
+      if (mode !== "open" && !actor.authed) return { ok: false };
+
+      // 要有寫入權才進房（唯讀連線是後面的步驟）
+      let canPush = false;
+      try {
+        canPush = (await getProvider(provider).getRepo(actor.token, project)).canPush;
+      } catch {
+        canPush = false;
+      }
+      if (!canPush) return { ok: false };
+
+      const name =
+        fake.nbSession?.login ||
+        actor.author?.name ||
+        (typeof cookies.nb_guest === "string" && cookies.nb_guest.trim()) ||
+        "訪客";
+
+      return {
+        ok: true,
+        user: { name, color: collabColorFor(name) },
+        readFile: async () => {
+          try {
+            const f = await getProvider(provider).readFile(actor.token, project, filePath);
+            return f.content;
+          } catch {
+            return null; // 新檔或讀不到 → 空房間
+          }
+        },
+      };
+    },
+  };
+}
+
+/** 由名字決定 presence 顏色：同一個人每次進來顏色一樣。 */
+function collabColorFor(name: string): string {
+  const palette = ["#38bdf8", "#f472b6", "#4ade80", "#fbbf24", "#a78bfa", "#fb7185", "#2dd4bf", "#facc15"];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return palette[h % palette.length];
 }
