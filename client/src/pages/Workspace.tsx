@@ -2155,7 +2155,15 @@ export default function Workspace() {
                 }}
                 className={`min-h-11 px-3.5 py-2.5 text-sm lg:min-h-0 lg:px-3 lg:py-1.5 lg:text-sm whitespace-nowrap ${effectivePane === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
-                {v === "text" ? "✍️ 即時編輯文字" : "🖼️ 圖片排版"}
+                <>
+                  <span aria-hidden>{v === "text" ? "✍️" : "🖼️"}</span>
+                  <span className="hidden lg:inline">
+                    {v === "text" ? " 即時編輯文字" : " 圖片排版"}
+                  </span>
+                  <span className="sr-only lg:hidden">
+                    {v === "text" ? "即時編輯文字" : "圖片排版"}
+                  </span>
+                </>
               </button>
             ))}
           </div>
@@ -2217,7 +2225,7 @@ export default function Workspace() {
                   ? "共筆中，內容即時同步給所有人；這個按鈕是立即存回 GitLab"
                   : "編輯後會自動存檔；這個按鈕是立即存檔"
               }
-              className={`rounded-lg px-3 py-1 sm:px-4 sm:py-1.5 text-xs sm:text-sm font-semibold disabled:opacity-50 whitespace-nowrap shrink-0 ${
+              className={`rounded-lg min-h-11 px-3.5 py-2.5 text-sm lg:min-h-0 lg:px-4 lg:py-1.5 font-semibold disabled:opacity-50 whitespace-nowrap shrink-0 ${
                 save === "conflict" ? "bg-amber-600 hover:bg-amber-500" : "bg-sky-600 hover:bg-sky-500"
               }`}
             >
