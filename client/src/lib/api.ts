@@ -187,6 +187,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contentBase64, message }),
     }).then((r) => j<{ sha: string }>(r)),
+  moveFile: (ref: string, from: string, to: string, message?: string) =>
+    fetch(`/api/move/${ref}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, message }),
+    }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
   batchUpload: (ref: string, files: Array<{ path: string; contentBase64: string }>, message?: string) =>
     fetch(`/api/upload/${ref}`, {
       method: "POST",

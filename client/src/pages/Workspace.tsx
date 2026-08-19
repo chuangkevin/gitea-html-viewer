@@ -1250,6 +1250,27 @@ export default function Workspace() {
   const targetDirLabel = targetDirLabelFor(currentTargetDir);
   const getCurrentDirContext = useCallback(() => currentTargetDir, [currentTargetDir]);
 
+  /** 檔案樹拖曳：把檔案移到另一個資料夾。走 GitLab 的 move action，一次 commit 完成。 */
+  async function handleMoveFile(from: string, to: string) {
+    if (!canWrite) return;
+    try {
+      await api.moveFile(refPath, from, to);
+      await loadFiles();
+      // 移動的正好是開著的檔 → 同步更新網址，否則會停在已經不存在的路徑上
+      if (activePathRef.current === from) {
+        setParams({ f: to });
+      }
+    } catch (e: any) {
+      if (e?.status === 409 || e?.code === "target_exists") {
+        setError(`目標資料夾已有同名檔案：${to}`);
+      } else if (e?.status === 501) {
+        setError("這個 repo 的來源不支援移動檔案");
+      } else {
+        setError(`移動失敗：${e?.message || e}`);
+      }
+    }
+  }
+
   async function handleCreateFolder() {
     if (!canWrite) return;
     const input = window.prompt("請輸入資料夾名稱／路徑（例如 docs/2026/q3）：");
@@ -2713,6 +2734,7 @@ export default function Workspace() {
               rawBase={rawBase}
               refPath={refPath}
               onInsertFile={canWrite ? (p) => insertIntoEditor(insertSnippetFor(p)) : undefined}
+              onMoveFile={canWrite ? handleMoveFile : undefined}
             />
           )}
           {hasRepo && presentMode && (

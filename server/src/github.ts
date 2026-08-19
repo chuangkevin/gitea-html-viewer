@@ -136,4 +136,54 @@ export const github: Provider = {
     });
     return { sha: data.content.sha };
   },
+
+  async moveFile(token, projectPath, fromPath, toPath, message, branch, author) {
+    const src = await gh<{ content?: string | null; sha: string; encoding?: string; type?: string }>(
+      token,
+      `/repos/${projectPath}/contents/${encodePath(fromPath)}${branch ? `?ref=${encodeURIComponent(branch)}` : ""}`
+    );
+    if (!src?.sha || Array.isArray(src) || src.type === "dir") {
+      throw new ProviderError(400, `無法讀取來源檔案：${fromPath}`);
+    }
+    let content = (src.content || "").replace(/\s/g, "");
+    if (!content) {
+      const blob = await gh<{ content?: string }>(token, `/repos/${projectPath}/git/blobs/${src.sha}`);
+      content = (blob.content || "").replace(/\s/g, "");
+    }
+    if (!content) {
+      throw new ProviderError(400, `來源檔案沒有內容，無法移動：${fromPath}`);
+    }
+
+    const authorBody =
+      author?.name && author?.email ? { author: { name: author.name, email: author.email } } : {};
+
+    await gh(token, `/repos/${projectPath}/contents/${encodePath(toPath)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        message,
+        content,
+        ...(branch ? { branch } : {}),
+        ...authorBody,
+      }),
+    });
+
+    try {
+      await gh(token, `/repos/${projectPath}/contents/${encodePath(fromPath)}`, {
+        method: "DELETE",
+        body: JSON.stringify({
+          message,
+          sha: src.sha,
+          ...(branch ? { branch } : {}),
+          ...authorBody,
+        }),
+      });
+    } catch (e: unknown) {
+      const detail = e instanceof Error ? e.message : String(e);
+      const status = e instanceof ProviderError ? e.status : 500;
+      throw new ProviderError(
+        status,
+        `移動未完成：新檔已建立於「${toPath}」，但舊檔「${fromPath}」刪除失敗。請手動刪除舊檔。${detail}`
+      );
+    }
+  },
 };

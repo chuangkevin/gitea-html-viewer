@@ -91,6 +91,16 @@ export interface Provider {
     branch: string,
     author?: CommitAuthor
   ): Promise<{ count: number; failed: { path: string; error: string }[] }>;
+  /** 把檔案從 fromPath 移到 toPath。目標已存在時由實作端回清楚錯誤。 */
+  moveFile?(
+    token: string,
+    projectPath: string,
+    fromPath: string,
+    toPath: string,
+    message: string,
+    branch: string,
+    author?: CommitAuthor
+  ): Promise<void>;
 }
 
 // registry 由 index.ts 用 registerProvider 填入，避免循環相依

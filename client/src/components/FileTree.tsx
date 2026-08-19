@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { checkMove, FILE_MOVE_MIME } from "../lib/move-path";
 
 /** VS Code 風格巢狀檔案樹。展示模式（presentMode）時每列多一個 checkbox，
  *  勾資料夾＝勾整個子樹；勾選集合的順序一律取「資料夾排序」（此樹的顯示順序）。 */
@@ -100,6 +101,8 @@ interface Props {
   refPath?: string;
   /** 把某個檔案插入編輯區（拖曳或按「＋」鈕）。不給就不顯示插入鈕、也不開啟拖曳。 */
   onInsertFile?: (path: string) => void;
+  /** 把檔案移到某個資料夾（拖曳放開時觸發）。不給就不啟用移動。 */
+  onMoveFile?: (from: string, to: string) => void | Promise<void>;
 }
 
 export default function FileTree({
@@ -114,10 +117,53 @@ export default function FileTree({
   rawBase,
   refPath,
   onInsertFile,
+  onMoveFile,
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [searchQuery, setSearchQuery] = useState("");
+  // 拖曳移動時，目前 hover 的目標資料夾（"" = 根目錄，null = 沒有）
+  const [dropDir, setDropDir] = useState<string | null>(null);
+
+  /** 這次拖曳是不是「從檔案樹拖檔案來移動」。 */
+  const isFileMove = (dt: DataTransfer | null): boolean =>
+    !!dt && Array.from(dt.types).includes(FILE_MOVE_MIME);
+
+  /** 資料夾／根目錄共用的 drop handler 組。dir 用 "" 代表 repo 根目錄。 */
+  const dropProps = (dir: string) =>
+    onMoveFile
+      ? {
+          onDragEnter: (e: React.DragEvent) => {
+            if (!isFileMove(e.dataTransfer)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setDropDir(dir);
+          },
+          onDragOver: (e: React.DragEvent) => {
+            if (!isFileMove(e.dataTransfer)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = "move";
+            setDropDir(dir);
+          },
+          onDragLeave: (e: React.DragEvent) => {
+            if (!isFileMove(e.dataTransfer)) return;
+            e.stopPropagation();
+            setDropDir((cur) => (cur === dir ? null : cur));
+          },
+          onDrop: (e: React.DragEvent) => {
+            if (!isFileMove(e.dataTransfer)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            setDropDir(null);
+            const from = e.dataTransfer.getData(FILE_MOVE_MIME);
+            const check = checkMove(from, dir);
+            if (!check.ok || !check.target) return; // 同資料夾／移進自己／無效：安靜忽略
+            void onMoveFile(from, check.target);
+          },
+        }
+      : {};
+
 
   const matchingPaths = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -173,6 +219,7 @@ export default function FileTree({
         return (
           <li key={(isFolder ? "d:" : "f:") + node.path}>
             <div
+              {...(isFolder ? dropProps(node.path) : {})}
               draggable={!isFolder && Boolean(onInsertFile)}
               onDragStart={
                 !isFolder && onInsertFile
@@ -180,11 +227,16 @@ export default function FileTree({
                       e.stopPropagation();
                       e.dataTransfer.setData("application/x-note-path", node.path);
                       e.dataTransfer.setData("text/plain", node.path);
-                      e.dataTransfer.effectAllowed = "copy";
+                      // 同一次拖曳同時帶「移動」的 type：放在編輯區＝插入連結，
+                      // 放在資料夾上＝移動檔案，由放開的目標決定，兩者互不影響。
+                      if (onMoveFile) e.dataTransfer.setData(FILE_MOVE_MIME, node.path);
+                      e.dataTransfer.effectAllowed = onMoveFile ? "copyMove" : "copy";
                     }
                   : undefined
               }
               className={`group/row flex items-center gap-1.5 rounded pr-1 text-sm font-mono cursor-pointer select-none ${
+                isFolder && dropDir === node.path ? "ring-2 ring-sky-500 bg-sky-950/40 " : ""
+              }${
                 isFolder
                   ? node.path === activeFolder
                     ? "bg-zinc-800/80 text-zinc-100"
@@ -267,7 +319,13 @@ export default function FileTree({
   // 樹本體不吃 hooks 之外的東西，直接渲染
   const containerRef = useRef<HTMLDivElement>(null);
   return (
-    <div ref={containerRef} className="space-y-2">
+    <div
+      ref={containerRef}
+      {...dropProps("")}
+      className={`space-y-2 rounded ${
+        dropDir === "" ? "ring-2 ring-sky-500 bg-sky-950/20" : ""
+      }`}
+    >
       <div className="relative">
         <input
           type="text"

@@ -1428,6 +1428,104 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
   }
 });
 
+app.post("/api/move/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const { from, to, message } = req.body as { from?: string; to?: string; message?: string };
+
+    const bad = (v: unknown): boolean =>
+      typeof v !== "string" ||
+      v.length === 0 ||
+      v.startsWith("/") ||
+      v.includes("\\") ||
+      v.includes("..");
+    if (bad(from) || bad(to)) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+    const fromPath = from as string;
+    const toPath = to as string;
+
+    if (fromPath === toPath) {
+      res.status(400).json({ error: "same_path" });
+      return;
+    }
+    // 不可以把檔案移進「自己底下」（例如 a/b.md → a/b.md/c.md）
+    if (toPath.startsWith(fromPath + "/")) {
+      res.status(400).json({ error: "invalid_target" });
+      return;
+    }
+
+    const p = getProvider(provider);
+    if (!p.moveFile) {
+      res.status(501).json({ error: "move_not_supported" });
+      return;
+    }
+
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    // 目標已存在就擋下來，不要蓋掉別人的檔案
+    let targetExists = false;
+    try {
+      await p.readFile(actor.token, project, toPath);
+      targetExists = true;
+    } catch {
+      targetExists = false;
+    }
+    if (targetExists) {
+      res.status(409).json({ error: "target_exists" });
+      return;
+    }
+
+    const commitMsg = message || `docs: \u79fb\u52d5 ${fromPath} \u2192 ${toPath}`;
+    await p.moveFile(
+      actor.token,
+      project,
+      fromPath,
+      toPath,
+      commitMsg,
+      info.defaultBranch,
+      actor.author
+    );
+    res.json({ ok: true, from: fromPath, to: toPath });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
 app.post("/api/upload/:provider/:project", async (req, res) => {
   try {
     const provider = routeProvider(req);

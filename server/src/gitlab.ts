@@ -234,7 +234,10 @@ export const gitlab: Provider = {
 
   async batchWriteFiles(token, projectPath, files, message, branch, author) {
     const failed: { path: string; error: string }[] = [];
-    const actions: { action: "create" | "update"; file_path: string; content: string; encoding: "base64" }[] = [];
+    type CommitAction =
+      | { action: "create" | "update"; file_path: string; content: string; encoding: "base64" }
+      | { action: "move"; file_path: string; previous_path: string };
+    const actions: CommitAction[] = [];
 
     for (const f of files) {
       try {
@@ -283,6 +286,31 @@ export const gitlab: Provider = {
     }
 
     return { count: actions.length, failed };
+  },
+
+  async moveFile(token, projectPath, fromPath, toPath, message, branch, author) {
+    const body = JSON.stringify({
+      branch,
+      commit_message: message,
+      actions: [{ action: "move", file_path: toPath, previous_path: fromPath }],
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
+    });
+    const res = await glRaw(token, `/projects/${pid(projectPath)}/repository/commits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      if (res.status === 400) {
+        throw new ProviderError(
+          400,
+          `目標路徑已存在或無法移動：${fromPath} → ${toPath}。${t.slice(0, 200)}`
+        );
+      }
+      throw new ProviderError(res.status, `GitLab ${res.status}: move failed ${t.slice(0, 200)}`);
+    }
   },
 };
 
