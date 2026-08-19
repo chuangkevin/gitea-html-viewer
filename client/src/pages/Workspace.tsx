@@ -28,6 +28,7 @@ import {
   type PaneMode,
   type ViewMode,
   VIEW_MODE_STORAGE_KEY,
+  htmlPaneFor,
 } from "../lib/view-mode";
 import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
 import { IMAGE_MOVE_MIME } from "../lib/drag-mime";
@@ -387,6 +388,25 @@ export default function Workspace() {
   }, [provider, projectPath, activePath, files, hasRepo]);
 
   const activeKind = activePath ? kindOf(activePath) : null;
+  const readOnly = !canWrite;
+  const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
+  const effectivePane = resolvePaneMode(paneMode, { view: effectiveView, canWrite });
+
+  // 「預覽」本身就是可編輯的所見即所得畫面：可寫的人在 preview 看到的是開了
+  // 行內渲染的 CodeMirror，不是唯讀 HTML。唯讀訪客才走原本的 marked 預覽。
+  // preview + images 則改顯示全寬 marked 窗格（這一步只做顯示切換）。
+  // .html 走自己的規則：預覽＝渲染後的 iframe，原始碼／分割才給編輯器。
+  // 回 "n/a" 時（＝markdown 等）以下兩個衍生值與改動前完全相同。
+  const htmlPane = htmlPaneFor(activeKind, effectiveView);
+  const showEditor =
+    htmlPane !== "n/a"
+      ? htmlPane === "editor" || htmlPane === "both"
+      : effectivePane === "text" && (effectiveView !== "preview" || canWrite);
+  const showMarkedPreview =
+    htmlPane !== "n/a"
+      ? htmlPane === "iframe" || htmlPane === "both"
+      : effectiveView === "split" || (effectiveView === "preview" && (!canWrite || effectivePane === "images"));
+  const editorLivePreview = effectiveView === "preview";
 
   const hasIdentity = Boolean(me?.login || me?.team?.selected);
   const identityId = me?.login
@@ -595,7 +615,9 @@ export default function Workspace() {
       },
     });
     return cleanup;
-  }, [activeKind, activePath, refPath, sha, setParams]);
+    // effectiveView 與 showMarkedPreview 要進依賴：切檢視模式會讓 iframe 掛載／卸載，
+    // 沒有它們，橋在 iframe 重新出現時不會重建，互動式 HTML 頁就存不了檔。
+  }, [activeKind, activePath, refPath, sha, setParams, effectiveView, showMarkedPreview]);
 
   /**
    * 把一份快照寫回 GitLab。快照而非直接讀 state，是因為切檔案 / 關頁面時
@@ -1177,18 +1199,6 @@ export default function Workspace() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePath]);
-
-  const readOnly = !canWrite;
-  const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
-  const effectivePane = resolvePaneMode(paneMode, { view: effectiveView, canWrite });
-
-  // 「預覽」本身就是可編輯的所見即所得畫面：可寫的人在 preview 看到的是開了
-  // 行內渲染的 CodeMirror，不是唯讀 HTML。唯讀訪客才走原本的 marked 預覽。
-  // preview + images 則改顯示全寬 marked 窗格（這一步只做顯示切換）。
-  const showEditor = effectivePane === "text" && (effectiveView !== "preview" || canWrite);
-  const showMarkedPreview =
-    effectiveView === "split" || (effectiveView === "preview" && (!canWrite || effectivePane === "images"));
-  const editorLivePreview = effectiveView === "preview";
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -2101,7 +2111,7 @@ export default function Workspace() {
             ))}
           </div>
         )}
-        {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
+        {hasRepo && activePath && activeKind === "md" && !readOnly && (
           <div className="flex rounded-lg border border-zinc-800 overflow-hidden text-sm shrink-0 whitespace-nowrap">
             {(["text", "images"] as const).map((v) => (
               <button

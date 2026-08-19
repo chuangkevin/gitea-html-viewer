@@ -53,3 +53,22 @@ export function resolvePaneMode(paneMode: PaneMode, opts: { view: ViewMode; canW
   if (!opts.canWrite) return "text";
   return paneMode;
 }
+
+/**
+ * `.html` 檔在主要區域要顯示什麼。
+ *
+ * `.html` 沒有「所見即所得可編輯」的概念——預覽就是要看渲染後的頁面（sandbox iframe），
+ * 要改原始碼請切「原始碼」或「分割」。所以它**不**走 markdown 那套
+ * showEditor / showMarkedPreview 的判斷（那套會讓可寫使用者在預覽看到 CodeMirror，
+ * 對 .html 來說就是一坨原始碼）。
+ *
+ * 回 "n/a" 代表這個檔案不是 html，呼叫端沿用既有邏輯。
+ */
+export type HtmlPane = "iframe" | "editor" | "both" | "n/a";
+
+export function htmlPaneFor(kind: string | null | undefined, view: ViewMode): HtmlPane {
+  if (kind !== "html") return "n/a";
+  if (view === "preview") return "iframe";
+  if (view === "edit") return "editor";
+  return "both"; // split：左編輯器 + 右 iframe
+}

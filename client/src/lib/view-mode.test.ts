@@ -7,6 +7,7 @@ import {
   isPaneMode,
   resolvePaneMode,
   resolveViewMode,
+  htmlPaneFor,
   type PaneMode,
   type ViewMode,
 } from "./view-mode.js";
@@ -121,6 +122,45 @@ describe("view-mode module", () => {
         }
       }
       assert.equal(imageCases, 1);
+    });
+  });
+
+  describe("htmlPaneFor", () => {
+    it("html + preview 一律回 iframe（渲染），不走 CodeMirror", () => {
+      assert.equal(htmlPaneFor("html", "preview"), "iframe");
+    });
+
+    it("html + edit 回 editor（純原始碼）", () => {
+      assert.equal(htmlPaneFor("html", "edit"), "editor");
+    });
+
+    it("html + split 回 both（左編輯器 + 右 iframe）", () => {
+      assert.equal(htmlPaneFor("html", "split"), "both");
+    });
+
+    it("非 html 檔一律回 n/a，呼叫端沿用既有邏輯", () => {
+      const nonHtmlKinds = ["md", "text", "pdf", "image", "other", "", null, undefined];
+      for (const view of ["preview", "split", "edit"] as const) {
+        for (const kind of nonHtmlKinds) {
+          assert.equal(htmlPaneFor(kind, view), "n/a");
+        }
+      }
+    });
+
+    it("契約：kind === 'html' && view === 'preview' 永遠是 iframe，不受 canWrite 與 paneMode 影響", () => {
+      const paneModes: PaneMode[] = ["text", "images"];
+      for (const canWrite of [true, false]) {
+        for (const paneMode of paneModes) {
+          const effectiveView = resolveViewMode("preview", { readOnly: !canWrite, isDesktop: true });
+          const effectivePane = resolvePaneMode(paneMode, { view: effectiveView, canWrite });
+          const pane = htmlPaneFor("html", effectiveView);
+          assert.equal(
+            pane,
+            "iframe",
+            `htmlPaneFor must be iframe when previewing (canWrite=${canWrite}, paneMode=${paneMode}, effectivePane=${effectivePane})`
+          );
+        }
+      }
     });
   });
 });
