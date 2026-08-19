@@ -2560,8 +2560,7 @@ export default function Workspace() {
         )}
         {/* 左側欄 */}
         <aside
-          className="nb-drawer w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto"
-          data-open={sidebarOpen ? "true" : "false"}
+          className={`nb-drawer${sidebarOpen ? " nb-drawer-open" : ""} w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
