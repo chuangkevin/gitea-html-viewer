@@ -121,3 +121,26 @@ body {
   transition: height 0.12s ease, margin 0.12s ease;
   pointer-events: none; /* 不可以吃掉 dragover，否則落點會抖 */
 }
+
+/* 手機側欄抽屜。
+   原本用 Tailwind 的 translate-x-0 / -translate-x-full 切換，但實測在 384px 下
+   即使 class 換成 translate-x-0、computed translate 仍停在 -100%（抽屜卡在畫面外，
+   點 ☰ 只看得到遮罩、檔案樹永遠打不開）。改用自己這條規則，行為確定可控。 */
+.nb-drawer {
+  translate: -100% 0;
+  transition: translate 200ms ease-in-out;
+}
+.nb-drawer[data-open="true"] {
+  translate: 0 0;
+}
+@media (min-width: 1024px) {
+  /* 桌機一律常駐可見，不受 data-open 影響 */
+  .nb-drawer,
+  .nb-drawer[data-open="true"],
+  .nb-drawer[data-open="false"] {
+    translate: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nb-drawer { transition: none; }
+}

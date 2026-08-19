@@ -2088,7 +2088,7 @@ export default function Workspace() {
           onClick={() => setSidebarOpen((v) => !v)}
           aria-label="開啟選單"
           aria-expanded={sidebarOpen}
-          className="lg:hidden rounded-lg border border-zinc-700 px-2 py-1 text-sm text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
+          className="lg:hidden rounded-lg border border-zinc-700 min-w-11 min-h-11 inline-flex items-center justify-center text-base text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
         >
           ☰
         </button>
@@ -2125,7 +2125,7 @@ export default function Workspace() {
                     // localStorage can throw in private browsing or blocked storage modes.
                   }
                 }}
-                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+                className={`min-h-11 px-3.5 py-2.5 text-sm lg:min-h-0 lg:px-3 lg:py-1.5 lg:text-sm whitespace-nowrap ${effectiveView === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "edit" ? "原始碼" : v === "split" ? "分割" : "預覽"}
               </button>
@@ -2153,7 +2153,7 @@ export default function Workspace() {
                     }
                   }
                 }}
-                className={`px-2.5 py-1 sm:px-3 sm:py-1.5 text-xs sm:text-sm whitespace-nowrap ${effectivePane === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
+                className={`min-h-11 px-3.5 py-2.5 text-sm lg:min-h-0 lg:px-3 lg:py-1.5 lg:text-sm whitespace-nowrap ${effectivePane === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 {v === "text" ? "✍️ 即時編輯文字" : "🖼️ 圖片排版"}
               </button>
@@ -2298,7 +2298,7 @@ export default function Workspace() {
           onClick={() => setMenuOpen((v) => !v)}
           aria-label="更多選項"
           aria-expanded={menuOpen}
-          className="lg:hidden rounded-lg border border-zinc-700 px-2.5 py-1 sm:px-3 sm:py-1.5 text-sm text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
+          className="lg:hidden rounded-lg border border-zinc-700 min-w-11 min-h-11 inline-flex items-center justify-center text-base text-zinc-300 hover:border-zinc-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 whitespace-nowrap shrink-0"
         >
           ⋯
         </button>
@@ -2560,9 +2560,8 @@ export default function Workspace() {
         )}
         {/* 左側欄 */}
         <aside
-          className={`w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out shadow-xl lg:shadow-none lg:relative lg:z-auto lg:translate-x-0 ${
-            sidebarOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
+          className="nb-drawer w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto"
+          data-open={sidebarOpen ? "true" : "false"}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

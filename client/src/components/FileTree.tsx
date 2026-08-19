@@ -277,7 +277,7 @@ export default function FileTree({
                     e.stopPropagation();
                     onInsertFile(node.path);
                   }}
-                  className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
+                  className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
                 >
                   <span className="text-base leading-none">＋</span>
                 </button>
@@ -385,7 +385,7 @@ export default function FileTree({
                               e.stopPropagation();
                               onInsertFile(p);
                             }}
-                            className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-[32px] min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
+                            className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
                           >
                             <span className="text-base leading-none">＋</span>
                           </button>
