@@ -2560,7 +2560,11 @@ export default function Workspace() {
         )}
         {/* 左側欄 */}
         <aside
-          className={`nb-drawer${sidebarOpen ? " nb-drawer-open" : ""} w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto`}
+          className="nb-drawer w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto"
+          // 位移直接用 inline style：先前試過 Tailwind 的 translate-x-* 與自訂 class，
+          // 實測 aside 的 computed transform 都咬死在 -100%（同樣 class 的乾淨元素卻正常），
+          // inline style 是唯一不會被任何樣式表蓋掉的做法。桌機不設，交給 lg:relative。
+          style={isDesktop ? undefined : { transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)" }}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
