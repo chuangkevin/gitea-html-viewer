@@ -4,7 +4,8 @@ import http from "node:http";
 import WebSocket from "ws";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
-import { attachCollab, parseCookies, roomCount, type CollabOptions } from "./collab.js";
+import { getYDoc } from "@y/websocket-server/utils";
+import { attachCollab, parseCookies, roomCount, snapshotIfEmptyForTest, type CollabOptions } from "./collab.js";
 
 const SEED = "# 初始內容\n";
 
@@ -228,6 +229,156 @@ describe("collab websocket", { concurrency: false }, () => {
         ws.on("error", () => done());
       });
     } finally {
+      await close();
+    }
+  });
+
+  it("snapshots once after the last client disconnects", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => SEED,
+        saveFile: async (content: string) => {
+          saved.push(content);
+        },
+      }),
+    });
+    const docKey = `snap-last-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    const providerB = openProvider(port, docKey, docB);
+    try {
+      await Promise.all([waitSynced(providerA), waitSynced(providerB)]);
+      const extra = "snapshot-me";
+      const textA = docA.getText("content");
+      textA.insert(textA.length, extra);
+      await waitUntil(() => docB.getText("content").toString().includes(extra), "client B to see insert");
+      const serverDoc = getYDoc(docKey);
+      providerA.destroy();
+      providerB.destroy();
+      await waitUntil(() => serverDoc.conns.size === 0, "all conns closed");
+      await snapshotIfEmptyForTest(docKey);
+      assert.equal(saved.length, 1);
+      assert.ok(saved[0].includes(extra), `expected snapshot to include ${JSON.stringify(extra)}, got ${JSON.stringify(saved[0])}`);
+    } finally {
+      providerA.destroy();
+      providerB.destroy();
+      await close();
+    }
+  });
+
+  it("does not snapshot while another client is still connected", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => SEED,
+        saveFile: async (content: string) => {
+          saved.push(content);
+        },
+      }),
+    });
+    const docKey = `snap-stay-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    const providerB = openProvider(port, docKey, docB);
+    try {
+      await Promise.all([waitSynced(providerA), waitSynced(providerB)]);
+      const serverDoc = getYDoc(docKey);
+      providerA.destroy();
+      await waitUntil(() => serverDoc.conns.size === 1, "one conn left");
+      await snapshotIfEmptyForTest(docKey);
+      assert.equal(saved.length, 0);
+    } finally {
+      providerA.destroy();
+      providerB.destroy();
+      await close();
+    }
+  });
+
+  it("releases the room after snapshot so the next client re-seeds", async () => {
+    const saved: string[] = [];
+    let reads = 0;
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => {
+          reads += 1;
+          return SEED;
+        },
+        saveFile: async (content: string) => {
+          saved.push(content);
+        },
+      }),
+    });
+    const docKey = `snap-release-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const extra = "should-not-survive-reroom";
+      const textA = docA.getText("content");
+      textA.insert(textA.length, extra);
+      const serverDoc = getYDoc(docKey);
+      const readsAfterFirst = reads;
+      assert.ok(readsAfterFirst >= 1);
+      providerA.destroy();
+      await waitUntil(() => serverDoc.conns.size === 0, "all conns closed");
+      await snapshotIfEmptyForTest(docKey);
+      assert.equal(roomCount(), 0);
+
+      const docB = new Y.Doc();
+      const providerB = openProvider(port, docKey, docB);
+      try {
+        await waitSynced(providerB);
+        assert.ok(reads > readsAfterFirst, "readFile should run again after the room is released");
+        assert.equal(docB.getText("content").toString(), SEED);
+      } finally {
+        providerB.destroy();
+      }
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
+  it("releases the room when saveFile rejects", async () => {
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => SEED,
+        saveFile: async () => {
+          throw new Error("snapshot boom");
+        },
+      }),
+    });
+    const docKey = `snap-fail-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const serverDoc = getYDoc(docKey);
+      providerA.destroy();
+      await waitUntil(() => serverDoc.conns.size === 0, "all conns closed");
+      await snapshotIfEmptyForTest(docKey);
+      assert.equal(roomCount(), 0);
+    } finally {
+      providerA.destroy();
       await close();
     }
   });

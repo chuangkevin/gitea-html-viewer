@@ -1056,6 +1056,7 @@ export default function Workspace() {
   // 切換檔案 / 元件卸載前，把上一個檔案還沒存的內容補回去
   useEffect(() => {
     return () => {
+      if (collab) return;
       const p = pendingSaveRef.current;
       if (p) void saveSnapshot(p);
     };

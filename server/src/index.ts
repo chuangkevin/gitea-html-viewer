@@ -2001,6 +2001,33 @@ function collabOptions() {
             return null; // 新檔或讀不到 → 空房間
           }
         },
+        saveFile: async (content: string) => {
+          const p = getProvider(provider);
+          // 先讀目前的 sha：拿它去走既有的樂觀鎖，避免蓋掉別人在 note 之外的修改。
+          let sha: string | undefined;
+          let current: string | null = null;
+          try {
+            const f = await p.readFile(actor.token, project, filePath);
+            sha = f.sha;
+            current = f.content;
+          } catch {
+            sha = undefined; // 新檔
+          }
+          if (current !== null && current === content) return; // 沒變就不要產生空 commit
+          const info = await p.getRepo(actor.token, project);
+          if (!info.canPush) throw new Error("no_write_permission");
+          await p.writeFile(
+            actor.token,
+            project,
+            filePath,
+            content,
+            `docs: update ${filePath} via note 共筆`,
+            sha,
+            info.defaultBranch,
+            actor.author,
+            false
+          );
+        },
       };
     },
   };
