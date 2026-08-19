@@ -172,6 +172,11 @@ export default function Workspace() {
   const [repoSelectorCollapsed, setRepoSelectorCollapsed] = useState(false);
   const [params, setParams] = useSearchParams();
   const activePath = params.get("f") || "";
+  // 編輯器的文件識別鍵＝repo ＋ 檔案路徑。換檔就換 key、換 EditorState，
+  // undo 歷史才不會跨檔（在 B 檔按 Cmd+Z 倒回 A 檔的內容）。
+  // 只用 activePath 不夠：不同 repo 可能有同名檔案（兩個 README.md），
+  // 那樣切 repo 不會重建，會把 A repo 的歷史帶到 B repo。
+  const editorDocKey = `${refPath}/${activePath}`;
 
   const [me, setMe] = useState<Me | null>(null);
   const [files, setFiles] = useState<string[] | null>(null);
@@ -2872,6 +2877,7 @@ export default function Workspace() {
               >
               <Suspense fallback={<div className="h-full w-full bg-zinc-950" />}>
               <MarkdownEditor
+                key={editorDocKey}
                 ref={editorRef}
                 value={content}
                 onChange={(next) => {
