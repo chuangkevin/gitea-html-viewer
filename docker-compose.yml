@@ -41,6 +41,13 @@ services:
       - ADMIN_KEY=${ADMIN_KEY:-}
       - ADMIN_LOGINS=${ADMIN_LOGINS:-}
       - DATA_DIR=/data
+      # 即時共筆（Yjs over WebSocket，端點 /collab）。預設關閉。
+      # NOTE_COLLAB=1 才啟用；NOTE_COLLAB_DOCS 是逗號分隔的白名單，
+      # 格式 <provider>/<URL-encoded 專案>/<檔案路徑>，例如
+      # gitlab/interagent-io%2Fnote-collab-test/test.md
+      # 兩個都要給才會開，沒列進白名單的文件一律走原本的單人編輯。
+      - NOTE_COLLAB=${NOTE_COLLAB:-}
+      - NOTE_COLLAB_DOCS=${NOTE_COLLAB_DOCS:-}
     volumes:
       - ./data:/data
 

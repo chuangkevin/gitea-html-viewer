@@ -163,6 +163,45 @@ curl -s http://localhost:8790/healthz     # {"ok":true,"github":false,"gitlab":t
 綁好後記得回來把 `.env` 的 `BASE_URL` 改成正式網址（如 `https://note.ia`）、GitLab OAuth 的 Redirect URI 同步更新（如 `https://note.ia/api/auth/callback`），
 再 `docker compose up -d` 讓新 BASE_URL 生效。
 
+## 即時共筆（Yjs，預設關閉）
+
+即時共筆預設關閉。要開的話，兩個環境變數都要給；沒列進白名單的文件一律走原本的單人編輯（不會報錯、也不會壞掉）。
+
+### 1. 在 docker-host 的 `.env` 設定兩個變數
+
+```
+NOTE_COLLAB=1
+NOTE_COLLAB_DOCS=gitlab/interagent-io%2F<專案>/<檔案路徑>
+```
+
+然後 `docker compose up -d` 讓變數進容器。`docker-compose.yml` 的 `environment:` 是明確白名單，只寫在 `.env`、沒列進 compose 的變數**傳不進容器**。
+
+- **專案路徑要 URL-encode**：巢狀群組的 `/` 必須寫成 `%2F`，因為這是前端 `docKey` 的格式。例如專案 `interagent-io/note-collab-test`、檔案 `test.md` 就是 `gitlab/interagent-io%2Fnote-collab-test/test.md`。
+- 多份文件用逗號分隔：`NOTE_COLLAB_DOCS=gitlab/interagent-io%2Ffoo/a.md,gitlab/interagent-io%2Ffoo/b.md`
+- `NOTE_COLLAB` 設成 `1`／`true`／`yes` 才啟用；兩個都要給才會開。
+
+### 2. Nginx Proxy Manager 要開 WebSocket
+
+既有的 `note.ia` proxy host 進去，勾選 **Websockets Support**。
+
+不需要新的 proxy host、新 port 或新憑證——協作端點 `/collab` 就掛在同一個 Express process 的同一個 port 上。
+
+### 3. 怎麼確認開起來了
+
+開兩個瀏覽器視窗到同一份白名單內的文件，一邊打字另一邊應該即時看到，而且看得到對方的游標與名字。沒開（變數沒設、或文件不在白名單）會安靜退回單人編輯。
+
+### 4. 關掉的方式
+
+把 `NOTE_COLLAB` 拿掉或設成空字串，再 `docker compose up -d`。關掉之後連 WebSocket 的 upgrade listener 都不會掛。
+
+### 5. 目前的限制（Phase 1b）
+
+- 內容存在 server 記憶體，**最後一個人離開時**才 commit 回 git；編輯途中不會定期存（定期 snapshot 是 Phase 2）。
+- 因此**容器重啟／重新部署時，還沒 snapshot 的內容會遺失**。
+- 共筆進行中，前端的 3 秒自動存檔會停用，改由 server 負責寫回。
+- 分享頁／簡報頁讀的是 git，看到的是最後一次 snapshot 的內容。
+- 只放行有寫入權的人；唯讀連線還沒做。
+
 ## Port 備註
 
 - host `8790` → container `3210`。挑 8790 是因為 docker-host 現有服務（3210/5432/5678/6380/8001/8080/8300/8400 等）沒佔用它。
