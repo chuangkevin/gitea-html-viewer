@@ -10,7 +10,8 @@ import { kindOf } from "../components/Presenter";
 import { attachBridge } from "../lib/bridge";
 import { createDropClaim, insertSnippetFor, isNewFileResponse, snippetFromDragData } from "../lib/doc-paths";
 import { imageSpansIn, insertPointForY } from "../lib/drop-position";
-import { boundaryOffsetForY, insertAsBlock, moveSpanAsBlock, type LineBox } from "../lib/block-insert";
+import { boundaryOffsetForY, insertAsBlock, insertAsBlockEdit, moveSpanAsBlock, type LineBox } from "../lib/block-insert";
+import { minimalEdit } from "../lib/text-diff";
 import {
   isImageMime,
   pastedImageFilename,
@@ -660,32 +661,30 @@ export default function Workspace() {
   const insertIntoEditor = useCallback(
     (snippet: string, opts?: { at?: number; atEnd?: boolean }) => {
       if (!canWrite) return;
-      const el = editorRef.current;
-      const cur = contentRef.current;
+      const editor = editorRef.current;
+      const cur = editor ? editor.getValue() : contentRef.current;
       const at = opts?.at;
       const pos = opts?.atEnd
         ? cur.length
         : typeof at === "number" && at >= 0 && at <= cur.length
           ? at
-          : el
-            ? el.getSelectionStart()
+          : editor
+            ? editor.getSelectionStart()
             : cur.length;
 
-      const { text: next, caret } = insertAsBlock(cur, pos, snippet);
+      if (editor) {
+        const { edit, caret } = insertAsBlockEdit(cur, pos, snippet);
+        editor.applyChanges([edit], { selection: caret, scrollIntoView: true });
+        editor.focus();
+        contentRef.current = editor.getValue();
+        return caret;
+      }
 
+      const { text: next, caret } = insertAsBlock(cur, pos, snippet);
       contentRef.current = next;
       setContent(next);
       pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
       setSave((s) => (s === "conflict" ? s : "dirty"));
-
-      // 只有原本就看得到編輯器時才移動游標；純預覽模式沒有編輯器，不做任何事
-      setTimeout(() => {
-        const t = editorRef.current;
-        if (t) {
-          t.focus();
-          t.setSelection(caret);
-        }
-      }, 0);
       return caret;
     },
     [canWrite]
@@ -694,6 +693,13 @@ export default function Workspace() {
   /** 一次換掉整份內容（圖片移動用）。存檔簿記與 insertIntoEditor 相同。 */
   const replaceContent = useCallback((next: string) => {
     if (!canWrite) return;
+    const editor = editorRef.current;
+    if (editor) {
+      const edit = minimalEdit(editor.getValue(), next);
+      if (edit) editor.applyChanges([edit]);
+      contentRef.current = editor.getValue();
+      return;
+    }
     setContent(next);
     pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
     setSave((s) => (s === "conflict" ? s : "dirty"));
@@ -1779,7 +1785,7 @@ export default function Workspace() {
       const editor = editorRef.current;
       if (!editor) return;
 
-      const val = contentRef.current;
+      const val = editor.getValue();
       const cursorPos = editor.getSelectionStart();
       const textBefore = val.slice(0, cursorPos);
       const match = textBefore.match(/(?:^|\s)@([^\s]*)$/);
@@ -1797,21 +1803,11 @@ export default function Workspace() {
         replacement = `[${nameNoExt}](/${item.path})`;
       }
 
-      const newContent = val.slice(0, atPos) + replacement + val.slice(cursorPos);
       const newCursorPos = atPos + replacement.length;
 
-      setContent(newContent);
-      // 這條路徑不經過 textarea 的 onChange，要自己同步 pending 快照，否則自動存檔會漏掉這次插入
-      pendingSaveRef.current = { path: activePathRef.current, content: newContent, sha: shaRef.current };
-      setSave((s) => (s === "conflict" ? s : "dirty"));
+      editor.replaceRange(atPos, cursorPos, replacement, { selection: newCursorPos, scrollIntoView: true });
+      editor.focus();
       setMentionQuery(null);
-
-      setTimeout(() => {
-        if (editorRef.current) {
-          editorRef.current.focus();
-          editorRef.current.setSelection(newCursorPos);
-        }
-      }, 0);
     },
     []
   );

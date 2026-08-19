@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   boundaryOffsetForY,
   insertAsBlock,
+  insertAsBlockEdit,
   moveSpanAsBlock,
   snapToLineBoundary,
   type LineBox,
@@ -207,4 +208,24 @@ describe("moveSpanAsBlock", () => {
       assertMovedBlock(result);
     }
   });
+});
+
+describe("insertAsBlockEdit", () => {
+  const cases: { name: string; doc: string; offset: number; snippet: string }[] = [
+    { name: "empty document", doc: "", offset: 0, snippet },
+    { name: "insert at start", doc, offset: 0, snippet },
+    { name: "insert in the middle of a line", doc, offset: 7, snippet },
+    { name: "insert at end", doc, offset: doc.length, snippet },
+  ];
+
+  for (const { name, doc: source, offset, snippet: snip } of cases) {
+    it(`${name}: pure insert, text and caret match insertAsBlock`, () => {
+      const { edit, caret } = insertAsBlockEdit(source, offset, snip);
+      const full = insertAsBlock(source, offset, snip);
+
+      assert.equal(edit.from, edit.to, "edit must be a pure insert");
+      assert.equal(source.slice(0, edit.from) + edit.insert + source.slice(edit.to), full.text);
+      assert.equal(caret, full.caret);
+    });
+  }
 });

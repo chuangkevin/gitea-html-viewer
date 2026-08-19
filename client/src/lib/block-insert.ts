@@ -1,3 +1,5 @@
+import type { TextEdit } from "./text-diff.js";
+
 /** 一行在畫面上的位置與它對應的原始碼範圍。top/bottom 是 client 座標。 */
 export interface LineBox {
   from: number; // 這一行在 markdown 原始碼的起始 offset
@@ -52,26 +54,42 @@ export function boundaryOffsetForY(boxes: LineBox[], y: number, docLength: numbe
 }
 
 /**
+ * 與 insertAsBlock 相同的插入規則，但回傳的是「一筆局部變更」而不是新全文。
+ * edit 的 from / to 都是插入點（純插入、不刪任何東西），insert 已含前後補的空行。
+ * caret 是插入後游標該在的位置（snippet 結尾）。
+ */
+export function insertAsBlockEdit(
+  doc: string,
+  offset: number,
+  snippet: string
+): { edit: TextEdit; caret: number } {
+  const pos = snapToLineBoundary(doc, offset);
+  const before = doc.slice(0, pos);
+  const after = doc.slice(pos);
+  const leading = padToBlankLine(before, "end");
+  const trailing = padToBlankLine(after, "start");
+  return {
+    edit: { from: pos, to: pos, insert: leading + snippet + trailing },
+    caret: pos + leading.length + snippet.length,
+  };
+}
+
+/**
  * 在 doc 的 offset 插入「獨立成段」的內容。內部一定先 snapToLineBoundary，
  * 所以永遠不會把一行文字切成兩半。前後各補到「剛好隔一個空行」：
  *  - 前面若不是文件開頭且沒有空行 → 補換行補到有空行
  *  - 後面同理
  *  - 不可以產生連續三個以上換行
  * 回傳新內容與插入後游標位置（snippet 結尾）。
+ * 現在是 insertAsBlockEdit 的薄包裝，行為不變。
  */
 export function insertAsBlock(
   doc: string,
   offset: number,
   snippet: string
 ): { text: string; caret: number } {
-  const pos = snapToLineBoundary(doc, offset);
-  const before = doc.slice(0, pos);
-  const after = doc.slice(pos);
-  const leading = padToBlankLine(before, "end");
-  const trailing = padToBlankLine(after, "start");
-  const text = before + leading + snippet + trailing + after;
-  const caret = before.length + leading.length + snippet.length;
-  return { text, caret };
+  const { edit, caret } = insertAsBlockEdit(doc, offset, snippet);
+  return { text: doc.slice(0, edit.from) + edit.insert + doc.slice(edit.to), caret };
 }
 
 function padToBlankLine(side: string, where: "end" | "start"): string {
