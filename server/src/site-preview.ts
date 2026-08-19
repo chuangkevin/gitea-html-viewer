@@ -93,6 +93,13 @@ export function generateImportMap(pkgJsonObj: any): ImportMap {
   return { imports };
 }
 
+const MODULE_SCRIPT_RE = /<script\b[^>]*\btype=["']?module["']?[^>]*>/i;
+
+export function hasModuleScript(html: string): boolean {
+  MODULE_SCRIPT_RE.lastIndex = 0;
+  return MODULE_SCRIPT_RE.test(html);
+}
+
 export function injectPreviewHead(
   html: string,
   baseHref: string,
@@ -109,7 +116,8 @@ export function injectPreviewHead(
 
   const injectedTags = mapTag ? `${baseTag}\n  ${mapTag}` : baseTag;
 
-  const scriptModuleMatch = /<script\b[^>]*\btype=["']?module["']?[^>]*>/i.exec(cleanedHtml);
+  MODULE_SCRIPT_RE.lastIndex = 0;
+  const scriptModuleMatch = MODULE_SCRIPT_RE.exec(cleanedHtml);
   const headMatch = /(<head\b[^>]*>)/i.exec(cleanedHtml);
 
   if (scriptModuleMatch && headMatch) {
@@ -257,4 +265,31 @@ export async function readClosestPackageJson(
     const parentDir = path.posix.dirname(currentDir);
     currentDir = parentDir === "." || parentDir === "/" ? "" : parentDir;
   }
+}
+
+const PKG_JSON_CACHE_TTL_MS = 5 * 60_000;
+const pkgJsonCache = new Map<string, { value: unknown | null; exp: number }>();
+
+function packageJsonCacheDir(filePath: string): string {
+  const cleanPath = (filePath.split(/[?#]/, 1)[0] ?? "").replace(/\\/g, "/").replace(/^\/+/, "");
+  let currentDir = path.posix.dirname(cleanPath);
+  if (currentDir === "." || currentDir === "/") {
+    currentDir = "";
+  }
+  return currentDir;
+}
+
+export async function readClosestPackageJsonCached(
+  cacheKeyPrefix: string,
+  readFn: (filePath: string) => Promise<Buffer | string>,
+  filePath: string
+): Promise<unknown | null> {
+  const key = `${cacheKeyPrefix}|${packageJsonCacheDir(filePath)}`;
+  const hit = pkgJsonCache.get(key);
+  if (hit && hit.exp > Date.now()) {
+    return hit.value;
+  }
+  const value = await readClosestPackageJson(readFn, filePath);
+  pkgJsonCache.set(key, { value, exp: Date.now() + PKG_JSON_CACHE_TTL_MS });
+  return value;
 }

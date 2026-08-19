@@ -58,8 +58,10 @@ import {
   isProviderName,
   normalizeProjectInput,
   ProviderError,
+  type Provider,
   type ProviderName,
   type CommitAuthor,
+  type RepoMeta,
 } from "./providers.js";
 import { github } from "./github.js";
 import { gitlab } from "./gitlab.js";
@@ -81,8 +83,10 @@ import {
   injectPreviewHead,
   rewriteCssSideEffectImports,
   createCssShim,
-  readClosestPackageJson,
+  hasModuleScript,
+  readClosestPackageJsonCached,
   readWithPublicFallback,
+  type ImportMap,
 } from "./site-preview.js";
 import {
   ShortLinkError,
@@ -1119,6 +1123,27 @@ function renderSitePage(title: string, bodyHtml: string): string {
 </html>`;
 }
 
+const SITE_REPO_CACHE_TTL_MS = 60_000;
+const siteRepoCache = new Map<string, { info: RepoMeta; exp: number }>();
+
+function siteRepoCacheTokenKey(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+async function getRepoForSitePreview(
+  p: Provider,
+  provider: string,
+  token: string,
+  project: string
+): Promise<RepoMeta> {
+  const key = `${provider}|${project}|${siteRepoCacheTokenKey(token)}`;
+  const hit = siteRepoCache.get(key);
+  if (hit && hit.exp > Date.now()) return hit.info;
+  const info = await p.getRepo(token, project);
+  siteRepoCache.set(key, { info, exp: Date.now() + SITE_REPO_CACHE_TTL_MS });
+  return info;
+}
+
 // GET /site/:provider/:project —— 分享為獨立網站
 app.get("/site/:provider/:project", async (req, res) => {
   try {
@@ -1143,12 +1168,12 @@ app.get("/site/:provider/:project", async (req, res) => {
     let usingGrant = Boolean(grantToken);
     let info;
     try {
-      info = await p.getRepo(actor.token, project);
+      info = await getRepoForSitePreview(p, provider, actor.token, project);
     } catch (e) {
       if (grantToken && actor.token !== fallbackActor.token) {
         actor = fallbackActor;                 // grant 的 token 不管用 → 用一般路徑再試一次
         usingGrant = false;
-        info = await p.getRepo(actor.token, project);
+        info = await getRepoForSitePreview(p, provider, actor.token, project);
       } else {
         throw e;
       }
@@ -1183,11 +1208,15 @@ app.get("/site/:provider/:project", async (req, res) => {
           grant: validGrant,
         });
 
-        const pkgJson = await readClosestPackageJson(
-          (filePath) => p.readFileRaw(actor.token, project, filePath),
-          previewPath
-        );
-        const importMap = pkgJson ? generateImportMap(pkgJson) : null;
+        let importMap: ImportMap | null = null;
+        if (hasModuleScript(html)) {
+          const pkgJson = await readClosestPackageJsonCached(
+            `${provider}|${project}`,
+            (filePath) => p.readFileRaw(actor.token, project, filePath),
+            previewPath
+          );
+          importMap = pkgJson ? generateImportMap(pkgJson) : null;
+        }
 
         html = injectPreviewHead(html, baseHref, importMap);
 

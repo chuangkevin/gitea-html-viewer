@@ -10,6 +10,8 @@ import {
   createCssShim,
   readWithPublicFallback,
   readClosestPackageJson,
+  hasModuleScript,
+  readClosestPackageJsonCached,
 } from "./site-preview.js";
 import { ProviderError } from "./providers.js";
 
@@ -309,5 +311,77 @@ console.log('weather main loaded', THREE);
     const transformedJs = rewriteCssSideEffectImports(mainJs);
     assert.ok(transformedJs.includes(`import './style.css?site_preview_css=1';`));
     assert.ok(transformedJs.includes(`import * as THREE from 'three';`));
+  });
+
+  it("hasModuleScript detects type=module with quotes and attribute order, and ignores ordinary scripts", () => {
+    assert.equal(hasModuleScript(`<script type="module" src="./main.js"></script>`), true);
+    assert.equal(hasModuleScript(`<script src="./app.js"></script>`), false);
+    assert.equal(hasModuleScript(`<script type='module' src="./main.js"></script>`), true);
+    assert.equal(hasModuleScript(`<script src="./main.js" type="module"></script>`), true);
+    assert.equal(hasModuleScript(`<script type="text/javascript" src="./app.js"></script>`), false);
+  });
+
+  it("caches closest package.json lookups including 404s, isolates directories, and does not cache non-404 errors", async () => {
+    const hitPkg = { name: "cached-hit" };
+    let hitCalls = 0;
+    const hitRead = async (pkgPath: string) => {
+      hitCalls += 1;
+      if (pkgPath === "app/package.json") {
+        return JSON.stringify(hitPkg);
+      }
+      throw new ProviderError(404, "File not found");
+    };
+    const hitPrefix = "gitlab|cache-hit-proj";
+    const firstHit = await readClosestPackageJsonCached(hitPrefix, hitRead, "app/index.html");
+    const secondHit = await readClosestPackageJsonCached(hitPrefix, hitRead, "app/index.html");
+    assert.deepEqual(firstHit, hitPkg);
+    assert.deepEqual(secondHit, hitPkg);
+    assert.equal(hitCalls, 1, "same directory should reuse the first lookup");
+
+    let missCalls = 0;
+    const missRead = async () => {
+      missCalls += 1;
+      throw new ProviderError(404, "File not found");
+    };
+    const missPrefix = "gitlab|cache-miss-proj";
+    const firstMiss = await readClosestPackageJsonCached(missPrefix, missRead, "deep/nested/index.html");
+    const secondMiss = await readClosestPackageJsonCached(missPrefix, missRead, "deep/nested/index.html");
+    assert.equal(firstMiss, null);
+    assert.equal(secondMiss, null);
+    assert.equal(missCalls, 3, "404/null result should be cached after the first walk");
+
+    let dirCalls = 0;
+    const dirRead = async (pkgPath: string) => {
+      dirCalls += 1;
+      if (pkgPath === "a/package.json") {
+        return JSON.stringify({ name: "dir-a" });
+      }
+      if (pkgPath === "b/package.json") {
+        return JSON.stringify({ name: "dir-b" });
+      }
+      throw new ProviderError(404, "File not found");
+    };
+    const dirPrefix = "gitlab|cache-dir-proj";
+    const fromA = await readClosestPackageJsonCached(dirPrefix, dirRead, "a/index.html");
+    const fromB = await readClosestPackageJsonCached(dirPrefix, dirRead, "b/index.html");
+    assert.deepEqual(fromA, { name: "dir-a" });
+    assert.deepEqual(fromB, { name: "dir-b" });
+    assert.equal(dirCalls, 2, "different directories must not share cache entries");
+
+    let errorCalls = 0;
+    const errorRead = async () => {
+      errorCalls += 1;
+      throw new ProviderError(500, "Internal Server Error");
+    };
+    const errorPrefix = "gitlab|cache-error-proj";
+    await assert.rejects(
+      async () => readClosestPackageJsonCached(errorPrefix, errorRead, "err/index.html"),
+      (err: any) => err instanceof ProviderError && err.status === 500
+    );
+    await assert.rejects(
+      async () => readClosestPackageJsonCached(errorPrefix, errorRead, "err/index.html"),
+      (err: any) => err instanceof ProviderError && err.status === 500
+    );
+    assert.equal(errorCalls, 2, "non-404 errors must not be cached");
   });
 });
