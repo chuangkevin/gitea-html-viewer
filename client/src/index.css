@@ -121,13 +121,3 @@ body {
   transition: height 0.12s ease, margin 0.12s ease;
   pointer-events: none; /* 不可以吃掉 dragover，否則落點會抖 */
 }
-
-/* 手機側欄抽屜：只留過場動畫，實際位移由 Workspace 用 inline style 控制
-   （試過 Tailwind translate-x-* 與自訂 class 兩種寫法，computed transform 都咬死
-   在 -100%，同樣 class 的乾淨元素卻正常，所以位移不再交給樣式表）。 */
-.nb-drawer {
-  transition: transform 200ms ease-in-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  .nb-drawer { transition: none; }
-}

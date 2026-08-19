@@ -2153,15 +2153,13 @@ export default function Workspace() {
                     }
                   }
                 }}
+                aria-label={v === "text" ? "即時編輯文字" : "圖片排版"}
                 className={`min-h-11 px-3.5 py-2.5 text-sm lg:min-h-0 lg:px-3 lg:py-1.5 lg:text-sm whitespace-nowrap ${effectivePane === v ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-200"}`}
               >
                 <>
                   <span aria-hidden>{v === "text" ? "✍️" : "🖼️"}</span>
                   <span className="hidden lg:inline">
                     {v === "text" ? " 即時編輯文字" : " 圖片排版"}
-                  </span>
-                  <span className="sr-only lg:hidden">
-                    {v === "text" ? "即時編輯文字" : "圖片排版"}
                   </span>
                 </>
               </button>
@@ -2568,11 +2566,9 @@ export default function Workspace() {
         )}
         {/* 左側欄 */}
         <aside
-          className="nb-drawer w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 shadow-xl lg:shadow-none lg:relative lg:z-auto"
-          // 位移直接用 inline style：先前試過 Tailwind 的 translate-x-* 與自訂 class，
-          // 實測 aside 的 computed transform 都咬死在 -100%（同樣 class 的乾淨元素卻正常），
-          // inline style 是唯一不會被任何樣式表蓋掉的做法。桌機不設，交給 lg:relative。
-          style={isDesktop ? undefined : { transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)" }}
+          className={`w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out shadow-xl lg:shadow-none lg:relative lg:z-auto lg:translate-x-0 ${
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
