@@ -32,6 +32,7 @@ import {
 import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
 import { IMAGE_MOVE_MIME } from "../lib/drag-mime";
 import type { CollabSession } from "../lib/collab";
+import { joinTargetPath, targetDirFor, targetDirLabelFor } from "../lib/target-dir";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -1001,7 +1002,9 @@ export default function Workspace() {
   );
 
   async function handleCreate() {
-    let p = newFile.trim();
+    const raw = newFile.trim();
+    if (!raw) return;
+    let p = joinTargetPath(getCurrentDirContext(), raw);
     if (!p) return;
     if (!p.toLowerCase().endsWith(".md")) p += ".md";
     setNewFile("");
@@ -1225,24 +1228,17 @@ export default function Workspace() {
   const dirParam = params.get("dir");
   const cleanDir = useMemo(() => (dirParam || "").replace(/^\/+|\/+$/g, ""), [dirParam]);
 
-  const targetUploadDir = useMemo(() => {
-    if (params.has("dir")) return cleanDir;
-    if (activePath && activePath.includes("/")) {
-      return activePath.split("/").slice(0, -1).join("/");
-    }
-    return "";
-  }, [params, cleanDir, activePath]);
-
-  const targetDirLabel = targetUploadDir ? targetUploadDir : "根目錄";
-
-  const getCurrentDirContext = useCallback(() => {
-    if (params.has("dir")) return cleanDir;
-    if (activeFolder) return activeFolder;
-    if (activePath && activePath.includes("/")) {
-      return activePath.split("/").slice(0, -1).join("/");
-    }
-    return "";
-  }, [params, cleanDir, activeFolder, activePath]);
+  const currentTargetDir = useMemo(
+    () =>
+      targetDirFor({
+        dirParam: params.has("dir") ? cleanDir : null,
+        activeFolder: activeFolder || null,
+        activePath: activePath || null,
+      }),
+    [params, cleanDir, activeFolder, activePath]
+  );
+  const targetDirLabel = targetDirLabelFor(currentTargetDir);
+  const getCurrentDirContext = useCallback(() => currentTargetDir, [currentTargetDir]);
 
   async function handleCreateFolder() {
     if (!canWrite) return;
@@ -1266,11 +1262,7 @@ export default function Workspace() {
       return;
     }
 
-    const baseDir = getCurrentDirContext();
-    let folderPath = trimmed.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
-    if (baseDir && !folderPath.startsWith(baseDir + "/") && folderPath !== baseDir) {
-      folderPath = `${baseDir}/${folderPath}`;
-    }
+    let folderPath = joinTargetPath(getCurrentDirContext(), trimmed);
 
     const folderLeaf = folderPath.split("/").pop() || folderPath;
     const newFilePath = `${folderPath}/README.md`;
@@ -2638,28 +2630,34 @@ export default function Workspace() {
             </div>
           )}
           {hasRepo && canWrite && (
-            <div className="flex gap-1.5 mb-3">
-              <input
-                value={newFile}
-                onChange={(e) => setNewFile(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-                placeholder="新檔名…"
-                className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600"
-              />
-              <button
-                onClick={handleCreate}
-                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700"
-                title="新增檔案"
-              >
-                ＋
-              </button>
-              <button
-                onClick={handleCreateFolder}
-                className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 font-mono text-xs flex items-center justify-center whitespace-nowrap"
-                title="新增資料夾"
-              >
-                📁+
-              </button>
+            <div className="mb-3 min-w-0">
+              <div className="flex gap-1.5">
+                <input
+                  value={newFile}
+                  onChange={(e) => setNewFile(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+                  placeholder="新檔名…"
+                  className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600"
+                />
+                <button
+                  onClick={handleCreate}
+                  className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700"
+                  title="新增檔案"
+                >
+                  ＋
+                </button>
+                <button
+                  onClick={handleCreateFolder}
+                  className="rounded bg-zinc-800 px-2 text-sm text-zinc-300 hover:bg-zinc-700 font-mono text-xs flex items-center justify-center whitespace-nowrap"
+                  title="新增資料夾"
+                >
+                  📁+
+                </button>
+              </div>
+              <div className="mb-2 text-xs text-zinc-500 flex items-center gap-1 min-w-0">
+                <span className="shrink-0">將建立在：</span>
+                <span className="truncate font-mono text-sky-400" title={targetDirLabel}>{targetDirLabel}</span>
+              </div>
             </div>
           )}
           {hasRepo && <div className="flex items-center justify-between mb-2">
