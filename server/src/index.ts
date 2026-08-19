@@ -92,7 +92,7 @@ import {
   shortLinkToResponse,
   updateShortLink,
 } from "./short-links.js";
-import { attachCollab } from "./collab.js";
+import { attachCollab, flushRoom } from "./collab.js";
 
 registerProvider(github);
 registerProvider(gitlab);
@@ -1538,6 +1538,27 @@ app.get("/api/collab/config", (req, res) => {
   const actor = project && isProviderName(provider) ? actorFor(req, provider, project) : {};
   const name = collabUserName(req, actor);
   res.json({ enabled: true, user: { name, color: collabColorFor(name) } });
+});
+
+app.post("/api/collab/flush", async (req, res) => {
+  const docKey = typeof req.body?.doc === "string" ? req.body.doc : "";
+  if (!docKey) {
+    res.json({ ok: false, lastSavedAt: null });
+    return;
+  }
+  const opts = collabOptions();
+  const enabled = opts.featureEnabled() && opts.enabled(docKey);
+  if (!enabled) {
+    res.json({ ok: false, lastSavedAt: null });
+    return;
+  }
+  const parts = docKey.split("/");
+  const provider = parts[0];
+  const project = parts.length >= 3 && isProviderName(provider) ? decodeURIComponent(parts[1]) : undefined;
+  const actor = project && isProviderName(provider) ? actorFor(req, provider, project) : {};
+  collabUserName(req, actor); // 與 GET /api/collab/config 同一套身分推導
+  const lastSavedAt = await flushRoom(docKey);
+  res.json({ ok: true, lastSavedAt });
 });
 
 app.post("/api/guest-name", (req, res) => {

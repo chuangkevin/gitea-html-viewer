@@ -263,6 +263,12 @@ export const api = {
     fetch(`/api/collab/config?doc=${encodeURIComponent(doc)}`).then((r) =>
       j<{ enabled: boolean; user: { name: string; color: string } | null }>(r)
     ),
+  collabFlush: (doc: string) =>
+    fetch("/api/collab/flush", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc }),
+    }).then((r) => j<{ ok: boolean; lastSavedAt: number | null }>(r)),
   getUserPrefs: () => fetch("/api/user-prefs").then((r) => j<UserPrefsResult>(r)),
   updateUserPrefs: (body: {
     action: "upsert" | "delete" | "merge";

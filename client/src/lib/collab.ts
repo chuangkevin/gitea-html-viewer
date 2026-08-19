@@ -14,6 +14,8 @@ export interface CollabSession {
   text: Y.Text;
   provider: WebsocketProvider;
   undoManager: Y.UndoManager;
+  /** server snapshot 回 git 的時間戳（毫秒）；還沒存過是 null。 */
+  meta: Y.Map<unknown>;
   destroy(): void;
 }
 
@@ -63,6 +65,7 @@ function collidesWithSmallerClient(provider: WebsocketProvider): boolean {
 export function createCollabSession(docKey: string, user: CollabUser): CollabSession {
   const doc = new Y.Doc();
   const text = doc.getText("content");
+  const meta = doc.getMap("meta");
   const provider = new WebsocketProvider(collabServerUrl(), "collab", doc, {
     params: { doc: docKey },
     disableBc: true,
@@ -79,6 +82,7 @@ export function createCollabSession(docKey: string, user: CollabUser): CollabSes
     text,
     provider,
     undoManager,
+    meta,
     destroy() {
       if (destroyed) return;
       destroyed = true;

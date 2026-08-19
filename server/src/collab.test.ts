@@ -5,7 +5,7 @@ import WebSocket from "ws";
 import * as Y from "yjs";
 import { WebsocketProvider } from "y-websocket";
 import { getYDoc } from "@y/websocket-server/utils";
-import { attachCollab, parseCookies, roomCount, snapshotIfEmptyForTest, type CollabOptions } from "./collab.js";
+import { attachCollab, flushRoom, parseCookies, roomCount, snapshotIfEmptyForTest, type CollabOptions } from "./collab.js";
 
 const SEED = "# 初始內容\n";
 
@@ -377,6 +377,161 @@ describe("collab websocket", { concurrency: false }, () => {
       await waitUntil(() => serverDoc.conns.size === 0, "all conns closed");
       await snapshotIfEmptyForTest(docKey);
       assert.equal(roomCount(), 0);
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+});
+
+function listenWithSave(
+  saved: string[],
+  timing: { idleMs: number; maxIntervalMs: number }
+): Promise<{ port: number; close: () => Promise<void> }> {
+  return listen({
+    featureEnabled: () => true,
+    enabled: () => true,
+    idleMs: timing.idleMs,
+    maxIntervalMs: timing.maxIntervalMs,
+    authorize: async () => ({
+      ok: true,
+      user: { name: "tester", color: "#38bdf8" },
+      readFile: async () => SEED,
+      saveFile: async (content: string) => {
+        saved.push(content);
+      },
+    }),
+  });
+}
+
+describe("collab periodic snapshot", { concurrency: false }, () => {
+  it("snapshots after idle without disconnecting", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listenWithSave(saved, { idleMs: 40, maxIntervalMs: 120 });
+    const docKey = `idle-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    const providerB = openProvider(port, docKey, docB);
+    try {
+      await Promise.all([waitSynced(providerA), waitSynced(providerB)]);
+      const extra = "idle-snapshot-keep-connected";
+      const textA = docA.getText("content");
+      textA.insert(textA.length, extra);
+      await waitUntil(() => saved.some((c) => c.includes(extra)), "idle snapshot of insert");
+      assert.ok(
+        saved[saved.length - 1].includes(extra),
+        `expected snapshot to include ${JSON.stringify(extra)}, got ${JSON.stringify(saved)}`
+      );
+    } finally {
+      providerA.destroy();
+      providerB.destroy();
+      await close();
+    }
+  });
+
+  it("cap timer snapshots during continuous edits", async () => {
+    const saved: string[] = [];
+    const idleMs = 400;
+    const maxIntervalMs = 80;
+    const { port, close } = await listenWithSave(saved, { idleMs, maxIntervalMs });
+    const docKey = `cap-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const textA = docA.getText("content");
+      let stop = false;
+      const typing = (async () => {
+        while (!stop) {
+          textA.insert(textA.length, ".");
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      })();
+      await waitUntil(() => saved.length >= 1, "cap snapshot while still typing", maxIntervalMs * 6);
+      stop = true;
+      await typing;
+      assert.ok(saved.length >= 1, "expected at least one snapshot before typing stopped");
+      assert.ok(
+        saved[0].includes("."),
+        `expected snapshot to include typed dots, got ${JSON.stringify(saved[0])}`
+      );
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
+  it("flushRoom snapshots immediately", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listenWithSave(saved, { idleMs: 5_000, maxIntervalMs: 30_000 });
+    const docKey = `flush-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const extra = "flush-now";
+      const textA = docA.getText("content");
+      textA.insert(textA.length, extra);
+      await waitUntil(
+        () => getYDoc(docKey).getText("content").toString().includes(extra),
+        "server doc to see insert"
+      );
+      const lastSavedAt = await flushRoom(docKey);
+      assert.notEqual(lastSavedAt, null);
+      assert.equal(typeof lastSavedAt, "number");
+      assert.ok(saved.length >= 1, "saveFile should be called");
+      assert.ok(
+        saved.some((c) => c.includes(extra)),
+        `expected snapshot to include ${JSON.stringify(extra)}, got ${JSON.stringify(saved)}`
+      );
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
+  it("writes lastSavedAt into Y.Map meta after snapshot", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listenWithSave(saved, { idleMs: 40, maxIntervalMs: 120 });
+    const docKey = `meta-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const extra = "meta-saved-at";
+      docA.getText("content").insert(docA.getText("content").length, extra);
+      await waitUntil(() => {
+        const v = docA.getMap("meta").get("lastSavedAt");
+        return typeof v === "number";
+      }, "client meta.lastSavedAt to become a number");
+      assert.equal(typeof docA.getMap("meta").get("lastSavedAt"), "number");
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
+  it("does not snapshot in a loop after writing meta", async () => {
+    const saved: string[] = [];
+    const idleMs = 40;
+    const maxIntervalMs = 80;
+    const { port, close } = await listenWithSave(saved, { idleMs, maxIntervalMs });
+    const docKey = `noloop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      const extra = "once-only";
+      docA.getText("content").insert(docA.getText("content").length, extra);
+      await waitUntil(() => saved.length >= 1, "first snapshot");
+      const afterFirst = saved.length;
+      await new Promise((r) => setTimeout(r, maxIntervalMs * 3));
+      assert.equal(
+        saved.length,
+        afterFirst,
+        `meta write must not retrigger snapshot; saveFile called ${saved.length} times (was ${afterFirst})`
+      );
     } finally {
       providerA.destroy();
       await close();

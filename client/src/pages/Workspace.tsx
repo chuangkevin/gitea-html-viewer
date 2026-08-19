@@ -41,6 +41,13 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 /** 內容變動後閒置多久自動寫回 GitLab（毫秒）。調這個值就能改自動存檔節奏。 */
 const AUTOSAVE_DELAY_MS = 3000;
 
+function formatCollabSavedClock(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 const NOTE_PATH_MIME = "application/x-note-path";
 // 跟 CodeMirror 圖片 widget 共用同一個值，兩邊才認得同一種拖曳
 const NOTE_IMG_MOVE_MIME = IMAGE_MOVE_MIME;
@@ -184,6 +191,8 @@ export default function Workspace() {
   const [files, setFiles] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
   const [collab, setCollab] = useState<CollabSession | null>(null);
+  const [collabSavedAt, setCollabSavedAt] = useState<number | null>(null);
+  const [collabFlushing, setCollabFlushing] = useState(false);
   const [accessReady, setAccessReady] = useState(false);
   const [accessMode, setAccessMode] = useState<AccessMode>("login");
   const [guestName, setGuestName] = useState("");
@@ -620,6 +629,23 @@ export default function Workspace() {
 
   /** 手動存檔（按鈕 / Cmd+S）。 */
   async function handleSave() {
+    if (collab) {
+      if (collabFlushing) return;
+      setCollabFlushing(true);
+      try {
+        const r = await api.collabFlush(editorDocKey);
+        if (!r.ok) {
+          setError("共筆存檔失敗");
+          return;
+        }
+        if (r.lastSavedAt != null) setCollabSavedAt(r.lastSavedAt);
+      } catch (e) {
+        setError(String((e as Error).message || e));
+      } finally {
+        setCollabFlushing(false);
+      }
+      return;
+    }
     const snap = pendingSaveRef.current ?? { path: activePath, content, sha };
     await saveSnapshot(snap);
   }
@@ -1012,6 +1038,24 @@ export default function Workspace() {
     // collab 刻意不進 deps：連線建立後 setCollab 不該重跑這個 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorDocKey, canWrite]);
+
+  // 共筆：訂閱 server 寫進 Y.Map("meta") 的 lastSavedAt，給工具列顯示「上次存檔」。
+  useEffect(() => {
+    if (!collab) {
+      setCollabSavedAt(null);
+      return;
+    }
+    const meta = collab.meta;
+    const sync = () => {
+      const v = meta.get("lastSavedAt");
+      setCollabSavedAt(typeof v === "number" ? v : null);
+    };
+    sync();
+    meta.observe(sync);
+    return () => {
+      meta.unobserve(sync);
+    };
+  }, [collab]);
 
   // 自動存檔：內容變動後閒置 AUTOSAVE_DELAY_MS 就 commit 回 GitLab。
   // conflict / error 狀態不自動重試，避免一直打 GitLab 或覆蓋別人的修改。
@@ -2076,22 +2120,38 @@ export default function Workspace() {
             )}
             <button
               onClick={handleSave}
-              disabled={save === "saving"}
-              title="編輯後會自動存檔；這個按鈕是立即存檔"
+              disabled={collab ? collabFlushing : save === "saving"}
+              title={
+                collab
+                  ? "共筆中，內容即時同步給所有人；這個按鈕是立即存回 GitLab"
+                  : "編輯後會自動存檔；這個按鈕是立即存檔"
+              }
               className={`rounded-lg px-3 py-1 sm:px-4 sm:py-1.5 text-xs sm:text-sm font-semibold disabled:opacity-50 whitespace-nowrap shrink-0 ${
                 save === "conflict" ? "bg-amber-600 hover:bg-amber-500" : "bg-sky-600 hover:bg-sky-500"
               }`}
             >
-              {save === "saving"
-                ? "commit 中…"
-                : save === "saved"
-                  ? "已自動存檔 ✓"
-                  : save === "dirty"
-                    ? "待存檔…"
-                    : save === "conflict"
-                      ? "⚠️ 有衝突"
-                      : "存檔（commit）"}
+              {collab
+                ? collabFlushing
+                  ? "存檔中…"
+                  : "立即存檔"
+                : save === "saving"
+                  ? "commit 中…"
+                  : save === "saved"
+                    ? "已自動存檔 ✓"
+                    : save === "dirty"
+                      ? "待存檔…"
+                      : save === "conflict"
+                        ? "⚠️ 有衝突"
+                        : "存檔（commit）"}
             </button>
+            {collab && (
+              <span className="text-[10px] sm:text-xs text-zinc-400 leading-tight whitespace-nowrap shrink-0">
+                <span className="block">共筆中 · 已即時同步</span>
+                <span className="hidden sm:inline">
+                  上次存檔 {collabSavedAt == null ? "尚未存檔" : formatCollabSavedClock(collabSavedAt)}
+                </span>
+              </span>
+            )}
           </>
         )}
         {accessMode === "open" && me && !me.login && !me.team?.selected && (

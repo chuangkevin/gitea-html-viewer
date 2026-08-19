@@ -26,11 +26,26 @@ export interface CollabOptions {
   enabled(docKey: string): boolean;
   /** 用 cookie 決定這個人能不能編這份文件。 */
   authorize(input: { cookies: Record<string, string>; docKey: string }): Promise<CollabAuthResult>;
+  /** 測試用：覆蓋 SNAPSHOT_IDLE_MS。沒給就用預設 5 秒。 */
+  idleMs?: number;
+  /** 測試用：覆蓋 SNAPSHOT_MAX_INTERVAL_MS。沒給就用預設 30 秒。 */
+  maxIntervalMs?: number;
 }
+
+/** 最後一次編輯後閒置這麼久就 snapshot。 */
+const SNAPSHOT_IDLE_MS = 5_000;
+/** 一直有人在打字時，最多隔這麼久一定要 snapshot 一次（否則連打十分鐘等於零次落地）。 */
+const SNAPSHOT_MAX_INTERVAL_MS = 30_000;
 
 type RoomState = {
   seeded: Promise<void>;
   saveFile?: (content: string) => Promise<void>;
+  dirty: boolean;
+  idleTimer?: NodeJS.Timeout;
+  capTimer?: NodeJS.Timeout;
+  lastSavedAt: number | null;
+  idleMs: number;
+  maxIntervalMs: number;
 };
 
 const rooms = new Map<string, RoomState>();
@@ -68,7 +83,88 @@ function rejectUpgrade(socket: Duplex, status: number, reason: string): void {
   socket.destroy();
 }
 
-function ensureSeeded(docKey: string, readFile?: () => Promise<string | null>): Promise<void> {
+function clearRoomTimers(room: RoomState): void {
+  if (room.idleTimer) {
+    clearTimeout(room.idleTimer);
+    room.idleTimer = undefined;
+  }
+  if (room.capTimer) {
+    clearTimeout(room.capTimer);
+    room.capTimer = undefined;
+  }
+}
+
+function markDirty(docKey: string): void {
+  const room = rooms.get(docKey);
+  if (!room) return;
+  room.dirty = true;
+  if (room.idleTimer) clearTimeout(room.idleTimer);
+  room.idleTimer = setTimeout(() => {
+    void snapshotNow(docKey);
+  }, room.idleMs);
+  if (!room.capTimer) {
+    room.capTimer = setTimeout(() => {
+      void snapshotNow(docKey);
+    }, room.maxIntervalMs);
+  }
+}
+
+async function snapshotNow(docKey: string): Promise<number | null> {
+  const room = rooms.get(docKey);
+  if (!room) return null;
+
+  const inFlight = snapshots.get(docKey);
+  if (inFlight) {
+    await inFlight;
+    return snapshotNow(docKey);
+  }
+
+  let resolveGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  snapshots.set(docKey, gate);
+
+  try {
+    const current = rooms.get(docKey);
+    if (!current) return null;
+
+    clearRoomTimers(current);
+    current.dirty = false;
+
+    try {
+      const doc = getYDoc(docKey);
+      const content = doc.getText("content").toString();
+      if (current.saveFile) {
+        await current.saveFile(content);
+      }
+      current.lastSavedAt = Date.now();
+      const meta = doc.getMap("meta");
+      doc.transact(() => {
+        meta.set("lastSavedAt", current.lastSavedAt);
+      }, "collab-snapshot");
+      return current.lastSavedAt;
+    } catch (err) {
+      console.error("[collab] snapshot 失敗", err);
+      return null;
+    }
+  } finally {
+    snapshots.delete(docKey);
+    resolveGate();
+  }
+}
+
+/** 立刻 snapshot 一次（前端「立即存檔」按鈕用）。房間不存在回 null。 */
+export function flushRoom(docKey: string): Promise<number | null> {
+  return snapshotNow(docKey);
+}
+
+function ensureSeeded(
+  docKey: string,
+  readFile?: () => Promise<string | null>,
+  idleMs: number = SNAPSHOT_IDLE_MS,
+  maxIntervalMs: number = SNAPSHOT_MAX_INTERVAL_MS
+): Promise<void> {
   const existing = rooms.get(docKey);
   if (existing) return existing.seeded;
   const seeded = (async () => {
@@ -81,8 +177,13 @@ function ensureSeeded(docKey: string, readFile?: () => Promise<string | null>): 
     } catch (err) {
       console.error("[collab]", err);
     }
+    // 灌完初始內容之後才掛 observer：seed 本身不要被當成一次編輯。
+    // 用 ytext.observe 而不是 doc.on("update")：snapshot 成功後寫 meta 也是一次
+    // doc update，用 update 會自我觸發成無窮迴圈。文字 observer 看不到 meta 寫入。
+    const ytext = doc.getText("content");
+    ytext.observe(() => markDirty(docKey));
   })();
-  rooms.set(docKey, { seeded });
+  rooms.set(docKey, { seeded, dirty: false, lastSavedAt: null, idleMs, maxIntervalMs });
   return seeded;
 }
 
@@ -96,12 +197,16 @@ async function snapshotIfEmpty(docKey: string): Promise<void> {
   const room = rooms.get(docKey);
   if (!room) return;
   const inFlight = snapshots.get(docKey);
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    await inFlight;
+    return snapshotIfEmpty(docKey);
+  }
 
   const doc = getYDoc(docKey);
   if (doc.conns.size > 0) return;
 
   const run = (async () => {
+    clearRoomTimers(room);
     const content = doc.getText("content").toString();
     try {
       if (room.saveFile) {
@@ -159,7 +264,12 @@ export function attachCollab(server: HttpServer, opts: CollabOptions): void {
           rejectUpgrade(socket, 401, "Unauthorized");
           return;
         }
-        await ensureSeeded(docKey, auth.readFile);
+        await ensureSeeded(
+          docKey,
+          auth.readFile,
+          opts.idleMs ?? SNAPSHOT_IDLE_MS,
+          opts.maxIntervalMs ?? SNAPSHOT_MAX_INTERVAL_MS
+        );
         const room = rooms.get(docKey);
         if (room) room.saveFile = auth.saveFile;
         wss.handleUpgrade(req, socket, head, (ws) => {
