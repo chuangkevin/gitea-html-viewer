@@ -329,6 +329,66 @@ export const gitlab: Provider = {
       throw new ProviderError(res.status, `GitLab ${res.status}: move failed ${t.slice(0, 200)}`);
     }
   },
+
+  async deleteFile(token, projectPath, filePath, message, branch, author) {
+    const body = JSON.stringify({
+      branch,
+      commit_message: message,
+      actions: [{ action: "delete", file_path: filePath }],
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
+    });
+    const res = await glRaw(token, `/projects/${pid(projectPath)}/repository/commits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      if (res.status === 404) {
+        throw new ProviderError(404, `GitLab 404: delete failed ${t.slice(0, 200)}`);
+      }
+      throw new ProviderError(res.status, `GitLab ${res.status}: delete failed ${t.slice(0, 200)}`);
+    }
+  },
+
+  async batchMoveFiles(token, projectPath, moves, message, branch, author) {
+    const body = JSON.stringify({
+      branch,
+      commit_message: message,
+      actions: moves.map((m) => ({ action: "move", file_path: m.to, previous_path: m.from })),
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
+    });
+    const res = await glRaw(token, `/projects/${pid(projectPath)}/repository/commits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new ProviderError(res.status, `GitLab ${res.status}: batch move failed ${t.slice(0, 200)}`);
+    }
+  },
+
+  async batchDeleteFiles(token, projectPath, paths, message, branch, author) {
+    const body = JSON.stringify({
+      branch,
+      commit_message: message,
+      actions: paths.map((p) => ({ action: "delete", file_path: p })),
+      ...(author?.name ? { author_name: author.name } : {}),
+      ...(author?.email ? { author_email: author.email } : {}),
+    });
+    const res = await glRaw(token, `/projects/${pid(projectPath)}/repository/commits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new ProviderError(res.status, `GitLab ${res.status}: batch delete failed ${t.slice(0, 200)}`);
+    }
+  },
 };
 
 // readFile / readFileRaw 需要 ref；GitLab 沒有「預設分支」隱含值，先查專案。

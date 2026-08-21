@@ -1526,6 +1526,339 @@ app.post("/api/move/:provider/:project", async (req, res) => {
   }
 });
 
+app.delete("/api/file/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const filePath = (req.params as Record<string, string>)[0] || "";
+
+    if (!filePath || filePath.startsWith("/") || filePath.includes("\\") || filePath.includes("..")) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+
+    const { message } = req.body as { message?: string };
+
+    const p = getProvider(provider);
+    if (!p.deleteFile) {
+      res.status(501).json({ error: "delete_not_supported" });
+      return;
+    }
+
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    const commitMsg = message || `docs: 刪除 ${filePath}`;
+    await p.deleteFile(actor.token, project, filePath, commitMsg, info.defaultBranch, actor.author);
+    res.json({ ok: true, path: filePath });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+app.post("/api/copy/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const { from, to, message } = req.body as { from?: string; to?: string; message?: string };
+
+    const bad = (v: unknown): boolean =>
+      typeof v !== "string" ||
+      v.length === 0 ||
+      v.startsWith("/") ||
+      v.includes("\\") ||
+      v.includes("..");
+    if (bad(from) || bad(to)) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+    const fromPath = from as string;
+    const toPath = to as string;
+
+    if (fromPath === toPath) {
+      res.status(400).json({ error: "same_path" });
+      return;
+    }
+
+    const p = getProvider(provider);
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    let targetExists = false;
+    try {
+      await p.readFile(actor.token, project, toPath);
+      targetExists = true;
+    } catch {
+      targetExists = false;
+    }
+    if (targetExists) {
+      res.status(409).json({ error: "target_exists" });
+      return;
+    }
+
+    const buf = await p.readFileRaw(actor.token, project, fromPath);
+    const MAX_SIZE = 20 * 1024 * 1024;
+    if (buf.byteLength > MAX_SIZE) {
+      res.status(413).json({ error: "file_too_large" });
+      return;
+    }
+
+    const commitMsg = message || `docs: 複製 ${fromPath} → ${toPath}`;
+    await p.writeFile(
+      actor.token,
+      project,
+      toPath,
+      buf.toString("base64"),
+      commitMsg,
+      undefined,
+      info.defaultBranch,
+      actor.author,
+      true
+    );
+    res.json({ ok: true, from: fromPath, to: toPath });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+/** 資料夾批次操作上限。刻意的保險絲，避免一次打爆 upstream。 */
+const FOLDER_BATCH_LIMIT = 300;
+
+app.post("/api/move-folder/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    let { from, to, message } = req.body as { from?: string; to?: string; message?: string };
+    if (typeof from === "string") from = from.replace(/\/+$/, "");
+    if (typeof to === "string") to = to.replace(/\/+$/, "");
+
+    const bad = (v: unknown): boolean =>
+      typeof v !== "string" ||
+      v.length === 0 ||
+      v.startsWith("/") ||
+      v.includes("\\") ||
+      v.includes("..");
+    if (bad(from) || bad(to)) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+    const fromPath = from as string;
+    const toPath = to as string;
+
+    if (fromPath === toPath) {
+      res.status(400).json({ error: "same_path" });
+      return;
+    }
+    if (toPath.startsWith(fromPath + "/")) {
+      res.status(400).json({ error: "invalid_target" });
+      return;
+    }
+
+    const p = getProvider(provider);
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    const all = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const inside = all.map((f) => f.path).filter((x) => x.startsWith(fromPath + "/"));
+    if (inside.length === 0) {
+      res.status(404).json({ error: "folder_not_found" });
+      return;
+    }
+    if (inside.length > FOLDER_BATCH_LIMIT) {
+      res.status(413).json({ error: "folder_too_large" });
+      return;
+    }
+
+    const moves = inside.map((x) => ({ from: x, to: toPath + x.slice(fromPath.length) }));
+
+    const occupied = new Set(all.map((f) => f.path));
+    for (const x of inside) occupied.delete(x);
+    if (moves.some((m) => occupied.has(m.to))) {
+      res.status(409).json({ error: "target_exists" });
+      return;
+    }
+
+    if (!p.batchMoveFiles) {
+      res.status(501).json({ error: "move_not_supported" });
+      return;
+    }
+
+    const commitMsg = message || `docs: 搬移資料夾 ${fromPath} → ${toPath}`;
+    await p.batchMoveFiles(actor.token, project, moves, commitMsg, info.defaultBranch, actor.author);
+    res.json({ ok: true, from: fromPath, to: toPath, count: moves.length });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+app.delete("/api/folder/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const folderPath = ((req.params as Record<string, string>)[0] || "").replace(/\/+$/, "");
+    if (!folderPath) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+    if (folderPath.startsWith("/") || folderPath.includes("\\") || folderPath.includes("..")) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+
+    const { message } = req.body as { message?: string };
+
+    const p = getProvider(provider);
+    const info = await p.getRepo(actor.token, project);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
+    const all = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const inside = all.map((f) => f.path).filter((x) => x.startsWith(folderPath + "/"));
+    if (inside.length === 0) {
+      res.status(404).json({ error: "folder_not_found" });
+      return;
+    }
+    if (inside.length > FOLDER_BATCH_LIMIT) {
+      res.status(413).json({ error: "folder_too_large" });
+      return;
+    }
+
+    if (!p.batchDeleteFiles) {
+      res.status(501).json({ error: "delete_not_supported" });
+      return;
+    }
+
+    const commitMsg = message || `docs: 刪除資料夾 ${folderPath}（${inside.length} 個檔案）`;
+    await p.batchDeleteFiles(actor.token, project, inside, commitMsg, info.defaultBranch, actor.author);
+    res.json({ ok: true, path: folderPath, count: inside.length });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
 app.post("/api/upload/:provider/:project", async (req, res) => {
   try {
     const provider = routeProvider(req);

@@ -125,6 +125,33 @@ export interface Provider {
     branch: string,
     author?: CommitAuthor
   ): Promise<void>;
+  /** 在單一 commit 內批次搬移檔案。實作端必須保證整批同進退。 */
+  batchMoveFiles?(
+    token: string,
+    projectPath: string,
+    moves: { from: string; to: string }[],
+    message: string,
+    branch: string,
+    author?: CommitAuthor
+  ): Promise<void>;
+  /** 在單一 commit 內批次刪除檔案。實作端必須保證整批同進退。 */
+  batchDeleteFiles?(
+    token: string,
+    projectPath: string,
+    paths: string[],
+    message: string,
+    branch: string,
+    author?: CommitAuthor
+  ): Promise<void>;
+  /** 刪除檔案。不存在時由實作端丟 ProviderError(404)。 */
+  deleteFile?(
+    token: string,
+    projectPath: string,
+    filePath: string,
+    message: string,
+    branch: string,
+    author?: CommitAuthor
+  ): Promise<void>;
 }
 
 // registry 由 index.ts 用 registerProvider 填入，避免循環相依

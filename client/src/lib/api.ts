@@ -193,6 +193,24 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }),
     }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
+  deleteFile: (ref: string, path: string, message?: string) =>
+    fetch(`/api/file/${ref}/${encFilePath(path)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    }).then((r) => j<{ ok: boolean; path: string }>(r)),
+  copyFile: (ref: string, from: string, to: string, message?: string) =>
+    fetch(`/api/copy/${ref}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, message }),
+    }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
+  moveFolder: (ref: string, from: string, to: string, message?: string) =>
+    fetch(`/api/move-folder/${ref}`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, message }) }).then((r) => j<{ ok: boolean; from: string; to: string; count: number }>(r)),
+  deleteFolder: (ref: string, path: string, message?: string) =>
+    fetch(`/api/folder/${ref}/${encFilePath(path)}`, { method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }) }).then((r) => j<{ ok: boolean; path: string; count: number }>(r)),
   batchUpload: (ref: string, files: Array<{ path: string; contentBase64: string }>, message?: string) =>
     fetch(`/api/upload/${ref}`, {
       method: "POST",

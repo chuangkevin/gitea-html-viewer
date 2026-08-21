@@ -38,3 +38,18 @@ export function checkMove(filePath: string, targetDir: string): MoveCheck {
   const basename = lastSlash >= 0 ? file.slice(lastSlash + 1) : file;
   return { ok: true, target: dir ? `${dir}/${basename}` : basename };
 }
+
+/** 從檔案路徑清單推出所有存在的資料夾路徑（不含根目錄），已去重並依字典序排序。
+ *  例：["a/b/c.md", "a/d.md", "e.md"] → ["a", "a/b"] */
+export function allFolders(paths: readonly string[]): string[] {
+  const folders = new Set<string>();
+  for (const p of paths) {
+    const parts = p.split("/").filter(Boolean);
+    let acc = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      acc = acc ? `${acc}/${parts[i]}` : parts[i];
+      folders.add(acc);
+    }
+  }
+  return [...folders].sort();
+}

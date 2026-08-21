@@ -34,6 +34,9 @@ import type { MarkdownEditorHandle } from "../components/MarkdownEditor";
 import { IMAGE_MOVE_MIME } from "../lib/drag-mime";
 import type { CollabSession } from "../lib/collab";
 import { joinTargetPath, targetDirFor, targetDirLabelFor } from "../lib/target-dir";
+import { duplicatePathFor } from "../lib/duplicate-name";
+import { applyExtension, newFileFrom } from "../lib/new-file-name";
+import { allFolders, checkMove } from "../lib/move-path";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -43,6 +46,8 @@ type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
 /** 內容變動後閒置多久自動寫回 GitLab（毫秒）。調這個值就能改自動存檔節奏。 */
 const AUTOSAVE_DELAY_MS = 3000;
+
+const NEW_FILE_EXTS = [".md", ".txt", ".html", ".css", ".json"] as const;
 
 function formatCollabSavedClock(ms: number): string {
   const d = new Date(ms);
@@ -223,6 +228,9 @@ export default function Workspace() {
     return initialPaneMode(stored);
   });
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [moveTarget, setMoveTarget] = useState<string | null>(null);
+  const [moveFilter, setMoveFilter] = useState("");
   const [newFile, setNewFile] = useState("");
   const [shareUrl, setShareUrl] = useState<{ url: string; slidesUrl: string } | null>(null);
   const [presentMode, setPresentMode] = useState(false);
@@ -321,6 +329,25 @@ export default function Workspace() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [sidebarOpen]);
+
+  function showNotice(msg: string) {
+    setNotice(msg);
+  }
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 2500);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!moveTarget) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMoveTarget(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [moveTarget]);
 
   const loginUrl = `/api/auth/login?provider=${provider}&next=${encodeURIComponent(
     location.pathname + location.search
@@ -1028,11 +1055,24 @@ export default function Workspace() {
     if (!raw) return;
     let p = joinTargetPath(getCurrentDirContext(), raw);
     if (!p) return;
-    if (!p.toLowerCase().endsWith(".md")) p += ".md";
+    const created = newFileFrom(p);
+    p = created.path;
+    const kind = kindOf(p);
+    if (kind !== "md" && kind !== "html" && kind !== "text") {
+      setNewFile("");
+      try {
+        await api.saveFile(refPath, p, "", undefined, `docs: 新增 ${p}`);
+        await loadFiles();
+        setParams({ f: p });
+      } catch (err: any) {
+        setError(String(err.message || err));
+      }
+      return;
+    }
     setNewFile("");
     setFiles((f) => (f ? [...f, p] : [p]));
     setParams({ f: p });
-    const initial = `# ${p.replace(/\.md$/i, "").split("/").pop()}\n\n`;
+    const initial = created.initial;
     setContent(initial);
     setSha(undefined);
     pendingSaveRef.current = { path: p, content: initial, sha: undefined };
@@ -1156,7 +1196,7 @@ export default function Workspace() {
     if (collab) return;
     if (save !== "dirty") return;
     if (!activePath || !canWrite) return;
-    if (activeKind !== "md" && activeKind !== "html") return;
+    if (activeKind !== "md" && activeKind !== "html" && activeKind !== "text") return;
     const t = setTimeout(() => {
       const p = pendingSaveRef.current;
       if (p) void saveSnapshot(p);
@@ -1267,6 +1307,162 @@ export default function Workspace() {
         setError("這個 repo 的來源不支援移動檔案");
       } else {
         setError(`移動失敗：${e?.message || e}`);
+      }
+    }
+  }
+
+  async function handlePickMoveFolder(dir: string) {
+    if (!moveTarget) return;
+    const check = checkMove(moveTarget, dir);
+    if (check.ok && check.target) {
+      await handleMoveFile(moveTarget, check.target);
+      setMoveTarget(null);
+    }
+  }
+
+  async function handleRenameFile(path: string) {
+    if (!canWrite) return;
+    const basename = path.split("/").pop() || path;
+    const input = window.prompt("新檔名：", basename);
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setError("檔名不可為空");
+      return;
+    }
+    if (trimmed.includes("/") || trimmed.includes("..")) {
+      setError("檔名不可包含 / 或 ..");
+      return;
+    }
+    if (trimmed === basename) return;
+    const slash = path.lastIndexOf("/");
+    const to = slash >= 0 ? `${path.slice(0, slash)}/${trimmed}` : trimmed;
+    if ((files ?? []).includes(to)) {
+      setError(`已有同名檔案：${to}`);
+      return;
+    }
+    await handleMoveFile(path, to);
+  }
+
+  async function handleDuplicateFile(path: string) {
+    if (!canWrite) return;
+    const to = duplicatePathFor(path, files ?? []);
+    try {
+      await api.copyFile(refPath, path, to);
+      await loadFiles();
+      setParams({ f: to });
+    } catch (e: any) {
+      if (e?.status === 409 || e?.code === "target_exists") {
+        setError(`已有同名檔案：${to}`);
+      } else {
+        setError(`複製失敗：${e?.message || e}`);
+      }
+    }
+  }
+
+  async function handleDeleteFile(path: string) {
+    if (!canWrite) return;
+    if (!window.confirm(`確定刪除「${path}」？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`)) return;
+    try {
+      await api.deleteFile(refPath, path);
+      await loadFiles();
+      if (activePathRef.current === path) {
+        setContent("");
+        setSha(undefined);
+        pendingSaveRef.current = null;
+        setSave("saved");
+        setParams({});
+      }
+    } catch (e: any) {
+      if (e?.status === 501) {
+        setError("這個 repo 的來源不支援刪除檔案");
+      } else if (e?.status === 403) {
+        setError("沒有寫入權限");
+      } else {
+        setError(`刪除失敗：${e?.message || e}`);
+      }
+    }
+  }
+
+  async function handleRenameFolder(path: string) {
+    if (!canWrite) return;
+    const basename = path.split("/").pop() || path;
+    const input = window.prompt("資料夾新名稱：", basename);
+    if (input === null) return;
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setError("資料夾名稱不可為空");
+      return;
+    }
+    if (trimmed.includes("/") || trimmed.includes("..")) {
+      setError("資料夾名稱不可包含 / 或 ..");
+      return;
+    }
+    if (trimmed === basename) return;
+    const slash = path.lastIndexOf("/");
+    const to = slash >= 0 ? `${path.slice(0, slash)}/${trimmed}` : trimmed;
+    if ((files ?? []).some((f) => f.startsWith(to + "/"))) {
+      setError(`已有同名資料夾：${to}`);
+      return;
+    }
+    try {
+      await api.moveFolder(refPath, path, to);
+      await loadFiles();
+      if (activePathRef.current.startsWith(path + "/")) {
+        setParams({ f: to + activePathRef.current.slice(path.length) });
+      } else if (params.has("dir") && (cleanDir === path || cleanDir.startsWith(path + "/"))) {
+        setParams({ dir: to + cleanDir.slice(path.length) });
+      }
+    } catch (e: any) {
+      const msg = e?.message || e;
+      if (e?.status === 409 || e?.code === "target_exists") {
+        setError(`目標已存在：${to}`);
+      } else if (e?.status === 413 || e?.code === "folder_too_large") {
+        setError("這個資料夾檔案太多（超過 300 個），請先拆小再搬");
+      } else if (e?.status === 501) {
+        setError("這個 repo 的來源不支援搬移資料夾");
+      } else if (e?.status === 404 || e?.code === "folder_not_found") {
+        setError("找不到這個資料夾");
+      } else {
+        setError(`搬移資料夾失敗：${msg}`);
+      }
+    }
+  }
+
+  async function handleDeleteFolder(path: string) {
+    if (!canWrite) return;
+    const inside = (files ?? []).filter((f) => f.startsWith(path + "/"));
+    if (inside.length === 0) {
+      setError("找不到這個資料夾");
+      return;
+    }
+    if (
+      !window.confirm(
+        `確定刪除資料夾「${path}」及其中的 ${inside.length} 個檔案？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteFolder(refPath, path);
+      await loadFiles();
+      if (activePathRef.current.startsWith(path + "/")) {
+        setContent("");
+        setSha(undefined);
+        pendingSaveRef.current = null;
+        setSave("saved");
+        setParams({});
+      }
+    } catch (e: any) {
+      const msg = e?.message || e;
+      if (e?.status === 413 || e?.code === "folder_too_large") {
+        setError("這個資料夾檔案太多（超過 300 個），請先拆小再搬");
+      } else if (e?.status === 501) {
+        setError("這個 repo 的來源不支援刪除資料夾");
+      } else if (e?.status === 404 || e?.code === "folder_not_found") {
+        setError("找不到這個資料夾");
+      } else {
+        setError(`刪除資料夾失敗：${msg}`);
       }
     }
   }
@@ -1825,8 +2021,26 @@ export default function Workspace() {
         // fallback to prompt
       }
     }
-    prompt("請複製以下連結：", text);
-    return true;
+    try {
+      prompt("請複製以下連結：", text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleCopyPath(path: string) {
+    const ok = await copyTextToClipboard(path);
+    if (ok) showNotice(`已複製路徑：${path}`);
+    else setError(`複製失敗，請手動複製：${path}`);
+  }
+
+  async function handleCopyLink(path: string, kind: "file" | "folder") {
+    const q = kind === "folder" ? `?dir=${encodeURIComponent(path)}` : `?f=${encodeURIComponent(path)}`;
+    const url = `${window.location.origin}/edit/${refPath}${q}`;
+    const ok = await copyTextToClipboard(url);
+    if (ok) showNotice("已複製連結");
+    else setError(`複製失敗，請手動複製：${url}`);
   }
 
   const currentShareTargetPath = useMemo(() => {
@@ -2043,6 +2257,13 @@ export default function Workspace() {
     },
     [effectiveView]
   );
+
+  const moveFolderOptions = useMemo(() => {
+    const all = ["", ...allFolders(files ?? [])];
+    const q = moveFilter.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((d) => d !== "" && d.toLowerCase().includes(q));
+  }, [files, moveFilter]);
 
   // private repo 且未登入：整頁登入提示
   if (needLogin) {
@@ -2533,6 +2754,12 @@ export default function Workspace() {
           <button onClick={() => setError("")}>✕</button>
         </div>
       )}
+      {notice && (
+        <div className="border-b border-sky-900/50 bg-sky-950/40 px-4 py-2 text-sm text-sky-300 flex">
+          <span className="flex-1 whitespace-pre-wrap">{notice}</span>
+          <button onClick={() => setNotice("")}>✕</button>
+        </div>
+      )}
       {save === "conflict" && (
         <div className="border-b border-amber-700 bg-amber-950/60 px-4 py-2 flex flex-wrap items-center gap-2 text-sm text-amber-200">
           <span className="flex-1 min-w-[12rem]">遠端版本較新，自動存檔已暫停。</span>
@@ -2673,7 +2900,7 @@ export default function Workspace() {
                   value={newFile}
                   onChange={(e) => setNewFile(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleCreate()}
-                  placeholder="新檔名…"
+                  placeholder="新檔名…（沒寫副檔名就存成 .md）"
                   className="flex-1 min-w-0 rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-sky-600"
                 />
                 <button
@@ -2690,6 +2917,16 @@ export default function Workspace() {
                 >
                   📁+
                 </button>
+              </div>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {NEW_FILE_EXTS.map((ext) => (
+                  <button
+                    key={ext}
+                    type="button"
+                    onClick={() => setNewFile((v) => applyExtension(v, ext))}
+                    className="rounded border border-zinc-800 bg-zinc-900 px-2 min-h-8 text-xs font-mono text-zinc-400 hover:border-sky-600 hover:text-sky-300"
+                  >{ext}</button>
+                ))}
               </div>
               <div className="mb-2 text-xs text-zinc-500 flex items-center gap-1 min-w-0">
                 <span className="shrink-0">將建立在：</span>
@@ -2741,6 +2978,14 @@ export default function Workspace() {
               refPath={refPath}
               onInsertFile={canWrite ? (p) => insertIntoEditor(insertSnippetFor(p)) : undefined}
               onMoveFile={canWrite ? handleMoveFile : undefined}
+              onRenameFile={canWrite ? handleRenameFile : undefined}
+              onDuplicateFile={canWrite ? handleDuplicateFile : undefined}
+              onDeleteFile={canWrite ? handleDeleteFile : undefined}
+              onRenameFolder={canWrite ? handleRenameFolder : undefined}
+              onDeleteFolder={canWrite ? handleDeleteFolder : undefined}
+              onCopyPath={handleCopyPath}
+              onCopyLink={handleCopyLink}
+              onRequestMoveFile={canWrite ? (p) => { setMoveFilter(""); setMoveTarget(p); } : undefined}
             />
           )}
           {hasRepo && presentMode && (
@@ -3047,9 +3292,26 @@ export default function Workspace() {
                 ⬇️ 下載
               </a>
             </div>
-            <pre className="flex-1 overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
-              {content}
-            </pre>
+            {canWrite ? (
+              <textarea
+                value={content}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setContent(next);
+                  setSave((s) => (s === "conflict" ? s : "dirty"));
+                  pendingSaveRef.current = { path: activePath, content: next, sha: shaRef.current };
+                }}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                autoComplete="off"
+                className="flex-1 w-full min-h-0 resize-none bg-transparent outline-none p-6 text-sm font-mono text-zinc-300 leading-relaxed focus:outline-none"
+              />
+            ) : (
+              <pre className="flex-1 overflow-auto p-6 text-sm font-mono text-zinc-300 whitespace-pre-wrap">
+                {content}
+              </pre>
+            )}
           </div>
         ) : (
           <div className="flex-1 flex min-w-0 min-h-0 relative overflow-hidden">
@@ -3191,6 +3453,66 @@ export default function Workspace() {
         )}
         </main>
       </div>
+      {moveTarget && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setMoveTarget(null)}
+        >
+          <div
+            className="w-full max-w-md max-h-[70vh] flex flex-col rounded-lg border border-zinc-800 bg-zinc-900 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 min-w-0 px-4 py-3 border-b border-zinc-800">
+              <div className="flex-1 min-w-0 text-sm text-zinc-200 flex items-center">
+                <span className="shrink-0">移動「</span>
+                <span className="truncate">{moveTarget.split("/").pop() || moveTarget}</span>
+                <span className="shrink-0">」到…</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMoveTarget(null)}
+                className="shrink-0 min-h-11 min-w-11 text-zinc-400 hover:text-zinc-200"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-3 py-2">
+              <input
+                type="text"
+                value={moveFilter}
+                onChange={(e) => setMoveFilter(e.target.value)}
+                placeholder="篩選資料夾…"
+                className="w-full rounded bg-zinc-900 border border-zinc-800 px-2 py-1.5 text-xs outline-none focus:border-sky-600 font-mono text-zinc-200 placeholder:text-zinc-600"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {moveFolderOptions.length === 0 ? (
+                <p className="px-3 py-3 text-sm text-zinc-500">沒有符合的資料夾</p>
+              ) : (
+                moveFolderOptions.map((dir) => {
+                  const slash = moveTarget.lastIndexOf("/");
+                  const currentDir = slash >= 0 ? moveTarget.slice(0, slash) : "";
+                  const isCurrent = dir === currentDir;
+                  return (
+                    <button
+                      key={dir || "/"}
+                      type="button"
+                      disabled={isCurrent}
+                      onClick={() => void handlePickMoveFolder(dir)}
+                      className={`w-full text-left px-3 min-h-11 text-sm font-mono truncate ${
+                        isCurrent ? "opacity-50 cursor-not-allowed" : "text-zinc-200 hover:bg-zinc-800"
+                      }`}
+                    >
+                      {dir === "" ? "根目錄 (/)" : dir}
+                      {isCurrent ? " 目前位置" : ""}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

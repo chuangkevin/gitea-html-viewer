@@ -54,6 +54,40 @@ function encodePath(p: string): string {
   return p.split("/").map(encodeURIComponent).join("/");
 }
 
+/** 用 Git Data API 在單一 commit 內套用一組 tree 變更（新增/搬移/刪除）。
+ *  entries 直接就是 create-tree 的 tree 陣列元素；刪除用 sha: null。
+ *  不用 contents API：那是逐檔 PUT/DELETE，一次一檔＝N 個 commit，中途失敗還會留下半套。 */
+async function commitTreeChanges(
+  token: string,
+  projectPath: string,
+  entries: { path: string; mode: string; type: "blob"; sha: string | null }[],
+  message: string,
+  branch: string,
+  author?: { name: string; email: string }
+): Promise<void> {
+  const ref = await gh<{ object: { sha: string } }>(token, `/repos/${projectPath}/git/ref/heads/${encodeURIComponent(branch)}`);
+  const headSha = ref.object.sha;
+  const head = await gh<{ tree: { sha: string } }>(token, `/repos/${projectPath}/git/commits/${headSha}`);
+  const baseTree = head.tree.sha;
+  const newTree = await gh<{ sha: string }>(token, `/repos/${projectPath}/git/trees`, {
+    method: "POST",
+    body: JSON.stringify({ base_tree: baseTree, tree: entries }),
+  });
+  const commit = await gh<{ sha: string }>(token, `/repos/${projectPath}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({
+      message,
+      tree: newTree.sha,
+      parents: [headSha],
+      ...(author?.name && author?.email ? { author: { name: author.name, email: author.email } } : {}),
+    }),
+  });
+  await gh(token, `/repos/${projectPath}/git/refs/heads/${encodeURIComponent(branch)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ sha: commit.sha }),
+  });
+}
+
 export const github: Provider = {
   name: "github",
 
@@ -203,5 +237,67 @@ export const github: Provider = {
         `移動未完成：新檔已建立於「${toPath}」，但舊檔「${fromPath}」刪除失敗。請手動刪除舊檔。${detail}`
       );
     }
+  },
+
+  async deleteFile(token, projectPath, filePath, message, branch, author) {
+    const src = await gh<{ sha: string; type?: string }>(
+      token,
+      `/repos/${projectPath}/contents/${encodePath(filePath)}${branch ? `?ref=${encodeURIComponent(branch)}` : ""}`
+    );
+    if (!src?.sha || Array.isArray(src) || src.type === "dir") {
+      throw new ProviderError(400, `無法讀取來源檔案：${filePath}`);
+    }
+
+    const authorBody =
+      author?.name && author?.email ? { author: { name: author.name, email: author.email } } : {};
+
+    await gh(token, `/repos/${projectPath}/contents/${encodePath(filePath)}`, {
+      method: "DELETE",
+      body: JSON.stringify({
+        message,
+        sha: src.sha,
+        ...(branch ? { branch } : {}),
+        ...authorBody,
+      }),
+    });
+  },
+
+  /** 單一 commit 搬移整批檔案。不用 contents API（逐檔＝N 個 commit）。 */
+  async batchMoveFiles(token, projectPath, moves, message, branch, author) {
+    const data = await gh<{ tree: { path: string; mode: string; type: string; sha: string }[] }>(
+      token,
+      `/repos/${projectPath}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+    );
+    const byPath = new Map<string, { mode: string; sha: string }>();
+    for (const t of data.tree) {
+      if (t.type === "blob") byPath.set(t.path, { mode: t.mode, sha: t.sha });
+    }
+    const entries: { path: string; mode: string; type: "blob"; sha: string | null }[] = [];
+    for (const m of moves) {
+      const src = byPath.get(m.from);
+      if (!src) throw new ProviderError(400, `找不到來源檔案：${m.from}`);
+      entries.push({ path: m.to, mode: src.mode, type: "blob", sha: src.sha });
+      entries.push({ path: m.from, mode: src.mode, type: "blob", sha: null });
+    }
+    await commitTreeChanges(token, projectPath, entries, message, branch, author);
+  },
+
+  /** 單一 commit 刪除整批檔案。不用 contents API（逐檔＝N 個 commit）。 */
+  async batchDeleteFiles(token, projectPath, paths, message, branch, author) {
+    const data = await gh<{ tree: { path: string; mode: string; type: string; sha: string }[] }>(
+      token,
+      `/repos/${projectPath}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+    );
+    const byPath = new Map<string, { mode: string; sha: string }>();
+    for (const t of data.tree) {
+      if (t.type === "blob") byPath.set(t.path, { mode: t.mode, sha: t.sha });
+    }
+    const entries: { path: string; mode: string; type: "blob"; sha: string | null }[] = [];
+    for (const p of paths) {
+      const src = byPath.get(p);
+      if (!src) throw new ProviderError(400, `找不到來源檔案：${p}`);
+      entries.push({ path: p, mode: src.mode, type: "blob", sha: null });
+    }
+    await commitTreeChanges(token, projectPath, entries, message, branch, author);
   },
 };

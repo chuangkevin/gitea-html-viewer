@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { checkMove, FILE_MOVE_MIME } from "./move-path.js";
+import { allFolders, checkMove, FILE_MOVE_MIME } from "./move-path.js";
 
 describe("move-path module", () => {
   it("把檔案移到另一個資料夾", () => {
@@ -57,5 +57,23 @@ describe("move-path module", () => {
   it("MIME 常數與插入連結用的那個不同（兩種用途必須分流）", () => {
     assert.equal(FILE_MOVE_MIME, "application/x-note-file-move");
     assert.notEqual(FILE_MOVE_MIME, "application/x-note-path");
+  });
+});
+
+describe("allFolders", () => {
+  it("巢狀路徑推出資料夾、去重、依字典序排序", () => {
+    assert.deepEqual(allFolders(["a/b/c.md", "a/d.md", "e.md"]), ["a", "a/b"]);
+  });
+
+  it("去重：同一資料夾多個檔只出現一次", () => {
+    assert.deepEqual(allFolders(["a/b/x.md", "a/b/y.md"]), ["a", "a/b"]);
+  });
+
+  it("根目錄檔案不產生資料夾", () => {
+    assert.deepEqual(allFolders(["e.md", "f.txt"]), []);
+  });
+
+  it("空清單", () => {
+    assert.deepEqual(allFolders([]), []);
   });
 });

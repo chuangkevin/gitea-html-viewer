@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { checkMove, FILE_MOVE_MIME } from "../lib/move-path";
 
 /** VS Code 風格巢狀檔案樹。展示模式（presentMode）時每列多一個 checkbox，
@@ -103,6 +104,17 @@ interface Props {
   onInsertFile?: (path: string) => void;
   /** 把檔案移到某個資料夾（拖曳放開時觸發）。不給就不啟用移動。 */
   onMoveFile?: (from: string, to: string) => void | Promise<void>;
+  onRenameFile?: (path: string) => void;
+  onDuplicateFile?: (path: string) => void;
+  onDeleteFile?: (path: string) => void;
+  onRenameFolder?: (path: string) => void;
+  onDeleteFolder?: (path: string) => void;
+  /** 複製路徑到剪貼簿。 */
+  onCopyPath?: (path: string, kind: "file" | "folder") => void;
+  /** 複製這個檔案／資料夾的站內連結到剪貼簿。 */
+  onCopyLink?: (path: string, kind: "file" | "folder") => void;
+  /** 開啟「移動到…」選擇器（只給檔案用）。 */
+  onRequestMoveFile?: (path: string) => void;
 }
 
 export default function FileTree({
@@ -118,12 +130,24 @@ export default function FileTree({
   refPath,
   onInsertFile,
   onMoveFile,
+  onRenameFile,
+  onDuplicateFile,
+  onDeleteFile,
+  onRenameFolder,
+  onDeleteFolder,
+  onCopyPath,
+  onCopyLink,
+  onRequestMoveFile,
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [searchQuery, setSearchQuery] = useState("");
   // 拖曳移動時，目前 hover 的目標資料夾（"" = 根目錄，null = 沒有）
   const [dropDir, setDropDir] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ path: string; kind: "file" | "folder"; x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const hasFileMenu = Boolean(onRenameFile || onDuplicateFile || onDeleteFile || onCopyPath || onCopyLink || onRequestMoveFile);
+  const hasFolderMenu = Boolean(onRenameFolder || onDeleteFolder || onCopyPath || onCopyLink);
 
   /** 這次拖曳是不是「從檔案樹拖檔案來移動」。 */
   const isFileMove = (dt: DataTransfer | null): boolean =>
@@ -185,6 +209,44 @@ export default function FileTree({
       return next;
     });
   }, [activePath]);
+
+  useLayoutEffect(() => {
+    if (!menu || !menuRef.current) return;
+    const el = menuRef.current;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const pad = 8;
+    let x = menu.x;
+    let y = menu.y;
+    if (x + w > window.innerWidth - pad) x = Math.max(pad, window.innerWidth - w - pad);
+    if (x < pad) x = pad;
+    if (y + h > window.innerHeight - pad) y = y - h;
+    if (y + h > window.innerHeight - pad) y = Math.max(pad, window.innerHeight - h - pad);
+    if (y < pad) y = pad;
+    if (x !== menu.x || y !== menu.y) setMenu({ path: menu.path, kind: menu.kind, x, y });
+  }, [menu]);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (menuRef.current && menuRef.current.contains(e.target as Node)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [menu]);
 
   const toggleFolder = (path: string) => {
     setExpanded((prev) => {
@@ -252,6 +314,23 @@ export default function FileTree({
                   onSelectFolder(node.path);
                 } else onSelectFile(node.path);
               }}
+              onContextMenu={
+                isFolder
+                  ? hasFolderMenu
+                    ? (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setMenu({ path: node.path, kind: "folder", x: e.clientX, y: e.clientY });
+                      }
+                    : undefined
+                  : hasFileMenu
+                    ? (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setMenu({ path: node.path, kind: "file", x: e.clientX, y: e.clientY });
+                      }
+                    : undefined
+              }
               title={node.path}
             >
               {presentMode && (
@@ -280,6 +359,32 @@ export default function FileTree({
                   className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
                 >
                   <span className="text-base leading-none">＋</span>
+                </button>
+              )}
+              {!isFolder && hasFileMenu && (
+                <button
+                  type="button"
+                  title="檔案操作"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenu({ path: node.path, kind: "file", x: e.clientX, y: e.clientY });
+                  }}
+                  className="opacity-45 hover:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-zinc-100 rounded"
+                >
+                  <span className="text-base leading-none">⋯</span>
+                </button>
+              )}
+              {isFolder && hasFolderMenu && (
+                <button
+                  type="button"
+                  title="資料夾操作"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenu({ path: node.path, kind: "folder", x: e.clientX, y: e.clientY });
+                  }}
+                  className="opacity-45 hover:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-zinc-100 rounded"
+                >
+                  <span className="text-base leading-none">⋯</span>
                 </button>
               )}
               {rawBase && refPath && (
@@ -370,6 +475,15 @@ export default function FileTree({
                             : undefined
                         }
                         onClick={() => onSelectFile(p)}
+                        onContextMenu={
+                          hasFileMenu
+                            ? (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setMenu({ path: p, kind: "file", x: e.clientX, y: e.clientY });
+                              }
+                            : undefined
+                        }
                         title={p}
                         className={`group/row flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono cursor-pointer select-none truncate ${
                           isSelected ? "bg-sky-950 text-sky-300" : "text-zinc-400 hover:bg-zinc-900"
@@ -388,6 +502,19 @@ export default function FileTree({
                             className="opacity-100 md:opacity-0 md:group-hover/row:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-sky-400 rounded"
                           >
                             <span className="text-base leading-none">＋</span>
+                          </button>
+                        )}
+                        {hasFileMenu && (
+                          <button
+                            type="button"
+                            title="檔案操作"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenu({ path: p, kind: "file", x: e.clientX, y: e.clientY });
+                            }}
+                            className="opacity-45 hover:opacity-100 transition-opacity min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0 text-zinc-400 hover:text-zinc-100 rounded"
+                          >
+                            <span className="text-base leading-none">⋯</span>
                           </button>
                         )}
                         {rawBase && refPath && (
@@ -431,6 +558,159 @@ export default function FileTree({
         </div>
       ) : (
         renderNodes(tree, 0)
+      )}
+      {menu && ((menu.kind === "file" && hasFileMenu) || (menu.kind === "folder" && hasFolderMenu)) && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-[100] min-w-[140px] max-w-[min(240px,calc(100vw-16px))] bg-zinc-900 border border-zinc-800 rounded shadow-lg text-zinc-200 py-1"
+          style={{ left: menu.x, top: menu.y }}
+        >
+          {menu.kind === "file" ? (
+            <>
+          {onRenameFile && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onRenameFile(menu.path);
+              }}
+            >
+              重新命名
+            </button>
+          )}
+          {onRequestMoveFile && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onRequestMoveFile(menu.path);
+              }}
+            >
+              移到…
+            </button>
+          )}
+          {onDuplicateFile && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onDuplicateFile(menu.path);
+              }}
+            >
+              複製
+            </button>
+          )}
+          {onCopyPath && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onCopyPath(menu.path, menu.kind);
+              }}
+            >
+              複製路徑
+            </button>
+          )}
+          {onCopyLink && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onCopyLink(menu.path, menu.kind);
+              }}
+            >
+              複製連結
+            </button>
+          )}
+          {onDeleteFile && (
+            <>
+            <div className="my-1 border-t border-zinc-800" />
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-red-400 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onDeleteFile(menu.path);
+              }}
+            >
+              刪除
+            </button>
+            </>
+          )}
+            </>
+          ) : (
+            <>
+          {onRenameFolder && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onRenameFolder(menu.path);
+              }}
+            >
+              重新命名資料夾
+            </button>
+          )}
+          {onCopyPath && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onCopyPath(menu.path, menu.kind);
+              }}
+            >
+              複製路徑
+            </button>
+          )}
+          {onCopyLink && (
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-zinc-200 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onCopyLink(menu.path, menu.kind);
+              }}
+            >
+              複製連結
+            </button>
+          )}
+          {onDeleteFolder && (
+            <>
+            <div className="my-1 border-t border-zinc-800" />
+            <button
+              type="button"
+              role="menuitem"
+              className="block w-full text-left px-3 min-h-10 text-sm text-red-400 hover:bg-zinc-800"
+              onClick={() => {
+                setMenu(null);
+                onDeleteFolder(menu.path);
+              }}
+            >
+              刪除資料夾
+            </button>
+            </>
+          )}
+            </>
+          )}
+        </div>,
+        document.body
       )}
     </div>
   );
