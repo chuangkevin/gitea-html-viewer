@@ -115,6 +115,8 @@ interface Props {
   onCopyLink?: (path: string, kind: "file" | "folder") => void;
   /** 開啟「移動到…」選擇器（只給檔案用）。 */
   onRequestMoveFile?: (path: string) => void;
+  /** 正在被操作的路徑；該列會轉圈並暫時不可點。 */
+  busyPath?: string;
 }
 
 export default function FileTree({
@@ -138,6 +140,7 @@ export default function FileTree({
   onCopyPath,
   onCopyLink,
   onRequestMoveFile,
+  busyPath,
 }: Props) {
   const tree = useMemo(() => buildTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -275,6 +278,7 @@ export default function FileTree({
         const checkedCount = sub.filter((f) => checked.has(f)).length;
         const allChecked = checkedCount === sub.length && sub.length > 0;
         const someChecked = checkedCount > 0 && !allChecked;
+        const isBusy = busyPath !== undefined && node.path === busyPath;
         const downloadUrl = isFolder
           ? `/api/zip/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}`
           : `${rawBase}/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}?download=1`;
@@ -297,6 +301,8 @@ export default function FileTree({
                   : undefined
               }
               className={`group/row flex items-center gap-1.5 rounded pr-1 text-sm font-mono cursor-pointer select-none ${
+                isBusy ? "opacity-60 pointer-events-none " : ""
+              }${
                 isFolder && dropDir === node.path ? "ring-2 ring-sky-500 bg-sky-950/40 " : ""
               }${
                 isFolder
@@ -361,6 +367,15 @@ export default function FileTree({
                   <span className="text-base leading-none">＋</span>
                 </button>
               )}
+              {isBusy ? (
+                <span
+                  aria-label="處理中"
+                  className="min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0"
+                >
+                  <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-zinc-700 border-t-sky-400 animate-spin" />
+                </span>
+              ) : (
+                <>
               {!isFolder && hasFileMenu && (
                 <button
                   type="button"
@@ -386,6 +401,8 @@ export default function FileTree({
                 >
                   <span className="text-base leading-none">⋯</span>
                 </button>
+              )}
+                </>
               )}
               {rawBase && refPath && (
                 <a
@@ -459,6 +476,7 @@ export default function FileTree({
               <ul className="space-y-0.5">
                 {matchingPaths.slice(0, 50).map((p) => {
                   const isSelected = p === activePath;
+                  const isBusy = p === busyPath;
                   const fileName = p.split("/").pop() || p;
                   return (
                     <li key={p}>
@@ -486,6 +504,8 @@ export default function FileTree({
                         }
                         title={p}
                         className={`group/row flex items-center gap-1.5 rounded px-2 py-1 text-xs font-mono cursor-pointer select-none truncate ${
+                          isBusy ? "opacity-60 pointer-events-none " : ""
+                        }${
                           isSelected ? "bg-sky-950 text-sky-300" : "text-zinc-400 hover:bg-zinc-900"
                         }`}
                       >
@@ -504,7 +524,14 @@ export default function FileTree({
                             <span className="text-base leading-none">＋</span>
                           </button>
                         )}
-                        {hasFileMenu && (
+                        {isBusy ? (
+                          <span
+                            aria-label="處理中"
+                            className="min-w-11 min-h-11 lg:min-w-[32px] lg:min-h-[32px] p-1.5 flex items-center justify-center shrink-0"
+                          >
+                            <span className="inline-block w-3.5 h-3.5 rounded-full border-2 border-zinc-700 border-t-sky-400 animate-spin" />
+                          </span>
+                        ) : hasFileMenu ? (
                           <button
                             type="button"
                             title="檔案操作"
@@ -516,7 +543,7 @@ export default function FileTree({
                           >
                             <span className="text-base leading-none">⋯</span>
                           </button>
-                        )}
+                        ) : null}
                         {rawBase && refPath && (
                           <a
                             href={`${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}?download=1`}

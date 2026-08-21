@@ -38,6 +38,13 @@ import { duplicatePathFor } from "../lib/duplicate-name";
 import { applyExtension, newFileFrom } from "../lib/new-file-name";
 import { allFolders, checkMove } from "../lib/move-path";
 import { applyAdd, applyFolderMove, applyFolderRemove, applyMove, applyRemove } from "../lib/file-list";
+import {
+  SIDEBAR_MIN,
+  SIDEBAR_DEFAULT,
+  clampSidebarWidth,
+  readSidebarWidth,
+  writeSidebarWidth,
+} from "../lib/sidebar-width";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -272,6 +279,8 @@ export default function Workspace() {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  /** 進行中的檔案操作。label = 顯示文字，path = 受影響的路徑（檔案樹要標記那一列）。 */
+  const [busy, setBusy] = useState<{ label: string; path: string } | null>(null);
   const [uploadFailures, setUploadFailures] = useState<Array<{ path: string; error: string }> | null>(null);
   const dragCounter = useRef(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -283,6 +292,8 @@ export default function Workspace() {
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth >= 1024 : true
   );
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const resizingRef = useRef(false);
 
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
@@ -290,6 +301,19 @@ export default function Workspace() {
     setIsDesktop(mql.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    setSidebarWidth(readSidebarWidth(window.localStorage, me?.login ?? null, window.innerWidth));
+  }, [me?.login]);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (resizingRef.current) return;
+      setSidebarWidth((w) => clampSidebarWidth(w, window.innerWidth));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -365,6 +389,58 @@ export default function Workspace() {
     void refreshMe();
     setReloadKey((k) => k + 1);
   }, [refreshMe]);
+
+  function persistWidth(px: number) {
+    writeSidebarWidth(window.localStorage, me?.login ?? null, px, window.innerWidth);
+  }
+
+  function handleResizeStart(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    resizingRef.current = true;
+    // 拖拉期間不要選到文字、游標不要跳來跳去
+    const prevSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    const onMove = (ev: PointerEvent) => {
+      // 側欄靠左，所以游標的 clientX 就是寬度
+      setSidebarWidth(clampSidebarWidth(ev.clientX, window.innerWidth));
+    };
+    const onUp = (ev: PointerEvent) => {
+      el.releasePointerCapture?.(ev.pointerId);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      document.body.style.userSelect = prevSelect;
+      document.body.style.cursor = prevCursor;
+      resizingRef.current = false;
+      persistWidth(clampSidebarWidth(ev.clientX, window.innerWidth));
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+  }
+
+  function handleResizeReset() {
+    const w = clampSidebarWidth(SIDEBAR_DEFAULT, window.innerWidth);
+    setSidebarWidth(w);
+    persistWidth(w);
+  }
+
+  function handleResizeKey(e: React.KeyboardEvent<HTMLDivElement>) {
+    let next: number | null = null;
+    if (e.key === "ArrowLeft") next = sidebarWidth - 16;
+    else if (e.key === "ArrowRight") next = sidebarWidth + 16;
+    else if (e.key === "Home") next = SIDEBAR_DEFAULT;
+    if (next === null) return;
+    e.preventDefault();
+    const w = clampSidebarWidth(next, window.innerWidth);
+    setSidebarWidth(w);
+    persistWidth(w);
+  }
 
   const loadFiles = useCallback(() => {
     if (!hasRepo) {
@@ -1039,6 +1115,7 @@ export default function Workspace() {
   );
 
   async function handleCreate() {
+    if (busy) return;
     const raw = newFile.trim();
     if (!raw) return;
     let p = joinTargetPath(getCurrentDirContext(), raw);
@@ -1048,12 +1125,15 @@ export default function Workspace() {
     const kind = kindOf(p);
     if (kind !== "md" && kind !== "html" && kind !== "text") {
       setNewFile("");
+      setBusy({ label: "建立檔案中…", path: p });
       try {
         await api.saveFile(refPath, p, "", undefined, `docs: 新增 ${p}`);
         setFiles((f) => applyAdd(f ?? [], p));
         setParams({ f: p });
       } catch (err: any) {
         setError(String(err.message || err));
+      } finally {
+        setBusy(null);
       }
       return;
     }
@@ -1305,7 +1385,11 @@ export default function Workspace() {
   /** 檔案樹拖曳：把檔案移到另一個資料夾。走 GitLab 的 move action，一次 commit 完成。 */
   async function handleMoveFile(from: string, to: string) {
     if (!canWrite) return;
+    if (busy) return;
     if (!(await confirmPathRefs(from, "file", "rename"))) return;
+    const fromDir = from.includes("/") ? from.slice(0, from.lastIndexOf("/")) : "";
+    const toDir = to.includes("/") ? to.slice(0, to.lastIndexOf("/")) : "";
+    setBusy({ label: fromDir === toDir ? "重新命名中…" : "搬移中…", path: from });
     try {
       await api.moveFile(refPath, from, to);
       setFiles((f) => applyMove(f ?? [], from, to));
@@ -1321,6 +1405,8 @@ export default function Workspace() {
       } else {
         setError(`移動失敗：${e?.message || e}`);
       }
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -1328,13 +1414,14 @@ export default function Workspace() {
     if (!moveTarget) return;
     const check = checkMove(moveTarget, dir);
     if (check.ok && check.target) {
-      await handleMoveFile(moveTarget, check.target);
       setMoveTarget(null);
+      await handleMoveFile(moveTarget, check.target);
     }
   }
 
   async function handleRenameFile(path: string) {
     if (!canWrite) return;
+    if (busy) return;
     const basename = path.split("/").pop() || path;
     const input = window.prompt("新檔名：", basename);
     if (input === null) return;
@@ -1359,7 +1446,9 @@ export default function Workspace() {
 
   async function handleDuplicateFile(path: string) {
     if (!canWrite) return;
+    if (busy) return;
     const to = duplicatePathFor(path, files ?? []);
+    setBusy({ label: "複製中…", path });
     try {
       await api.copyFile(refPath, path, to);
       setFiles((f) => applyAdd(f ?? [], to));
@@ -1370,13 +1459,17 @@ export default function Workspace() {
       } else {
         setError(`複製失敗：${e?.message || e}`);
       }
+    } finally {
+      setBusy(null);
     }
   }
 
   async function handleDeleteFile(path: string) {
     if (!canWrite) return;
+    if (busy) return;
     if (!(await confirmPathRefs(path, "file", "delete"))) return;
     if (!window.confirm(`確定刪除「${path}」？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`)) return;
+    setBusy({ label: "刪除中…", path });
     try {
       await api.deleteFile(refPath, path);
       setFiles((f) => applyRemove(f ?? [], path));
@@ -1395,11 +1488,14 @@ export default function Workspace() {
       } else {
         setError(`刪除失敗：${e?.message || e}`);
       }
+    } finally {
+      setBusy(null);
     }
   }
 
   async function handleRenameFolder(path: string) {
     if (!canWrite) return;
+    if (busy) return;
     const basename = path.split("/").pop() || path;
     const input = window.prompt("資料夾新名稱：", basename);
     if (input === null) return;
@@ -1420,6 +1516,7 @@ export default function Workspace() {
       return;
     }
     if (!(await confirmPathRefs(path, "folder", "rename"))) return;
+    setBusy({ label: "重新命名資料夾中…", path });
     try {
       await api.moveFolder(refPath, path, to);
       setFiles((f) => applyFolderMove(f ?? [], path, to));
@@ -1441,11 +1538,14 @@ export default function Workspace() {
       } else {
         setError(`搬移資料夾失敗：${msg}`);
       }
+    } finally {
+      setBusy(null);
     }
   }
 
   async function handleDeleteFolder(path: string) {
     if (!canWrite) return;
+    if (busy) return;
     const inside = (files ?? []).filter((f) => f.startsWith(path + "/"));
     if (inside.length === 0) {
       setError("找不到這個資料夾");
@@ -1459,6 +1559,7 @@ export default function Workspace() {
     ) {
       return;
     }
+    setBusy({ label: "刪除資料夾中…", path });
     try {
       await api.deleteFolder(refPath, path);
       setFiles((f) => applyFolderRemove(f ?? [], path));
@@ -1480,11 +1581,14 @@ export default function Workspace() {
       } else {
         setError(`刪除資料夾失敗：${msg}`);
       }
+    } finally {
+      setBusy(null);
     }
   }
 
   async function handleCreateFolder() {
     if (!canWrite) return;
+    if (busy) return;
     const input = window.prompt("請輸入資料夾名稱／路徑（例如 docs/2026/q3）：");
     if (input === null) return;
     const trimmed = input.trim();
@@ -1512,12 +1616,15 @@ export default function Workspace() {
     const contentStr = `# ${folderLeaf}\n`;
     const commitMsg = `docs: 新增資料夾 ${folderPath}`;
 
+    setBusy({ label: "建立資料夾中…", path: folderPath });
     try {
       await api.saveFile(refPath, newFilePath, contentStr, undefined, commitMsg);
       setFiles((f) => applyAdd(f ?? [], newFilePath));
       setParams({ f: newFilePath });
     } catch (err: any) {
       setError(String(err.message || err));
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -2799,6 +2906,13 @@ export default function Workspace() {
           <span>{uploadProgress}</span>
         </div>
       )}
+      {busy && (
+        <div className="border-b border-sky-900/50 bg-sky-950/60 px-4 py-2 text-sm text-sky-200 flex items-center gap-2 font-mono min-w-0">
+          <span className="animate-pulse shrink-0">⏳</span>
+          <span className="shrink-0">{busy.label}</span>
+          <span className="truncate min-w-0 text-sky-400/80">{busy.path}</span>
+        </div>
+      )}
 
       <div className="flex-1 flex min-h-0 relative">
         {sidebarOpen && (
@@ -2812,6 +2926,7 @@ export default function Workspace() {
           className={`w-72 shrink-0 border-r border-zinc-800 overflow-y-auto p-3 bg-zinc-950 fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-in-out shadow-xl lg:shadow-none lg:relative lg:z-auto lg:translate-x-0 ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
+          style={isDesktop ? { width: sidebarWidth } : undefined}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -2999,9 +3114,18 @@ export default function Workspace() {
               onDeleteFile={canWrite ? handleDeleteFile : undefined}
               onRenameFolder={canWrite ? handleRenameFolder : undefined}
               onDeleteFolder={canWrite ? handleDeleteFolder : undefined}
+              busyPath={busy?.path}
               onCopyPath={handleCopyPath}
               onCopyLink={handleCopyLink}
-              onRequestMoveFile={canWrite ? (p) => { setMoveFilter(""); setMoveTarget(p); } : undefined}
+              onRequestMoveFile={
+                canWrite
+                  ? (p) => {
+                      if (busy) return;
+                      setMoveFilter("");
+                      setMoveTarget(p);
+                    }
+                  : undefined
+              }
             />
           )}
           {hasRepo && presentMode && (
@@ -3026,6 +3150,25 @@ export default function Workspace() {
             </div>
           )}
         </aside>
+
+        {isDesktop && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="調整側欄寬度"
+            aria-valuenow={sidebarWidth}
+            aria-valuemin={SIDEBAR_MIN}
+            tabIndex={0}
+            onPointerDown={handleResizeStart}
+            onDoubleClick={handleResizeReset}
+            onKeyDown={handleResizeKey}
+            title="拖曳調整寬度，雙擊還原預設"
+            className="group/split relative w-1 shrink-0 cursor-col-resize bg-zinc-800 hover:bg-sky-600 focus:bg-sky-600 focus:outline-none transition-colors"
+          >
+            {/* 視覺只有 4px，但命中範圍左右各再多 4px，比較好抓 */}
+            <span className="absolute inset-y-0 -left-1 -right-1" />
+          </div>
+        )}
 
         {/* 編輯／預覽 */}
         <main
