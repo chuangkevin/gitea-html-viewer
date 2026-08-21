@@ -22,6 +22,7 @@ import {
   createShareSet,
   getShare,
   listShares,
+  listActiveSharePaths,
   listAdminShares,
   revokeShare,
   revokeAdminShare,
@@ -96,6 +97,7 @@ import {
   shortLinkToResponse,
   updateShortLink,
 } from "./short-links.js";
+import { parseShortLinkTarget, sharePathAffected, targetAffectedBy } from "./path-refs.js";
 import { attachCollab, flushRoom } from "./collab.js";
 
 registerProvider(github);
@@ -638,6 +640,23 @@ function sendRaw(res: express.Response, filePath: string, buf: Buffer, asAttachm
   res.send(buf);
 }
 
+/** getRepo 短期快取。權限（canPush）與 private 都吃 token，所以 key 一定要含 token；
+ *  TTL 壓在 30 秒，讓「剛被改權限」最多只會 stale 半分鐘。 */
+const repoMetaCache = new Map<string, { meta: RepoMeta; exp: number }>();
+const REPO_META_TTL_MS = 30_000;
+
+async function getRepoCached(provider: ProviderName, token: string, project: string): Promise<RepoMeta> {
+  const key = `${provider} ${project} ${token}`;
+  const hit = repoMetaCache.get(key);
+  const now = Date.now();
+  if (hit && hit.exp > now) return hit.meta;
+  const meta = await getProvider(provider).getRepo(token, project);
+  repoMetaCache.set(key, { meta, exp: now + REPO_META_TTL_MS });
+  // 粗略上限，避免長期累積；超過就整個清掉重來
+  if (repoMetaCache.size > 500) repoMetaCache.clear();
+  return meta;
+}
+
 // 讀取端點採 optional auth：
 // - 有 session 且同 provider → 用使用者 token（能讀自己有權限的 private）
 // - 否則 → 用該 provider 後備 token / 匿名，且【必須】驗證 repo 為 public
@@ -645,10 +664,9 @@ app.get("/api/access/:provider/:project", async (req, res) => {
   let actor: Actor | null = null;
   try {
     const provider = routeProvider(req);
-    const p = getProvider(provider);
     const project = projectParam(req);
     actor = actorFor(req, provider, project);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
@@ -677,7 +695,7 @@ app.get("/api/files/:provider/:project", async (req, res) => {
     const p = getProvider(provider);
     const project = projectParam(req);
     actor = actorFor(req, provider, project);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (info.private && !actor.authed) {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
@@ -1405,7 +1423,7 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     }
 
     const p = getProvider(provider);
-    const info = await p.getRepo(actor.token, project); // 取預設分支（GitLab 寫入需要）
+    const info = await getRepoCached(provider, actor.token, project); // 取預設分支（GitLab 寫入需要）
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1491,7 +1509,7 @@ app.post("/api/move/:provider/:project", async (req, res) => {
       return;
     }
 
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1521,6 +1539,91 @@ app.post("/api/move/:provider/:project", async (req, res) => {
       actor.author
     );
     res.json({ ok: true, from: fromPath, to: toPath });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+app.get("/api/path-refs/:provider/:project", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const mode = getMode(provider, project);
+
+    if (mode === "admin") {
+      if (!isAdmin(req)) {
+        res.status(403).json({ error: "admin_only" });
+        return;
+      }
+    }
+
+    const actor = actorFor(req, provider, project);
+
+    if (mode === "open") {
+      if (!openTokenReady(provider) && !actor.authed) {
+        res.status(401).json({ error: "open_token_missing" });
+        return;
+      }
+    } else if (mode === "admin") {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    } else {
+      if (!actor.authed) {
+        res.status(401).json({ error: "not_authenticated" });
+        return;
+      }
+    }
+
+    const changedPath = req.query.path;
+    const kindQuery = req.query.kind;
+
+    const bad = (v: unknown): boolean =>
+      typeof v !== "string" ||
+      v.length === 0 ||
+      v.startsWith("/") ||
+      v.includes("\\") ||
+      v.includes("..");
+    if (bad(changedPath)) {
+      res.status(400).json({ error: "invalid_path" });
+      return;
+    }
+    const pathValue = changedPath as string;
+    const changedKind = kindQuery === undefined ? "file" : kindQuery;
+    if (changedKind !== "file" && changedKind !== "folder") {
+      res.status(400).json({ error: "invalid_kind" });
+      return;
+    }
+
+    let shares = 0;
+    for (const row of listActiveSharePaths(provider, project)) {
+      if (row.kind === "set" && row.paths) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(row.paths);
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(parsed)) continue;
+        if (parsed.some((p) => typeof p === "string" && sharePathAffected(p, pathValue, changedKind))) {
+          shares++;
+        }
+      } else if (sharePathAffected(row.path, pathValue, changedKind)) {
+        shares++;
+      }
+    }
+
+    const shortLinks = listShortLinks("")
+      .filter((link) => {
+        if (!link.isEnabled) return false;
+        const target = parseShortLinkTarget(link.targetPath);
+        if (!target) return false;
+        return targetAffectedBy(target, provider, project, pathValue, changedKind);
+      })
+      .map((link) => ({ alias: link.alias, label: link.label }));
+
+    res.json({ shares, shortLinks });
   } catch (e) {
     handleError(res, e);
   }
@@ -1573,7 +1676,7 @@ app.delete("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
 
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1640,7 +1743,7 @@ app.post("/api/copy/:provider/:project", async (req, res) => {
     }
 
     const p = getProvider(provider);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1745,7 +1848,7 @@ app.post("/api/move-folder/:provider/:project", async (req, res) => {
     }
 
     const p = getProvider(provider);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1829,7 +1932,7 @@ app.delete("/api/folder/:provider/:project/*", async (req, res) => {
     const { message } = req.body as { message?: string };
 
     const p = getProvider(provider);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1958,7 +2061,7 @@ app.post("/api/upload/:provider/:project", async (req, res) => {
     }
 
     const p = getProvider(provider);
-    const info = await p.getRepo(actor.token, project);
+    const info = await getRepoCached(provider, actor.token, project);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;

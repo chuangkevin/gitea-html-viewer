@@ -276,6 +276,14 @@ export function listShares(login: string): Share[] {
     .all(login) as Share[];
 }
 
+/** 某個 repo 底下所有「還沒撤銷」的分享，只回路徑資訊，
+ *  刻意不回 token——token 是存取憑證，不可外流到這支 API 的呼叫端。 */
+export function listActiveSharePaths(provider: string, repo: string): { kind: string; path: string; paths: string | null }[] {
+  return db
+    .prepare("SELECT kind, path, paths FROM shares WHERE revoked = 0 AND provider = ? AND repo = ?")
+    .all(provider, repo) as { kind: string; path: string; paths: string | null }[];
+}
+
 export function revokeShare(login: string, token: string): boolean {
   const r = db.prepare("UPDATE shares SET revoked = 1 WHERE token = ? AND owner_login = ?").run(token, login);
   return r.changes > 0;

@@ -37,6 +37,7 @@ import { joinTargetPath, targetDirFor, targetDirLabelFor } from "../lib/target-d
 import { duplicatePathFor } from "../lib/duplicate-name";
 import { applyExtension, newFileFrom } from "../lib/new-file-name";
 import { allFolders, checkMove } from "../lib/move-path";
+import { applyAdd, applyFolderMove, applyFolderRemove, applyMove, applyRemove } from "../lib/file-list";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -371,19 +372,6 @@ export default function Workspace() {
       return;
     }
     setNeedLogin(false);
-    api
-      .access(refPath)
-      .then((r) => {
-        setCanWrite(r.canWrite);
-        setIsPrivate(r.private);
-        if (r.access) setAccessMode(r.access);
-        if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
-        setAccessReady(true);
-      })
-      .catch((e) => {
-        if ((e as Error).message === "login_required") setNeedLogin(true);
-        else console.warn(e);
-      });
     api
       .files(refPath)
       .then((r) => {
@@ -1062,7 +1050,7 @@ export default function Workspace() {
       setNewFile("");
       try {
         await api.saveFile(refPath, p, "", undefined, `docs: 新增 ${p}`);
-        await loadFiles();
+        setFiles((f) => applyAdd(f ?? [], p));
         setParams({ f: p });
       } catch (err: any) {
         setError(String(err.message || err));
@@ -1290,12 +1278,37 @@ export default function Workspace() {
   const targetDirLabel = targetDirLabelFor(currentTargetDir);
   const getCurrentDirContext = useCallback(() => currentTargetDir, [currentTargetDir]);
 
+  /** 改名／搬移／刪除前，檢查有沒有已發行的連結指向它。
+   *  回 true = 可以繼續。查詢本身失敗時一律回 true（提醒功能不可以擋住正常操作）。 */
+  async function confirmPathRefs(
+    path: string,
+    kind: "file" | "folder",
+    action: "rename" | "delete"
+  ): Promise<boolean> {
+    let refs: { shares: number; shortLinks: { alias: string; label: string | null }[] };
+    try {
+      refs = await api.pathRefs(refPath, path, kind);
+    } catch {
+      return true; // 查不到就不擋
+    }
+    if (refs.shares === 0 && refs.shortLinks.length === 0) return true;
+    const parts: string[] = [];
+    if (refs.shares > 0) parts.push(`${refs.shares} 個公開分享連結（/s/…）`);
+    if (refs.shortLinks.length > 0) {
+      parts.push(`${refs.shortLinks.length} 個內部短網址（${refs.shortLinks.map((l) => `/go/${l.alias}`).join("、")}）`);
+    }
+    const what = kind === "folder" ? "這個資料夾（或其中的檔案）" : "這個檔案";
+    const effect = action === "delete" ? "刪除後這些連結會失效" : "改名／搬移後這些連結會指向不存在的路徑";
+    return window.confirm(`${what}目前有 ${parts.join("、")}指向它。\n${effect}。\n\n仍要繼續？`);
+  }
+
   /** 檔案樹拖曳：把檔案移到另一個資料夾。走 GitLab 的 move action，一次 commit 完成。 */
   async function handleMoveFile(from: string, to: string) {
     if (!canWrite) return;
+    if (!(await confirmPathRefs(from, "file", "rename"))) return;
     try {
       await api.moveFile(refPath, from, to);
-      await loadFiles();
+      setFiles((f) => applyMove(f ?? [], from, to));
       // 移動的正好是開著的檔 → 同步更新網址，否則會停在已經不存在的路徑上
       if (activePathRef.current === from) {
         setParams({ f: to });
@@ -1349,7 +1362,7 @@ export default function Workspace() {
     const to = duplicatePathFor(path, files ?? []);
     try {
       await api.copyFile(refPath, path, to);
-      await loadFiles();
+      setFiles((f) => applyAdd(f ?? [], to));
       setParams({ f: to });
     } catch (e: any) {
       if (e?.status === 409 || e?.code === "target_exists") {
@@ -1362,10 +1375,11 @@ export default function Workspace() {
 
   async function handleDeleteFile(path: string) {
     if (!canWrite) return;
+    if (!(await confirmPathRefs(path, "file", "delete"))) return;
     if (!window.confirm(`確定刪除「${path}」？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`)) return;
     try {
       await api.deleteFile(refPath, path);
-      await loadFiles();
+      setFiles((f) => applyRemove(f ?? [], path));
       if (activePathRef.current === path) {
         setContent("");
         setSha(undefined);
@@ -1405,9 +1419,10 @@ export default function Workspace() {
       setError(`已有同名資料夾：${to}`);
       return;
     }
+    if (!(await confirmPathRefs(path, "folder", "rename"))) return;
     try {
       await api.moveFolder(refPath, path, to);
-      await loadFiles();
+      setFiles((f) => applyFolderMove(f ?? [], path, to));
       if (activePathRef.current.startsWith(path + "/")) {
         setParams({ f: to + activePathRef.current.slice(path.length) });
       } else if (params.has("dir") && (cleanDir === path || cleanDir.startsWith(path + "/"))) {
@@ -1436,6 +1451,7 @@ export default function Workspace() {
       setError("找不到這個資料夾");
       return;
     }
+    if (!(await confirmPathRefs(path, "folder", "delete"))) return;
     if (
       !window.confirm(
         `確定刪除資料夾「${path}」及其中的 ${inside.length} 個檔案？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`
@@ -1445,7 +1461,7 @@ export default function Workspace() {
     }
     try {
       await api.deleteFolder(refPath, path);
-      await loadFiles();
+      setFiles((f) => applyFolderRemove(f ?? [], path));
       if (activePathRef.current.startsWith(path + "/")) {
         setContent("");
         setSha(undefined);
@@ -1498,7 +1514,7 @@ export default function Workspace() {
 
     try {
       await api.saveFile(refPath, newFilePath, contentStr, undefined, commitMsg);
-      await loadFiles();
+      setFiles((f) => applyAdd(f ?? [], newFilePath));
       setParams({ f: newFilePath });
     } catch (err: any) {
       setError(String(err.message || err));

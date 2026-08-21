@@ -205,6 +205,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }),
     }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
+  pathRefs: (ref: string, path: string, kind: "file" | "folder") =>
+    fetch(`/api/path-refs/${ref}?path=${encodeURIComponent(path)}&kind=${kind}`).then((r) =>
+      j<{ shares: number; shortLinks: { alias: string; label: string | null }[] }>(r)
+    ),
   moveFolder: (ref: string, from: string, to: string, message?: string) =>
     fetch(`/api/move-folder/${ref}`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }) }).then((r) => j<{ ok: boolean; from: string; to: string; count: number }>(r)),
