@@ -17,6 +17,30 @@ export class ProviderError extends Error {
   }
 }
 
+/** GitLab / GitHub fetch 逾時。正常請求 0.3–0.7s；10s 已是極端值，且比 Skynet 探測的 20s 短。 */
+export const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 10_000);
+
+/**
+ * 預設帶上逾時 signal。呼叫端若已自帶 `init.signal`，用 AbortSignal.any 合併，
+ * 兩邊都能中止：不覆蓋呼叫端的 abort，也不因此關掉逾時。
+ */
+export function withUpstreamSignal(init?: RequestInit): AbortSignal {
+  const timeout = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+  return init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+}
+
+function isUpstreamTimeout(err: unknown): boolean {
+  return Boolean(err && typeof err === "object" && "name" in err && (err as { name: string }).name === "TimeoutError");
+}
+
+/** AbortSignal.timeout 觸發的 TimeoutError → ProviderError 504。其他錯誤原樣再丟。 */
+export function mapUpstreamTimeout(err: unknown, providerLabel: string): never {
+  if (isUpstreamTimeout(err)) {
+    throw new ProviderError(504, `${providerLabel} upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`);
+  }
+  throw err;
+}
+
 export interface ProviderUser {
   login: string;
   avatarUrl: string;

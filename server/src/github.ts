@@ -3,21 +3,27 @@
  * token — note-bridge 不代管任何內容，GitHub repo 就是唯一資料庫。
  */
 import type { Provider, ProviderUser, RepoMeta, RepoFile } from "./providers.js";
-import { ProviderError } from "./providers.js";
+import { ProviderError, UPSTREAM_TIMEOUT_MS, withUpstreamSignal, mapUpstreamTimeout } from "./providers.js";
 
 const API = "https://api.github.com";
 
 async function gh<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "note-bridge",
-      ...(init?.headers || {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "note-bridge",
+        ...(init?.headers || {}),
+      },
+      signal: withUpstreamSignal(init), // AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) + AbortSignal.any if caller passed signal
+    });
+  } catch (err) {
+    mapUpstreamTimeout(err, "GitHub");
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new ProviderError(res.status, `GitHub ${res.status}: ${body.slice(0, 300)}`);
@@ -61,11 +67,17 @@ export const github: Provider = {
   },
 
   async exchangeCode(clientId, clientSecret, code, redirectUri) {
-    const res = await fetch("https://github.com/login/oauth/access_token", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri }),
-    });
+    let res: Response;
+    try {
+      res = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri }),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+    } catch (err) {
+      mapUpstreamTimeout(err, "GitHub");
+    }
     const data = (await res.json()) as { access_token?: string; error_description?: string };
     if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token exchange failed");
     return { accessToken: data.access_token };
@@ -111,14 +123,20 @@ export const github: Provider = {
   },
 
   async readFileRaw(token, projectPath, filePath) {
-    const res = await fetch(`${API}/repos/${projectPath}/contents/${encodePath(filePath)}`, {
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        Accept: "application/vnd.github.raw",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "note-bridge",
-      },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${API}/repos/${projectPath}/contents/${encodePath(filePath)}`, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          Accept: "application/vnd.github.raw",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "note-bridge",
+        },
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+    } catch (err) {
+      mapUpstreamTimeout(err, "GitHub");
+    }
     if (!res.ok) throw new ProviderError(res.status, `GitHub ${res.status}: raw read failed for ${filePath}`);
     return Buffer.from(await res.arrayBuffer());
   },

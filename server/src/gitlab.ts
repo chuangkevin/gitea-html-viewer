@@ -8,20 +8,25 @@
  *   - 寫檔不需要舊 sha：更新用 PUT、建立用 POST，帶 branch + commit_message
  */
 import type { Provider, ProviderUser, RepoMeta, RepoFile, OAuthTokens } from "./providers.js";
-import { ProviderError } from "./providers.js";
+import { ProviderError, UPSTREAM_TIMEOUT_MS, withUpstreamSignal, mapUpstreamTimeout } from "./providers.js";
 
 const HOST = "https://gitlab.com";
 const API = `${HOST}/api/v4`;
 
 async function glRaw(token: string, path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      "User-Agent": "note-bridge",
-      ...(init?.headers || {}),
-    },
-  });
+  try {
+    return await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "User-Agent": "note-bridge",
+        ...(init?.headers || {}),
+      },
+      signal: withUpstreamSignal(init), // AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) + AbortSignal.any if caller passed signal
+    });
+  } catch (err) {
+    mapUpstreamTimeout(err, "GitLab");
+  }
 }
 
 async function gl<T>(token: string, path: string, init?: RequestInit): Promise<T> {
@@ -81,17 +86,23 @@ export const gitlab: Provider = {
   },
 
   async exchangeCode(clientId, clientSecret, code, redirectUri) {
-    const res = await fetch(`${HOST}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        grant_type: "authorization_code",
-        redirect_uri: redirectUri,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${HOST}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          grant_type: "authorization_code",
+          redirect_uri: redirectUri,
+        }),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+    } catch (err) {
+      mapUpstreamTimeout(err, "GitLab");
+    }
     const data = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error_description?: string };
     if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token exchange failed");
     return {
@@ -102,17 +113,23 @@ export const gitlab: Provider = {
   },
 
   async refreshTokens(clientId, clientSecret, refreshToken, redirectUri) {
-    const res = await fetch(`${HOST}/oauth/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-        redirect_uri: redirectUri,
-      }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${HOST}/oauth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+          redirect_uri: redirectUri,
+        }),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+    } catch (err) {
+      mapUpstreamTimeout(err, "GitLab");
+    }
     const data = (await res.json()) as { access_token?: string; refresh_token?: string; expires_in?: number; error_description?: string };
     if (!data.access_token) throw new ProviderError(401, data.error_description || "OAuth token refresh failed");
     return {
