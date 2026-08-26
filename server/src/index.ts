@@ -80,6 +80,7 @@ import {
   buildPreviewBaseUrl,
   determineEffectiveGrant,
   shouldServeCssShim,
+  resolvePreviewAssetPath,
   generateImportMap,
   injectPreviewHead,
   rewriteCssSideEffectImports,
@@ -950,9 +951,10 @@ async function servePreviewAsset(
   project: string,
   filePath: string
 ): Promise<void> {
-  const buf = await readWithPublicFallback((path) => p.readFileRaw(token, project, path), filePath);
+  const assetPath = resolvePreviewAssetPath(filePath);
+  const buf = await readWithPublicFallback((path) => p.readFileRaw(token, project, path), assetPath);
 
-  if (shouldServeCssShim(filePath, req.query.site_preview_css)) {
+  if (shouldServeCssShim(assetPath, req.query.site_preview_css)) {
     res.setHeader("Content-Type", "text/javascript; charset=utf-8");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -960,7 +962,7 @@ async function servePreviewAsset(
     return;
   }
 
-  const ext = path.extname(filePath).toLowerCase();
+  const ext = path.extname(assetPath).toLowerCase();
 
   if (ext === ".js" || ext === ".mjs") {
     const code = buf.toString("utf8");
@@ -972,7 +974,7 @@ async function servePreviewAsset(
     return;
   }
 
-  sendRaw(res, filePath, buf, false);
+  sendRaw(res, assetPath, buf, false);
 }
 
 app.get("/site-assets/:provider/:project/*", async (req, res) => {

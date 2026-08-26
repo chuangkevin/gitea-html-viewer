@@ -4,6 +4,7 @@ import {
   buildPreviewBaseUrl,
   determineEffectiveGrant,
   shouldServeCssShim,
+  resolvePreviewAssetPath,
   generateImportMap,
   injectPreviewHead,
   rewriteCssSideEffectImports,
@@ -45,6 +46,25 @@ describe("site-preview module", () => {
       folderPath: 'my folder/sub "dir"/',
     });
     assert.equal(specialFolderBase, "/site-assets/github/user%2Frepo/my%20folder/sub%20%22dir%22/");
+  });
+
+  it("resolves preview directory asset paths to index.html and preserves exact paths", () => {
+    const cases: Array<[string, string]> = [
+      ["", "index.html"],
+      ["/", "index.html"],
+      ["docs/", "docs/index.html"],
+      ["nested/docs/", "nested/docs/index.html"],
+      ["內部/CRM/", "內部/CRM/index.html"],
+      ["index.html", "index.html"],
+      ["pages/about.html", "pages/about.html"],
+      ["assets/main.js", "assets/main.js"],
+      ["assets/styles.css", "assets/styles.css"],
+      ["extensionless", "extensionless"],
+    ];
+
+    for (const [input, expected] of cases) {
+      assert.equal(resolvePreviewAssetPath(input), expected, input);
+    }
   });
 
   it("determines effective grant correctly based on actor success", () => {

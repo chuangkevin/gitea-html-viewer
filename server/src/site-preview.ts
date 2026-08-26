@@ -51,6 +51,16 @@ export function shouldServeCssShim(filePath: string, sitePreviewCssQuery: unknow
   return ext === ".css";
 }
 
+export function resolvePreviewAssetPath(filePath: string): string {
+  if (!filePath || filePath === "/") {
+    return "index.html";
+  }
+  if (filePath.endsWith("/")) {
+    return `${filePath.replace(/^\/+/, "")}index.html`;
+  }
+  return filePath;
+}
+
 const UNSCOPED_PKG_REGEX = /^[a-zA-Z0-9_-]+$/;
 const SCOPED_PKG_REGEX = /^@[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/;
 
