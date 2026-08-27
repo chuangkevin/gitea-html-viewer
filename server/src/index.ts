@@ -78,6 +78,7 @@ import {
 } from "./identities.js";
 import {
   buildPreviewBaseUrl,
+  buildCrmAssetCanonicalRedirectLocation,
   determineEffectiveGrant,
   shouldServeCssShim,
   resolvePreviewAssetPath,
@@ -989,6 +990,18 @@ app.get("/site-assets/:provider/:project/*", async (req, res) => {
       return;
     }
     const filePath = (req.params as Record<string, string>)[0] || "";
+    const queryIndex = req.originalUrl.indexOf("?");
+    const redirectLocation = buildCrmAssetCanonicalRedirectLocation({
+      provider,
+      project,
+      filePath: resolvePreviewAssetPath(filePath),
+      route: "public",
+      rawQuery: queryIndex === -1 ? "" : req.originalUrl.slice(queryIndex + 1),
+    });
+    if (redirectLocation) {
+      res.redirect(302, redirectLocation);
+      return;
+    }
     await servePreviewAsset(req, res, p, actor.token, project, filePath);
   } catch (e) {
     if (e instanceof ProviderError) {

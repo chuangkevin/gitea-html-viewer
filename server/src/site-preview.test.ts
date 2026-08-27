@@ -2,6 +2,7 @@ import test, { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPreviewBaseUrl,
+  buildCrmAssetCanonicalRedirectLocation,
   determineEffectiveGrant,
   shouldServeCssShim,
   resolvePreviewAssetPath,
@@ -46,6 +47,52 @@ describe("site-preview module", () => {
       folderPath: 'my folder/sub "dir"/',
     });
     assert.equal(specialFolderBase, "/site-assets/github/user%2Frepo/my%20folder/sub%20%22dir%22/");
+  });
+
+  it("builds the exact CRM asset canonical redirect location", () => {
+    const location = buildCrmAssetCanonicalRedirectLocation({
+      route: "public",
+      provider: "gitlab",
+      project: "interagent-io/global-doc",
+      filePath: "內部/CRM/crm.html",
+    });
+
+    assert.equal(
+      location,
+      "/site/gitlab/interagent-io%2Fglobal-doc?f=%E5%85%A7%E9%83%A8/CRM/crm.html"
+    );
+  });
+
+  it("preserves non-f query parameters in order and replaces all incoming f parameters", () => {
+    const location = buildCrmAssetCanonicalRedirectLocation({
+      route: "public",
+      provider: "gitlab",
+      project: "interagent-io/global-doc",
+      filePath: "內部/CRM/crm.html",
+      rawQuery: "f=old&tab=partners&debug=1&f=second&tab=again",
+    });
+
+    assert.equal(
+      location,
+      "/site/gitlab/interagent-io%2Fglobal-doc?tab=partners&debug=1&tab=again&f=%E5%85%A7%E9%83%A8/CRM/crm.html"
+    );
+    assert.equal(location?.includes("#"), false);
+    assert.equal((location?.match(/[?&]f=/g) ?? []).length, 1);
+  });
+
+  it("does not build the CRM canonical redirect for non-target route boundaries", () => {
+    const base = {
+      route: "public" as const,
+      provider: "gitlab",
+      project: "interagent-io/global-doc",
+      filePath: "內部/CRM/crm.html",
+    };
+
+    assert.equal(buildCrmAssetCanonicalRedirectLocation({ ...base, provider: "github" }), null);
+    assert.equal(buildCrmAssetCanonicalRedirectLocation({ ...base, project: "interagent-io/other" }), null);
+    assert.equal(buildCrmAssetCanonicalRedirectLocation({ ...base, filePath: "內部/CRM/index.html" }), null);
+    assert.equal(buildCrmAssetCanonicalRedirectLocation({ ...base, filePath: "內部/CRM/customers.html" }), null);
+    assert.equal(buildCrmAssetCanonicalRedirectLocation({ ...base, route: "grant" }), null);
   });
 
   it("resolves preview directory asset paths to index.html and preserves exact paths", () => {

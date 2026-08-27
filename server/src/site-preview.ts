@@ -32,6 +32,53 @@ export function buildPreviewBaseUrl(opts: {
   return `/site-assets/${provider}/${encodedProject}/${cleanFolder}`;
 }
 
+const CRM_CANONICAL_PROVIDER = "gitlab";
+const CRM_CANONICAL_PROJECT = "interagent-io/global-doc";
+const CRM_CANONICAL_ASSET_PATH = "內部/CRM/crm.html";
+
+function encodePathQueryValue(filePath: string): string {
+  return filePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+function cleanRawQuery(rawQuery: string | undefined): string {
+  if (!rawQuery) {
+    return "";
+  }
+  const withoutPrefix = rawQuery.startsWith("?") ? rawQuery.slice(1) : rawQuery;
+  const hashIndex = withoutPrefix.indexOf("#");
+  return hashIndex === -1 ? withoutPrefix : withoutPrefix.slice(0, hashIndex);
+}
+
+export function buildCrmAssetCanonicalRedirectLocation(opts: {
+  provider: string;
+  project: string;
+  filePath: string;
+  route: "public" | "grant";
+  rawQuery?: string;
+}): string | null {
+  if (
+    opts.route !== "public" ||
+    opts.provider !== CRM_CANONICAL_PROVIDER ||
+    opts.project !== CRM_CANONICAL_PROJECT ||
+    opts.filePath !== CRM_CANONICAL_ASSET_PATH
+  ) {
+    return null;
+  }
+
+  const params = new URLSearchParams(cleanRawQuery(opts.rawQuery));
+  const preserved = new URLSearchParams();
+  for (const [key, value] of params) {
+    if (key !== "f") {
+      preserved.append(key, value);
+    }
+  }
+
+  const base = `/site/${CRM_CANONICAL_PROVIDER}/${encodeURIComponent(CRM_CANONICAL_PROJECT)}`;
+  const preservedQuery = preserved.toString();
+  const canonicalFile = `f=${encodePathQueryValue(CRM_CANONICAL_ASSET_PATH)}`;
+  return `${base}?${preservedQuery ? `${preservedQuery}&` : ""}${canonicalFile}`;
+}
+
 export function determineEffectiveGrant(
   grantQuery: string | null | undefined,
   grantToken: string | null | undefined,
