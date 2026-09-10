@@ -9,3 +9,22 @@ data/
 docker-compose.override.yml
 .rollback-*
 client/.build-sha
+
+# openspec 規劃一律放 ~/Documents/Projects/_ProjectControl，repo 內不留
+openspec/
+.openspec/
+.openspec.yaml
+.openspec.yml
+
+# openspec 規劃一律放 ~/Documents/Projects/_ProjectControl，repo 內不留
+openspec/
+.openspec/
+.openspec.yaml
+.openspec.yml
+# 各家 AI 工具的 openspec 指令與 skill 也不進版控
+**/skills/openspec-*/
+**/skills/.openspec-target
+**/skills/source-command-opsx-*/
+**/commands/opsx-*.md
+**/commands/opsx/
+**/workflows/opsx-*.md
