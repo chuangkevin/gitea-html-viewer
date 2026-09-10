@@ -354,6 +354,78 @@ describe("collab websocket", { concurrency: false }, () => {
     }
   });
 
+  it("房間被拆掉後，同一個 provider 重連，內容不得變長", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => SEED,
+        saveFile: async (content: string) => {
+          saved.push(content);
+        },
+      }),
+    });
+    const docKey = `reconnect-once-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      assert.equal(docA.getText("content").toString(), SEED);
+
+      const serverDoc = getYDoc(docKey);
+      providerA.disconnect();
+      await waitUntil(() => serverDoc.conns.size === 0, "all conns closed");
+      await snapshotIfEmptyForTest(docKey);
+      assert.ok(saved.length >= 1, "room teardown should write content back");
+
+      providerA.connect();
+      await waitSynced(providerA);
+      assert.equal(docA.getText("content").toString(), SEED);
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
+  it("重複拆房間／重連兩次，內容仍等於 SEED", async () => {
+    const saved: string[] = [];
+    const { port, close } = await listen({
+      featureEnabled: () => true,
+      enabled: () => true,
+      authorize: async () => ({
+        ok: true,
+        user: { name: "tester", color: "#38bdf8" },
+        readFile: async () => SEED,
+        saveFile: async (content: string) => {
+          saved.push(content);
+        },
+      }),
+    });
+    const docKey = `reconnect-twice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const docA = new Y.Doc();
+    const providerA = openProvider(port, docKey, docA);
+    try {
+      await waitSynced(providerA);
+      assert.equal(docA.getText("content").toString(), SEED);
+
+      for (let i = 0; i < 2; i++) {
+        const serverDoc = getYDoc(docKey);
+        providerA.disconnect();
+        await waitUntil(() => serverDoc.conns.size === 0, `all conns closed (round ${i + 1})`);
+        await snapshotIfEmptyForTest(docKey);
+        providerA.connect();
+        await waitSynced(providerA);
+        assert.equal(docA.getText("content").toString(), SEED);
+      }
+    } finally {
+      providerA.destroy();
+      await close();
+    }
+  });
+
   it("releases the room when saveFile rejects", async () => {
     const { port, close } = await listen({
       featureEnabled: () => true,

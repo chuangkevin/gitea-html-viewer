@@ -45,6 +45,7 @@ import {
   readSidebarWidth,
   writeSidebarWidth,
 } from "../lib/sidebar-width";
+import { nextAutosaveDelay } from "../lib/autosave-schedule";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -52,8 +53,10 @@ const MarkdownEditor = lazy(() => import("../components/MarkdownEditor"));
 
 type SaveState = "clean" | "dirty" | "saving" | "saved" | "error" | "conflict";
 
-/** 內容變動後閒置多久自動寫回 GitLab（毫秒）。調這個值就能改自動存檔節奏。 */
-const AUTOSAVE_DELAY_MS = 3000;
+/** 內容變動後閒置多久自動寫回 GitLab（毫秒）。 */
+const AUTOSAVE_IDLE_MS = 120_000;
+/** 一直打字時最多隔多久一定要存一次（毫秒）。避免長時間編輯完全不落地。 */
+const AUTOSAVE_MAX_WAIT_MS = 300_000;
 
 const NEW_FILE_EXTS = [".md", ".txt", ".html", ".css", ".json"] as const;
 
@@ -254,6 +257,8 @@ export default function Workspace() {
   const [previewDropActive, setPreviewDropActive] = useState(false);
   const pendingSaveRef = useRef<{ path: string; content: string; sha?: string } | null>(null);
   const savingRef = useRef(false);
+  const dirtySinceRef = useRef<number | null>(null);
+  const lastEditAtRef = useRef<number | null>(null);
   // render 期間直接賦值，讓 async callback 永遠讀得到最新值
   const activePathRef = useRef(activePath);
   activePathRef.current = activePath;
@@ -519,6 +524,8 @@ export default function Workspace() {
   useEffect(() => {
     if (!activePath) return;
     setSave("clean");
+    dirtySinceRef.current = null;
+    lastEditAtRef.current = null;
     setShareUrl(null);
     const k = kindOf(activePath);
     if (k !== "md" && k !== "text" && k !== "html") return;
@@ -584,6 +591,8 @@ export default function Workspace() {
           setContent(contentStr);
           // 已經寫回遠端了，清掉這個路徑的 pending，避免自動存檔再送一次舊內容
           if (pendingSaveRef.current?.path === path) pendingSaveRef.current = null;
+          dirtySinceRef.current = null;
+          lastEditAtRef.current = null;
           setSave("saved");
           setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
         }
@@ -734,6 +743,15 @@ export default function Workspace() {
         }
       }
       if (isCurrent()) {
+        if (pendingSaveRef.current) {
+          // 這一輪已落地；剩下的未存內容開新的閒置／封頂視窗，避免封頂後連續狂存
+          const now = Date.now();
+          dirtySinceRef.current = now;
+          lastEditAtRef.current = now;
+        } else {
+          dirtySinceRef.current = null;
+          lastEditAtRef.current = null;
+        }
         setSha(r.sha);
         // 存檔期間又打字的話 save 已經是 "dirty"，不要蓋掉
         setSave((s) => (s === "saving" ? "saved" : s));
@@ -1258,17 +1276,29 @@ export default function Workspace() {
     };
   }, [collab]);
 
-  // 自動存檔：內容變動後閒置 AUTOSAVE_DELAY_MS 就 commit 回 GitLab。
+  // 自動存檔：閒置 AUTOSAVE_IDLE_MS 就 commit；一直打字則最多等 AUTOSAVE_MAX_WAIT_MS。
   // conflict / error 狀態不自動重試，避免一直打 GitLab 或覆蓋別人的修改。
   useEffect(() => {
     if (collab) return;
     if (save !== "dirty") return;
     if (!activePath || !canWrite) return;
     if (activeKind !== "md" && activeKind !== "html" && activeKind !== "text") return;
+    const now = Date.now();
+    const dirtySince = dirtySinceRef.current ?? now;
+    dirtySinceRef.current = dirtySince;
+    lastEditAtRef.current = now;
+    const delay = nextAutosaveDelay({
+      dirtySince,
+      lastEditAt: now,
+      now,
+      idleMs: AUTOSAVE_IDLE_MS,
+      maxWaitMs: AUTOSAVE_MAX_WAIT_MS,
+    });
+    if (delay === null) return;
     const t = setTimeout(() => {
       const p = pendingSaveRef.current;
       if (p) void saveSnapshot(p);
-    }, AUTOSAVE_DELAY_MS);
+    }, delay);
     return () => clearTimeout(t);
   }, [content, save, activePath, canWrite, activeKind, collab]);
 

@@ -1,8 +1,16 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
+import * as Y from "yjs";
 import { docs, getYDoc, setupWSConnection } from "@y/websocket-server/utils";
 import { applyTextDiff } from "./text-diff.js";
+import {
+  clearCollabState,
+  hashText,
+  loadCollabState,
+  purgeStaleCollabState,
+  saveCollabState,
+} from "./collab-store.js";
 
 /** 連線者的 presence 身分。 */
 export interface CollabUser {
@@ -36,6 +44,8 @@ export interface CollabOptions {
 const SNAPSHOT_IDLE_MS = 5_000;
 /** 一直有人在打字時，最多隔這麼久一定要 snapshot 一次（否則連打十分鐘等於零次落地）。 */
 const SNAPSHOT_MAX_INTERVAL_MS = 30_000;
+/** 寫回 git 的硬上限。超過就停止自動存檔，避免倍增垃圾一路 commit 進 repo。 */
+const COLLAB_MAX_BYTES = 2 * 1024 * 1024;
 
 type RoomState = {
   seeded: Promise<void>;
@@ -46,6 +56,7 @@ type RoomState = {
   lastSavedAt: number | null;
   idleMs: number;
   maxIntervalMs: number;
+  haltSnapshots: boolean;
 };
 
 const rooms = new Map<string, RoomState>();
@@ -94,9 +105,20 @@ function clearRoomTimers(room: RoomState): void {
   }
 }
 
+function contentTooLarge(docKey: string, content: string, room: RoomState): boolean {
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes <= COLLAB_MAX_BYTES) return false;
+  console.error(
+    `[collab] 拒絕寫回 git：內容超過上限 docKey=${docKey} bytes=${bytes} limit=${COLLAB_MAX_BYTES}`
+  );
+  room.haltSnapshots = true;
+  clearRoomTimers(room);
+  return true;
+}
+
 function markDirty(docKey: string): void {
   const room = rooms.get(docKey);
-  if (!room) return;
+  if (!room || room.haltSnapshots) return;
   room.dirty = true;
   if (room.idleTimer) clearTimeout(room.idleTimer);
   room.idleTimer = setTimeout(() => {
@@ -133,10 +155,14 @@ async function snapshotNow(docKey: string): Promise<number | null> {
     current.dirty = false;
 
     try {
+      if (current.haltSnapshots) return null;
       const doc = getYDoc(docKey);
       const content = doc.getText("content").toString();
+      if (contentTooLarge(docKey, content, current)) return null;
       if (current.saveFile) {
         await current.saveFile(content);
+        // git 寫成功才持久化 Yjs 狀態；失敗會進下面的 catch，不會存。
+        saveCollabState(docKey, Y.encodeStateAsUpdate(doc), hashText(content));
       }
       current.lastSavedAt = Date.now();
       const meta = doc.getMap("meta");
@@ -170,9 +196,21 @@ function ensureSeeded(
   const seeded = (async () => {
     const doc = getYDoc(docKey);
     try {
+      const stored = loadCollabState(docKey);
       const content = readFile ? await readFile() : null;
-      if (content !== null && content !== undefined) {
-        applyTextDiff(doc.getText("content"), content);
+      if (stored && content !== null && stored.textHash === hashText(content)) {
+        // 情況 A：有持久化狀態，且 git 上的內容跟上次存檔時一致。
+        // 直接套用先前的 Y.encodeStateAsUpdate，沿用同一份 doc identity。
+        // 這裡不能再 applyTextDiff：那會用新的 clientID 把同樣文字插第二次，
+        // 重連的客戶端舊 doc 合併進來時，Yjs 會當成兩段獨立內容而倍增。
+        Y.applyUpdate(doc, stored.state);
+      } else {
+        // 情況 B：沒有持久化狀態（第一次開），或 git 內容被外部改過
+        // （有人直接 push 到 GitLab）→ 清掉舊狀態，從純文字重建。
+        clearCollabState(docKey);
+        if (content !== null && content !== undefined) {
+          applyTextDiff(doc.getText("content"), content);
+        }
       }
     } catch (err) {
       console.error("[collab]", err);
@@ -183,7 +221,7 @@ function ensureSeeded(
     const ytext = doc.getText("content");
     ytext.observe(() => markDirty(docKey));
   })();
-  rooms.set(docKey, { seeded, dirty: false, lastSavedAt: null, idleMs, maxIntervalMs });
+  rooms.set(docKey, { seeded, dirty: false, lastSavedAt: null, idleMs, maxIntervalMs, haltSnapshots: false });
   return seeded;
 }
 
@@ -209,8 +247,10 @@ async function snapshotIfEmpty(docKey: string): Promise<void> {
     clearRoomTimers(room);
     const content = doc.getText("content").toString();
     try {
-      if (room.saveFile) {
+      if (!contentTooLarge(docKey, content, room) && room.saveFile) {
         await room.saveFile(content);
+        // 必須在 doc.destroy() 之前編碼；destroy 之後就沒有狀態可存。
+        saveCollabState(docKey, Y.encodeStateAsUpdate(doc), hashText(content));
       }
     } catch (err) {
       console.error("[collab] snapshot 失敗", err);
@@ -232,6 +272,8 @@ export function snapshotIfEmptyForTest(docKey: string): Promise<void> {
 /** 把 /collab 的 WebSocket upgrade 掛到既有的 http server 上。 */
 export function attachCollab(server: HttpServer, opts: CollabOptions): void {
   if (!opts.featureEnabled()) return;
+  const purged = purgeStaleCollabState(30 * 24 * 60 * 60 * 1000);
+  console.log(`[collab] purged ${purged} stale collab_state row(s)`);
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     void (async () => {
