@@ -55,6 +55,7 @@ function prefsToEntries(prefs: { provider: string; project: string; lastSeenAt: 
 // ── Component ──
 
 interface Props {
+  giteaHost?: string;
   currentProvider?: string;
   currentProject?: string;
   collapsed: boolean;
@@ -65,6 +66,7 @@ interface Props {
 }
 
 export default function RepoSelector({
+  giteaHost,
   currentProvider,
   currentProject,
   collapsed,
@@ -161,15 +163,19 @@ export default function RepoSelector({
   const currentKey = currentProvider && currentProject ? `${currentProvider}/${currentProject}` : null;
 
   const handleOpen = useCallback(() => {
-    const parsed = parseRepoInput(urlInput);
+    const parsed = parseRepoInput(urlInput, giteaHost);
     if (!parsed) {
-      setError("貼上 GitHub 或 GitLab repo 網址（或 owner/repo）");
+      setError(
+        giteaHost
+          ? "貼上 GitHub、GitLab 或 Gitea repo 網址（或 owner/repo）"
+          : "貼上 GitHub 或 GitLab repo 網址（或 owner/repo）"
+      );
       return;
     }
     setError("");
     setUrlInput("");
     navigate(`/edit/${refPathOf(parsed.provider, parsed.projectPath)}`);
-  }, [urlInput, navigate]);
+  }, [urlInput, giteaHost, navigate]);
 
   const goTo = useCallback(
     (e: RepoEntry) => {

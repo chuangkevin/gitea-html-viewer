@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type AccessMode, type AdminShareInventoryItem, type AdminState, type ShortLink } from "../lib/api";
+import type { ProviderName } from "../lib/providers";
 
 const MODE_OPTIONS: { value: AccessMode; label: string }[] = [
   { value: "open", label: "免登入公開可編" },
@@ -12,7 +13,8 @@ type ShortLinkDraft = { targetPath: string; label: string; isEnabled: boolean };
 
 export function normalizeProjectInput(
   raw: string,
-  fallbackProvider: string
+  fallbackProvider: string,
+  giteaHost?: string
 ): { provider: string; project: string } {
   let str = raw.trim();
   if (!str) {
@@ -30,6 +32,9 @@ export function normalizeProjectInput(
   } else if (/^github\.com\//i.test(str)) {
     provider = "github";
     str = str.replace(/^github\.com\//i, "");
+  } else if (giteaHost && new RegExp(`^${giteaHost.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`, "i").test(str)) {
+    provider = "gitea";
+    str = str.replace(new RegExp(`^${giteaHost.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`, "i"), "");
   }
 
   // 砍掉 /-/tree/...、/-/blob/...、/tree/...、/blob/... 及其後面的東西
@@ -48,7 +53,8 @@ export default function Admin() {
   const [actionError, setActionError] = useState("");
 
   // 新增 entry 表單
-  const [newProvider, setNewProvider] = useState<"github" | "gitlab">("gitlab");
+  const [newProvider, setNewProvider] = useState<ProviderName>("gitlab");
+  const [giteaHost, setGiteaHost] = useState<string | undefined>(undefined);
   const [newProject, setNewProject] = useState("");
   const [newMode, setNewMode] = useState<AccessMode>("open");
 
@@ -71,11 +77,11 @@ export default function Admin() {
 
   function handleBlurProject() {
     if (!newProject.trim()) return;
-    const normalized = normalizeProjectInput(newProject, newProvider);
+    const normalized = normalizeProjectInput(newProject, newProvider, giteaHost);
     setNewProject(normalized.project);
-    if (normalized.provider === "github" || normalized.provider === "gitlab") {
+    if (normalized.provider === "github" || normalized.provider === "gitlab" || normalized.provider === "gitea") {
       if (normalized.provider !== newProvider) {
-        setNewProvider(normalized.provider as "github" | "gitlab");
+        setNewProvider(normalized.provider as ProviderName);
       }
     }
   }
@@ -119,6 +125,16 @@ export default function Admin() {
 
   useEffect(() => {
     loadState();
+    api
+      .me()
+      .then((me) => {
+        try {
+          setGiteaHost(me.giteaUrl ? new URL(me.giteaUrl).host : undefined);
+        } catch {
+          setGiteaHost(undefined);
+        }
+      })
+      .catch(() => setGiteaHost(undefined));
   }, [loadState]);
 
   useEffect(() => {
@@ -170,10 +186,10 @@ export default function Admin() {
 
   async function handleAddEntry(e: React.FormEvent) {
     e.preventDefault();
-    const normalized = normalizeProjectInput(newProject, newProvider);
+    const normalized = normalizeProjectInput(newProject, newProvider, giteaHost);
     const p = normalized.project;
     const providerToSend =
-      normalized.provider === "github" || normalized.provider === "gitlab"
+      normalized.provider === "github" || normalized.provider === "gitlab" || normalized.provider === "gitea"
         ? normalized.provider
         : newProvider;
     if (!p) return;
@@ -294,6 +310,7 @@ export default function Admin() {
     const openProviders = new Set(state.entries.filter((e) => e.mode === "open").map((e) => e.provider));
     if (openProviders.has("github") && !state.openTokenReady.github) missingTokens.push("GITHUB_OPEN_TOKEN");
     if (openProviders.has("gitlab") && !state.openTokenReady.gitlab) missingTokens.push("GITLAB_OPEN_TOKEN");
+    if (openProviders.has("gitea") && !state.openTokenReady.gitea) missingTokens.push("GITEA_OPEN_TOKEN");
   }
 
   return (
@@ -689,11 +706,12 @@ export default function Admin() {
                   <label className="block text-xs text-slate-400 mb-1">Provider</label>
                   <select
                     value={newProvider}
-                    onChange={(e) => setNewProvider(e.target.value as "github" | "gitlab")}
+                    onChange={(e) => setNewProvider(e.target.value as ProviderName)}
                     className="w-full sm:w-auto bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                   >
                     <option value="gitlab">GitLab</option>
                     <option value="github">GitHub</option>
+                    <option value="gitea">Gitea</option>
                   </select>
                 </div>
                 <div className="flex-1 min-w-0 w-full sm:w-auto sm:min-w-[240px]">

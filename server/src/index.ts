@@ -66,6 +66,7 @@ import {
 } from "./providers.js";
 import { github } from "./github.js";
 import { gitlab } from "./gitlab.js";
+import { gitea } from "./gitea.js";
 import {
   encodeSelection,
   fullIdentities,
@@ -104,6 +105,7 @@ import { attachCollab, flushRoom } from "./collab.js";
 
 registerProvider(github);
 registerProvider(gitlab);
+registerProvider(gitea);
 
 function migrateRepoAccess(): void {
   const entries = listEntries();
@@ -159,6 +161,11 @@ const OAUTH: Record<ProviderName, OAuthConf> = {
     clientSecret: process.env.GITLAB_CLIENT_SECRET || "",
     fallbackToken: process.env.GITLAB_FALLBACK_TOKEN || "",
   },
+  gitea: {
+    clientId: process.env.GITEA_CLIENT_ID || "",
+    clientSecret: process.env.GITEA_CLIENT_SECRET || "",
+    fallbackToken: process.env.GITEA_FALLBACK_TOKEN || "",
+  },
 };
 const oauthReady = (p: ProviderName) => Boolean(OAUTH[p].clientId && OAUTH[p].clientSecret);
 
@@ -205,7 +212,7 @@ app.use(async (req, _res, next) => {
 
 // 部署健康檢查（CI 用；不需認證）
 app.get("/healthz", (_req, res) => {
-  res.json({ ok: true, github: oauthReady("github"), gitlab: oauthReady("gitlab") });
+  res.json({ ok: true, github: oauthReady("github"), gitlab: oauthReady("gitlab"), gitea: oauthReady("gitea") });
 });
 
 function requireAuth(req: express.Request, res: express.Response): Session | null {
@@ -415,15 +422,16 @@ app.put("/api/user-prefs", (req, res) => {
 });
 
 app.get("/api/me", (req, res) => {
-  const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab") };
+  const providers = { github: oauthReady("github"), gitlab: oauthReady("gitlab"), gitea: oauthReady("gitea") };
+  const giteaUrl = (process.env.GITEA_URL || "").replace(/\/+$/, "") || null;
   const team = teamInfo(req);
   const admin = { enabled: Boolean(process.env.ADMIN_KEY), is: isAdmin(req) };
   const s = req.nbSession ?? null;
   if (!s) {
-    res.json({ login: null, providers, team, admin });
+    res.json({ login: null, providers, giteaUrl, team, admin });
     return;
   }
-  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers, team, admin });
+  res.json({ login: s.login, avatarUrl: s.avatar_url, provider: s.provider, providers, giteaUrl, team, admin });
 });
 
 // ── 共用：解析路由上的 provider / project ──────────────
@@ -2227,6 +2235,7 @@ app.get("/api/admin/state", (req, res) => {
     openTokenReady: {
       github: openTokenReady("github"),
       gitlab: openTokenReady("gitlab"),
+      gitea: openTokenReady("gitea"),
     },
     entries: listEntries(),
   });

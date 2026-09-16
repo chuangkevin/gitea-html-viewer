@@ -15,7 +15,8 @@ export interface Me {
   login: string | null;
   avatarUrl?: string;
   provider?: string;
-  providers?: { github: boolean; gitlab: boolean };
+  providers?: { github: boolean; gitlab: boolean; gitea: boolean };
+  giteaUrl?: string | null;
   team?: TeamInfo;
   admin?: { enabled: boolean; is: boolean };
 }
@@ -33,7 +34,7 @@ export interface AdminEntry {
 export interface AdminState {
   adminEnabled: boolean;
   isAdmin: boolean;
-  openTokenReady?: { github: boolean; gitlab: boolean };
+  openTokenReady?: { github: boolean; gitlab: boolean; gitea: boolean };
   entries?: AdminEntry[];
 }
 

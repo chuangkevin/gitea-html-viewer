@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
 import { renderMarkdown, type LinkContext } from "../lib/markdown";
-import { ProviderIcon, providerLabel } from "../lib/providers";
+import { ProviderIcon, providerLabel, type ProviderName } from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
@@ -384,6 +384,14 @@ export default function Workspace() {
   )}`;
 
   const refreshMe = useCallback(() => api.me().then(setMe).catch(() => setMe({ login: null })), []);
+
+  const giteaHost = useMemo(() => {
+    try {
+      return me?.giteaUrl ? new URL(me.giteaUrl).host : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [me?.giteaUrl]);
 
   useEffect(() => {
     void refreshMe();
@@ -2434,7 +2442,7 @@ export default function Workspace() {
               <IdentityPicker team={me.team} onChange={handleIdentityChange} size="lg" />
             </div>
           )}
-          {me?.providers?.[provider as "github" | "gitlab"] ? (
+          {me?.providers?.[provider as ProviderName] ? (
             <a
               href={loginUrl}
               className="inline-flex items-center gap-2 rounded-lg bg-white text-zinc-900 font-semibold px-5 py-2.5 hover:bg-zinc-200"
@@ -2963,6 +2971,7 @@ export default function Workspace() {
           onDrop={handleDrop}
         >
           <RepoSelector
+            giteaHost={giteaHost}
             currentProvider={provider}
             currentProject={projectPath}
             collapsed={repoSelectorCollapsed}

@@ -67,6 +67,7 @@ export function listEntries(): {
 export function openToken(provider: ProviderName): string {
   if (provider === "github") return process.env.GITHUB_OPEN_TOKEN || "";
   if (provider === "gitlab") return process.env.GITLAB_OPEN_TOKEN || "";
+  if (provider === "gitea") return process.env.GITEA_OPEN_TOKEN || "";
   return "";
 }
 

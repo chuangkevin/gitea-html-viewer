@@ -46,6 +46,8 @@ cp .env.example .env
    ```
 
 > GitHub 也想開就一併填 `GITHUB_CLIENT_ID/SECRET`；不填就只顯示 GitLab 登入。
+> 自架 Gitea 想開就填 `GITEA_URL`（例 `https://gitea.ia`）＋ `GITEA_CLIENT_ID/SECRET`
+> （Gitea：`Settings → Applications → Manage OAuth2 Applications`，Redirect URI `<BASE_URL>/api/auth/callback`）。
 > `SECRET` 不填會自動產生存在 `data/.secret`（換機器要保留 `data/` 才能沿用既有 session/分享）。
 
 > **💡 OAuth Callback 失敗排查**：
@@ -128,6 +130,7 @@ commit 的 author 會是該成員的名字 + email（committer 則是 token 所�
   - **GitLab**：填寫 `GITLAB_OPEN_TOKEN`。需為 GitLab Personal Access Token（PAT），**Scope 勾選 `api`**，且該 Token 所屬帳號需對目標 repo 具備 **Developer**（含）以上寫入權限。
     - *注意*：gitlab.com 的 Free 方案無法對專案建立 Project Access Token（僅 Premium/Ultimate 或自架支援），請一律使用 Personal Access Token。
   - **GitHub**：填寫 `GITHUB_OPEN_TOKEN`。需具備 repository 寫入權限（Fine-grained PAT 勾選 Contents read/write，或 Classic PAT 勾選 repo）。
+  - **Gitea**：填寫 `GITEA_OPEN_TOKEN`。需為 Gitea access token，**Scope 勾選 `write:repository`**，且該帳號要對目標 repo 有寫入權。
 - 可設定 `NOTE_OPEN_AUTHOR_NAME`（預設 `note 訪客`）與 `NOTE_OPEN_AUTHOR_EMAIL`（預設 `note@interagent.io`）作為免登入訪客 commit 時的預設作者；訪客亦可在網頁頂端署名欄填寫自己的稱呼。
 
 #### 3. ⚠️ 安全與風險提醒

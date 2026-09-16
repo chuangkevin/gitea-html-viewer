@@ -1,9 +1,9 @@
 /** 前端共用：provider 名稱、圖示，以及「貼上網址 → 判斷來源」的解析。 */
 
-export type ProviderName = "github" | "gitlab";
+export type ProviderName = "github" | "gitlab" | "gitea";
 
 export function providerLabel(p: string): string {
-  return p === "gitlab" ? "GitLab" : "GitHub";
+  return p === "gitlab" ? "GitLab" : p === "gitea" ? "Gitea" : "GitHub";
 }
 
 /** app 路由 / API 路徑用的 repo 參考： `<provider>/<encodeURIComponent(projectPath)>` */
@@ -15,9 +15,13 @@ export function refPathOf(provider: string, projectPath: string): string {
  * 從貼上的網址或「owner/repo」判斷來源與專案路徑。
  *   https://github.com/owner/repo(.git)(/…)
  *   https://gitlab.com/group/sub/project(/-/…)
+ *   https://<giteaHost>/owner/repo(.git)(/…)
  *   owner/repo  → GitHub（向後相容）
  */
-export function parseRepoInput(input: string): { provider: ProviderName; projectPath: string } | null {
+export function parseRepoInput(
+  input: string,
+  giteaHost?: string
+): { provider: ProviderName; projectPath: string } | null {
   const raw = input.trim();
   if (!raw) return null;
 
@@ -32,6 +36,10 @@ export function parseRepoInput(input: string): { provider: ProviderName; project
     if (host === "gitlab.com" || host.startsWith("gitlab.")) {
       const p = cleanGitLab(rest);
       return p ? { provider: "gitlab", projectPath: p } : null;
+    }
+    if (giteaHost && host === giteaHost.toLowerCase()) {
+      const p = cleanGitHub(rest);
+      return p ? { provider: "gitea", projectPath: p } : null;
     }
     return null;
   }
@@ -58,7 +66,9 @@ function cleanGitLab(rest: string): string | null {
 }
 
 export function ProviderIcon({ provider, className }: { provider: string; className?: string }) {
-  return provider === "gitlab" ? <GitLabIcon className={className} /> : <GitHubIcon className={className} />;
+  if (provider === "gitlab") return <GitLabIcon className={className} />;
+  if (provider === "gitea") return <GiteaIcon className={className} />;
+  return <GitHubIcon className={className} />;
 }
 
 export function GitHubIcon({ className }: { className?: string }) {
@@ -73,6 +83,15 @@ export function GitLabIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="currentColor" aria-hidden>
       <path d="M15.73 6.53 15 4.28l-1.45-4.46a.25.25 0 0 0-.48 0l-1.45 4.46H4.38L2.93-.18a.25.25 0 0 0-.48 0L1 4.28.27 6.53a.5.5 0 0 0 .18.56L8 12.63l7.55-5.54a.5.5 0 0 0 .18-.56z" />
+    </svg>
+  );
+}
+
+/** 簡化版 Gitea 圖示：杯身 + 把手 + 底座。 */
+export function GiteaIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="currentColor" aria-hidden>
+      <path d="M3 4h9v4.5a4.5 4.5 0 0 1-3.75 4.435A1.5 1.5 0 1 1 8 14.9V15h3.5a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1H7v-1.065A4.5 4.5 0 0 1 3 8.5V4zm1 1v3.5a3.5 3.5 0 0 0 7 0V5H4zm10.5 2.7a2.3 2.3 0 0 1 2.3 2.3v.8a3.1 3.1 0 0 1-3.1 3.1h-1.3a.55.55 0 0 1 0-1.1h1.3a2 2 0 0 0 2-2V10a1.2 1.2 0 0 0-1.2-1.2h-.2a.55.55 0 0 1 0-1.1h.2z" />
     </svg>
   );
 }

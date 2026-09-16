@@ -1,6 +1,6 @@
 /**
- * Provider 抽象層：把「文件儲存後端」統一成一個介面，GitHub / GitLab
- * 各自實作。note-bridge 不代管內容，repo 就是唯一資料庫；這層只負責
+ * Provider 抽象層：把「文件儲存後端」統一成一個介面，GitHub / GitLab /
+ * 自架 Gitea 各自實作。note-bridge 不代管內容，repo 就是唯一資料庫；這層只負責
  * 用使用者自己的 token 去讀寫。
  *
  * 名詞：
@@ -9,7 +9,7 @@
  *                - GitLab： "group/subgroup/project"（可巢狀，段數不定）
  */
 
-export type ProviderName = "github" | "gitlab";
+export type ProviderName = "github" | "gitlab" | "gitea";
 
 export class ProviderError extends Error {
   constructor(public status: number, message: string) {
@@ -165,7 +165,18 @@ export function getProvider(name: string | undefined): Provider {
   return p;
 }
 export function isProviderName(x: string): x is ProviderName {
-  return x === "github" || x === "gitlab";
+  return x === "github" || x === "gitlab" || x === "gitea";
+}
+
+/** 自架 Gitea 的 hostname（從 GITEA_URL 取，小寫；沒設回 ""） */
+export function giteaHost(): string {
+  const url = (process.env.GITEA_URL || "").trim();
+  if (!url) return "";
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -173,6 +184,7 @@ export function isProviderName(x: string): x is ProviderName {
  * 支援：
  *   https://github.com/owner/repo(.git)(/…)
  *   https://gitlab.com/group/sub/project(/-/tree/…)(.git)
+ *   https://<GITEA_URL host>/owner/repo(.git)(/…)
  *   owner/repo            → 視為 GitHub（向後相容）
  * 回傳 null 表示無法解析。
  */
@@ -192,6 +204,12 @@ export function parseRepoInput(input: string): { provider: ProviderName; project
     if (host === "gitlab.com" || host.startsWith("gitlab.")) {
       const path = cleanGitLabPath(rest);
       return path ? { provider: "gitlab", projectPath: path } : null;
+    }
+    // 自架 Gitea：host 與 GITEA_URL 符合時，路徑取前兩段 owner/repo
+    const gh = giteaHost();
+    if (gh && host === gh) {
+      const path = cleanGitHubPath(rest);
+      return path ? { provider: "gitea", projectPath: path } : null;
     }
     return null;
   }
@@ -225,6 +243,7 @@ function cleanGitLabPath(rest: string): string | null {
 /**
  * 把使用者貼進來的任何形式正規化成 projectPath。
  * 接受：https://gitlab.com/interagent-io/global-doc.git、gitlab.com/interagent-io/global-doc、
+ *       https://<GITEA_URL host>/owner/repo、<GITEA_URL host>/owner/repo、
  *       interagent-io/global-doc、結尾多餘的 / 或 .git、/-/tree/main/... 之類的尾巴
  * 認不出 host 時用 fallbackProvider。
  */
@@ -250,7 +269,13 @@ export function normalizeProjectInput(
     provider = "github";
     path = githubMatch[2];
   } else {
-    provider = fallbackProvider;
+    const gh = giteaHost();
+    if (gh && path.toLowerCase().startsWith(`${gh}/`)) {
+      provider = "gitea";
+      path = path.slice(gh.length + 1);
+    } else {
+      provider = fallbackProvider;
+    }
   }
 
   // 砍掉 `/-/tree/…`、`/-/blob/…`、`/-/…`、`/tree/…`、`/blob/…` 之後的所有東西

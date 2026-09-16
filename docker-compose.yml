@@ -20,6 +20,12 @@ services:
       - GITLAB_CLIENT_ID=${GITLAB_CLIENT_ID:-}
       - GITLAB_CLIENT_SECRET=${GITLAB_CLIENT_SECRET:-}
       - GITLAB_FALLBACK_TOKEN=${GITLAB_FALLBACK_TOKEN:-}
+      # 自架 Gitea OAuth（Gitea：Settings → Applications → Manage OAuth2 Applications；
+      # Redirect URI = <BASE_URL>/api/auth/callback）
+      - GITEA_URL=${GITEA_URL:-}
+      - GITEA_CLIENT_ID=${GITEA_CLIENT_ID:-}
+      - GITEA_CLIENT_SECRET=${GITEA_CLIENT_SECRET:-}
+      - GITEA_FALLBACK_TOKEN=${GITEA_FALLBACK_TOKEN:-}
       # GitHub 一併保留為選配，不填就不顯示 GitHub 登入
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
@@ -35,6 +41,7 @@ services:
       # 免登入「公開可編」白名單 repo 寫入權限共用 token
       - GITHUB_OPEN_TOKEN=${GITHUB_OPEN_TOKEN:-}
       - GITLAB_OPEN_TOKEN=${GITLAB_OPEN_TOKEN:-}
+      - GITEA_OPEN_TOKEN=${GITEA_OPEN_TOKEN:-}
       - NOTE_OPEN_AUTHOR_NAME=${NOTE_OPEN_AUTHOR_NAME:-}
       - NOTE_OPEN_AUTHOR_EMAIL=${NOTE_OPEN_AUTHOR_EMAIL:-}
       # Admin 控制台與 OAuth 白名單

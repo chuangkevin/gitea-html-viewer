@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Me } from "../lib/api";
-import { providerLabel, refPathOf } from "../lib/providers";
+import { providerLabel, refPathOf, type ProviderName } from "../lib/providers";
 import SlideDeck from "../components/SlideDeck";
 
 /** public repo 檔案直接開簡報（/p/:provider/:project/*path），不需分享 token。 */
@@ -30,7 +30,7 @@ export default function DirectSlidesPage() {
   }, [refPath, filePath]);
 
   if (error) {
-    const canLogin = me?.providers?.[provider as "github" | "gitlab"];
+    const canLogin = me?.providers?.[provider as ProviderName];
     return (
       <div className="min-h-screen grid place-items-center text-center px-6">
         <div>
