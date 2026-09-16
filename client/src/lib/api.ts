@@ -308,6 +308,40 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ doc }),
     }).then((r) => j<{ ok: boolean; lastSavedAt: number | null }>(r)),
+  /** 互動 HTML 頁的寫入：先排入佇列立刻回來，由 server 背景合併後 commit。 */
+  enqueueFile: (
+    ref: string,
+    files: Array<{ path: string; content?: string; contentBase64?: string; sha?: string }>,
+    sourceGroup?: string,
+    message?: string
+  ) =>
+    fetch(`/api/enqueue-file/${ref}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files, sourceGroup, message }),
+    }).then((r) => j<{ ok: boolean; jobId: string; status: string; merged: boolean; quietMs: number }>(r)),
+  enqueueStatus: (provider: string, project: string, sourceGroup?: string) => {
+    const q = new URLSearchParams({ provider, project });
+    if (sourceGroup) q.set("sourceGroup", sourceGroup);
+    return fetch(`/api/enqueue-status?${q.toString()}`).then((r) =>
+      j<{
+        jobId: string;
+        status: "pending" | "running" | "done" | "conflict" | "error";
+        pending: boolean;
+        attempts: number;
+        error?: string;
+        conflicts?: { path: string; currentSha: string }[];
+        files?: Array<{ path: string; content?: string; contentBase64?: string; sha?: string }>;
+      }>(r)
+    );
+  },
+  enqueueFlush: (provider: string, project: string, sourceGroup?: string) =>
+    fetch("/api/enqueue-flush", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider, project, sourceGroup }),
+      keepalive: true,
+    }).then((r) => j<{ ok: boolean; flushed: number; pending: boolean }>(r)),
   getUserPrefs: () => fetch("/api/user-prefs").then((r) => j<UserPrefsResult>(r)),
   updateUserPrefs: (body: {
     action: "upsert" | "delete" | "merge";

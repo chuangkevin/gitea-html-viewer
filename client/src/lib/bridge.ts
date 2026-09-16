@@ -11,16 +11,25 @@
  * Parent -> Iframe (回應/通知):
  * - { type: 'nb:ready', version: string }
  * - { type: 'nb:file', path: string, content: string }
+ * - { type: 'nb:queued', path: string, jobId: string }   寫入已排入佇列（立刻回，不等 commit）
  * - { type: 'nb:saved', path: string }
- * - { type: 'nb:file-list', path: string, files: Array<{ name: string; path: string; size?: number; isDir: boolean; depth?: number }> }
- * - { type: 'nb:whoami-result', name: string, source: 'oauth' | 'identity' | 'anonymous' }
+ * - { type: 'nb:conflict', path: string, conflicts: Array<{path, currentSha}> }  遠端已改過，你的內容被保留、未覆蓋
  * - { type: 'nb:error', message: string }
+ * - { type: 'nb:file-list', path: string, files: Array<{ name, path, size?, isDir, depth? }> }
+ * - { type: 'nb:whoami-result', name: string, source: 'oauth' | 'identity' | 'anonymous' }
  */
 
 export interface BridgeContext {
   iframe: HTMLIFrameElement;
   readFile: (path: string) => Promise<string>;
-  saveFile: (path: string, content?: string, contentBase64?: string) => Promise<void>;
+  /** 排入寫入佇列；立刻回 jobId，不等待上游 commit。 */
+  saveFile: (path: string, content?: string, contentBase64?: string) => Promise<{ jobId: string }>;
+  /** 追蹤剛剛排入的寫入，直到落地、衝突或失敗。 */
+  saveResult: (jobId: string) => Promise<{
+    status: "done" | "conflict" | "error";
+    message?: string;
+    conflicts?: { path: string; currentSha: string }[];
+  }>;
   openPath: (path: string) => void;
   listFiles: (
     path: string,
@@ -100,20 +109,36 @@ export function attachBridge(ctx: BridgeContext): () => void {
           postReply({ type: "nb:error", message: `無效或不允許的檔案路徑：${String(path)}` });
           return;
         }
-        if (typeof contentBase64 === "string") {
-          await ctx.saveFile(path, undefined, contentBase64);
-          postReply({ type: "nb:saved", path });
-        } else if (typeof content === "string") {
-          if (content.length >= 20 * 1024 * 1024) {
-            postReply({ type: "nb:error", message: "檔案內容必須小於 20MB" });
-            return;
-          }
-          await ctx.saveFile(path, content);
-          postReply({ type: "nb:saved", path });
-        } else {
+        if (typeof contentBase64 !== "string" && typeof content !== "string") {
           postReply({ type: "nb:error", message: "檔案內容 (content 或 contentBase64) 為必填" });
           return;
         }
+        if (typeof content === "string" && content.length >= 20 * 1024 * 1024) {
+          postReply({ type: "nb:error", message: "檔案內容必須小於 20MB" });
+          return;
+        }
+        const { jobId } = await ctx.saveFile(
+          path,
+          typeof content === "string" ? content : undefined,
+          typeof contentBase64 === "string" ? contentBase64 : undefined
+        );
+        // 立刻回「已排入」：頁面不必等上游 commit。
+        postReply({ type: "nb:queued", path, jobId });
+        // 落地結果非同步補送，讓頁面能顯示已儲存／衝突／失敗。
+        void ctx
+          .saveResult(jobId)
+          .then((res) => {
+            if (res.status === "done") {
+              postReply({ type: "nb:saved", path, jobId });
+            } else if (res.status === "conflict") {
+              postReply({ type: "nb:conflict", path, jobId, conflicts: res.conflicts ?? [] });
+            } else {
+              postReply({ type: "nb:error", path, jobId, message: res.message ?? "儲存失敗" });
+            }
+          })
+          .catch((err: unknown) => {
+            postReply({ type: "nb:error", path, jobId, message: (err as Error)?.message || String(err) });
+          });
       } else if (type === "nb:open") {
         if (!isValidPath(path)) {
           postReply({ type: "nb:error", message: `無效或不允許的檔案路徑：${String(path)}` });

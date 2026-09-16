@@ -54,6 +54,15 @@ import {
   defaultGuestAuthor,
 } from "./access.js";
 import {
+  enqueueWrite,
+  flushGroup,
+  hasUnlanded,
+  jobStatus,
+  startWriteQueue,
+  type ActorRef,
+  type QueueFile,
+} from "./write-queue.js";
+import {
   registerProvider,
   getProvider,
   isProviderName,
@@ -1469,6 +1478,106 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
   }
 });
 
+// ── 互動 HTML 頁：寫入佇列 ─────────────────────────────
+/**
+ * 互動 HTML 頁（POC 看板、CRM 等）的寫入不直接 commit，先排進佇列立刻回覆，
+ * 由背景 worker 合併後一次落地。既有 PUT /api/file 維持同步語意，不受影響。
+ */
+function queueActorRef(req: express.Request, provider: ProviderName, project: string): ActorRef | null {
+  if (openTokenReady(provider) && getMode(provider, project) === "open") {
+    return { kind: "open" };
+  }
+  const s = req.nbSession ?? null;
+  if (s && s.provider === provider) return { kind: "session", sid: s.sid };
+  const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+  if (sel && sel.identity.provider === provider) return { kind: "identity", identityName: sel.identity.name };
+  if (openTokenReady(provider) && getMode(provider, project) === "admin" && isAdmin(req)) {
+    return { kind: "admin" };
+  }
+  return null;
+}
+
+app.post("/api/enqueue-file/:provider/:project", (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    const project = projectParam(req);
+    const actor = actorFor(req, provider, project);
+    const body = (req.body ?? {}) as { files?: QueueFile[]; sourceGroup?: string; message?: string };
+
+    const ref = queueActorRef(req, provider, project);
+    if (!ref) {
+      res.status(401).json({ error: "not_authenticated" });
+      return;
+    }
+
+    const result = enqueueWrite({
+      provider,
+      project,
+      sourceGroup: typeof body.sourceGroup === "string" ? body.sourceGroup : undefined,
+      files: Array.isArray(body.files) ? body.files : [],
+      message: typeof body.message === "string" ? body.message : undefined,
+      actor: ref,
+      author: actor.author,
+    });
+    if (!result) {
+      res.status(400).json({ error: "invalid_files" });
+      return;
+    }
+    res.status(202).json({ ok: true, jobId: result.jobId, status: "pending", merged: result.merged, quietMs: result.quietMs });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+app.get("/api/enqueue-status", (req, res) => {
+  try {
+    const provider = typeof req.query.provider === "string" ? req.query.provider : "";
+    const project = typeof req.query.project === "string" ? req.query.project : "";
+    const sourceGroup = typeof req.query.sourceGroup === "string" ? req.query.sourceGroup : undefined;
+    const jobId = typeof req.query.jobId === "string" ? req.query.jobId : "";
+    if (!jobId && (!isProviderName(provider) || !project)) {
+      res.status(400).json({ error: "invalid_query" });
+      return;
+    }
+    if (isProviderName(provider) && project && !queueActorRef(req, provider, project)) {
+      res.status(401).json({ error: "not_authenticated" });
+      return;
+    }
+    const view = jobStatus(jobId ? { jobId } : { provider, project, sourceGroup });
+    if (!view) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json({
+      ...view,
+      pending: view.status === "pending" || view.status === "running",
+    });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
+/** 頁面離開時用：跳過安靜視窗立即落地。sendBeacon 以 application/json Blob 送出。 */
+app.post("/api/enqueue-flush", (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { provider?: string; project?: string; sourceGroup?: string };
+    const provider = typeof body.provider === "string" ? body.provider : "";
+    const project = typeof body.project === "string" ? body.project : "";
+    if (!isProviderName(provider) || !project) {
+      res.status(400).json({ error: "invalid_query" });
+      return;
+    }
+    if (!queueActorRef(req, provider, project)) {
+      res.status(401).json({ error: "not_authenticated" });
+      return;
+    }
+    const flushed = flushGroup({ provider, project, sourceGroup: body.sourceGroup });
+    res.json({ ok: true, flushed, pending: hasUnlanded(provider, project, body.sourceGroup) });
+  } catch (e) {
+    handleError(res, e);
+  }
+});
+
 app.post("/api/move/:provider/:project", async (req, res) => {
   try {
     const provider = routeProvider(req);
@@ -2579,6 +2688,7 @@ if (fs.existsSync(clientDist)) {
 if (process.env.NODE_ENV !== "test") {
   const server = http.createServer(app);
   attachCollab(server, collabOptions());
+  startWriteQueue();
   server.listen(PORT, () => {
     console.log(`note-bridge server on :${PORT} (${BASE_URL})`);
   });

@@ -197,6 +197,28 @@ NOTE_COLLAB_DOCS=gitlab/interagent-io%2F<專案>/<檔案路徑>
 
 把 `NOTE_COLLAB` 拿掉或設成空字串，再 `docker compose up -d`。關掉之後連 WebSocket 的 upgrade listener 都不會掛。
 
+---
+
+## 互動 HTML 頁寫入佇列
+
+note.ia 工作區可以所見即所得地直接操作內嵌的 HTML 互動頁（`客戶POC/customers.html`、`內部/CRM/crm.html`）。這些頁面按按鈕時**不會**直接 commit，而是：
+
+1. `POST /api/enqueue-file/<provider>/<project>` 把寫入排進 SQLite 佇列，立刻回 `202`。
+2. 背景 worker 依來源群組合併未落地的寫入，安靜 `NOTE_QUEUE_QUIET_MS`（預設 1500ms）或封頂 `NOTE_QUEUE_CAP_MS`（預設 5000ms）後**一次 commit**。
+3. 衝突（基準 sha 對不上）時 worker **不寫入**、整組標記 `conflict`，**內容保留在佇列**，不覆蓋別人的版本。頁面以 `GET /api/enqueue-status` 查得。
+4. 離開頁面時若還有未落地寫入，前端以 `sendBeacon` 打 `POST /api/enqueue-flush` 請 server 立刻落地。
+
+變數都有預設值，通常不用設；要調整才需要進 `.env`（compose 的 `environment:` 是白名單，沒列進去傳不進容器）：
+
+```
+NOTE_QUEUE_QUIET_MS=1500
+NOTE_QUEUE_CAP_MS=5000
+NOTE_QUEUE_MAX_ATTEMPTS=5
+# NOTE_QUEUE_DISABLED=1   # 只排隊、不自動落地（除錯用）
+```
+
+既有的同步 `PUT /api/file` 完全沒改，編輯器、檔案樹、外部同步服務的行為不變。
+
 ### 5. 目前的限制（Phase 1b）
 
 - 內容存在 server 記憶體，**最後一個人離開時**才 commit 回 git；編輯途中不會定期存（定期 snapshot 是 Phase 2）。

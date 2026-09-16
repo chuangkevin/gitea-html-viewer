@@ -55,6 +55,11 @@ services:
       # 兩個都要給才會開，沒列進白名單的文件一律走原本的單人編輯。
       - NOTE_COLLAB=${NOTE_COLLAB:-}
       - NOTE_COLLAB_DOCS=${NOTE_COLLAB_DOCS:-}
+      # 互動 HTML 頁寫入佇列（有預設值，通常不用填）
+      - NOTE_QUEUE_QUIET_MS=${NOTE_QUEUE_QUIET_MS:-1500}
+      - NOTE_QUEUE_CAP_MS=${NOTE_QUEUE_CAP_MS:-5000}
+      - NOTE_QUEUE_MAX_ATTEMPTS=${NOTE_QUEUE_MAX_ATTEMPTS:-5}
+      - NOTE_QUEUE_DISABLED=${NOTE_QUEUE_DISABLED:-}
     volumes:
       - ./data:/data
 

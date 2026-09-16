@@ -256,6 +256,8 @@ export default function Workspace() {
   // 拖到預覽窗格上時的視覺回饋（預覽是渲染後 HTML，沒有 caret，要讓使用者知道放得進去）
   const [previewDropActive, setPreviewDropActive] = useState(false);
   const pendingSaveRef = useRef<{ path: string; content: string; sha?: string } | null>(null);
+  // 互動 HTML 頁排入佇列、還沒落地的寫入（jobId → 檔案與來源群組）
+  const pendingQueueRef = useRef<Map<string, { path: string; sourceGroup: string }>>(new Map());
   const savingRef = useRef(false);
   const dirtySinceRef = useRef<number | null>(null);
   const lastEditAtRef = useRef<number | null>(null);
@@ -591,18 +593,44 @@ export default function Workspace() {
         return file.content;
       },
       saveFile: async (path: string, contentStr?: string, contentBase64?: string) => {
+        const sourceGroup = path;
         const msg = `更新 ${path}（via 互動頁）`;
-        const targetSha = path === activePath ? sha : undefined;
-        const res = await api.saveFile(refPath, path, contentStr, targetSha, msg, contentBase64);
-        if (path === activePath && contentStr !== undefined) {
-          setSha(res.sha);
-          setContent(contentStr);
-          // 已經寫回遠端了，清掉這個路徑的 pending，避免自動存檔再送一次舊內容
-          if (pendingSaveRef.current?.path === path) pendingSaveRef.current = null;
-          dirtySinceRef.current = null;
-          lastEditAtRef.current = null;
-          setSave("saved");
-          setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
+        const res = await api.enqueueFile(
+          refPath,
+          [{ path, content: contentStr, contentBase64 }],
+          sourceGroup,
+          msg
+        );
+        pendingQueueRef.current.set(res.jobId, { path, sourceGroup });
+        return { jobId: res.jobId };
+      },
+      saveResult: async (jobId: string) => {
+        const info = pendingQueueRef.current.get(jobId);
+        const deadline = Date.now() + 60_000;
+        for (;;) {
+          const s = await api.enqueueStatus(provider, projectPath, info?.sourceGroup);
+          if (s.status === "done" || s.status === "conflict" || s.status === "error") {
+            pendingQueueRef.current.delete(jobId);
+            if (s.status === "done" && info && info.path === activePathRef.current) {
+              // 遠端已更新，同步編輯器的 sha，否則下一次編輯存檔會誤判衝突
+              try {
+                const cur = await api.readFile(refPath, info.path);
+                setSha(cur.sha);
+                if (pendingSaveRef.current?.path === info.path) pendingSaveRef.current = null;
+                dirtySinceRef.current = null;
+                lastEditAtRef.current = null;
+                setSave("clean");
+              } catch {
+                // 讀不到就交給下一次存檔的衝突處理
+              }
+            }
+            return { status: s.status, message: s.error, conflicts: s.conflicts };
+          }
+          if (Date.now() > deadline) {
+            pendingQueueRef.current.delete(jobId);
+            return { status: "error" as const, message: "等不到落地結果（仍在背景重試）" };
+          }
+          await new Promise((r) => setTimeout(r, 700));
         }
       },
       openPath: (path: string) => {
@@ -1317,21 +1345,48 @@ export default function Workspace() {
       const p = pendingSaveRef.current;
       if (p) void saveSnapshot(p);
     };
+    /** 互動頁還有排入佇列但沒落地的寫入：請 server 立刻落地（跳過安靜視窗）。 */
+    const flushQueue = () => {
+      const groups = new Set<string>();
+      for (const info of pendingQueueRef.current.values()) groups.add(info.sourceGroup);
+      if (groups.size === 0) return;
+      for (const sourceGroup of groups) {
+        try {
+          const body = new Blob([JSON.stringify({ provider, project: projectPath, sourceGroup })], {
+            type: "application/json",
+          });
+          // sendBeacon 才能在卸載過程中送出（不能用一般的 fetch）
+          const ok = navigator.sendBeacon?.("/api/enqueue-flush", body);
+          if (!ok) void api.enqueueFlush(provider, projectPath, sourceGroup).catch(() => {});
+        } catch {
+          // 送不出去也還有 server 端佇列在背景重試
+        }
+      }
+    };
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") flush();
+      if (document.visibilityState === "hidden") {
+        flush();
+        flushQueue();
+      }
+    };
+    const onPageHide = () => {
+      flush();
+      flushQueue();
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (pendingSaveRef.current) {
+      if (pendingSaveRef.current || pendingQueueRef.current.size > 0) {
         e.preventDefault();
         e.returnValue = "";
       }
     };
     window.addEventListener("blur", flush);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("blur", flush);
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }); // 刻意不給 deps：每次 render 重綁，確保閉包拿到最新的 saveSnapshot（與上面 Cmd+S effect 同樣寫法）
