@@ -49,6 +49,12 @@ export function parseRepoInput(
   return null;
 }
 
+export function giteaRepoRedirectFromFileParam(fileParam: string, giteaHost?: string): string | null {
+  const parsed = parseRepoInput(fileParam, giteaHost);
+  if (parsed?.provider !== "gitea") return null;
+  return `/edit/${refPathOf(parsed.provider, parsed.projectPath)}`;
+}
+
 function cleanGitHub(rest: string): string | null {
   const parts = rest.replace(/\.git($|\/)/, "$1").split("/").filter(Boolean);
   if (parts.length < 2) return null;

@@ -1,6 +1,29 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseRepoInput } from "./providers.js";
+import { giteaRepoRedirectFromFileParam, parseRepoInput } from "./providers.js";
+
+describe("giteaRepoRedirectFromFileParam", () => {
+  it("redirects a Gitea Unicode branch URL to the encoded repo editor path", () => {
+    assert.equal(
+      giteaRepoRedirectFromFileParam(
+        "https://gitea.ia/SARA_BACKEND/sara-v2/src/branch/kevin/sara-5605-補報工上傳優化討論",
+        "gitea.ia"
+      ),
+      "/edit/gitea/SARA_BACKEND%2Fsara-v2"
+    );
+  });
+
+  it("does not intercept a GitLab URL", () => {
+    assert.equal(
+      giteaRepoRedirectFromFileParam("https://gitlab.com/SARA_BACKEND/sara-v2/-/blob/main/README.md", "gitea.ia"),
+      null
+    );
+  });
+
+  it("does not intercept a normal repo-relative filename", () => {
+    assert.equal(giteaRepoRedirectFromFileParam("docs/README.md", "gitea.ia"), null);
+  });
+});
 
 describe("parseRepoInput gitea", () => {
   it("parses gitea url when giteaHost matches", () => {

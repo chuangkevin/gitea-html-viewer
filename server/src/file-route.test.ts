@@ -9,7 +9,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "note-file-route-"));
 process.env.DATA_DIR = dataDir;
 process.env.NODE_ENV = "test";
 
-const { isOptionalAuthLoginRequired, isProviderNotFound } = await import("./index.js");
+const { isGiteaWriteConflict, isOptionalAuthLoginRequired, isProviderNotFound } = await import("./index.js");
 const { db } = await import("./db.js");
 
 test.after(() => {
@@ -59,5 +59,15 @@ describe("isOptionalAuthLoginRequired", () => {
 
   it("does not classify non-provider errors as requiring login", () => {
     assert.equal(isOptionalAuthLoginRequired(new Error("boom"), "gitea", false), false);
+  });
+});
+
+describe("isGiteaWriteConflict", () => {
+  it("passes a Gitea 409 through the write route", () => {
+    assert.equal(isGiteaWriteConflict(new ProviderError(409, "file exists"), "gitea"), true);
+  });
+
+  it("does not change GitLab 409 handling", () => {
+    assert.equal(isGiteaWriteConflict(new ProviderError(409, "conflict"), "gitlab"), false);
   });
 });

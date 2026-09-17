@@ -225,18 +225,32 @@ export const gitea: Provider = {
     return Buffer.from(await res.arrayBuffer());
   },
 
-  async writeFile(token, projectPath, filePath, content, message, sha, _branch, author, isBase64) {
+  async writeFile(token, projectPath, filePath, content, message, sha, branch, author, isBase64) {
     const encodedContent = isBase64 ? content : Buffer.from(content, "utf8").toString("base64");
     // Gitea：沒有 sha＝新增（POST）、有 sha＝更新（PUT）
-    const fileBody = JSON.stringify({
+    const fileBody = {
       message,
       content: encodedContent,
+      ...(branch ? { branch } : {}),
       ...authorBody(author),
-    });
+    };
     const init: RequestInit = sha
-      ? { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...JSON.parse(fileBody), sha }) }
-      : { method: "POST", headers: { "Content-Type": "application/json" }, body: fileBody };
-    const data = await gt<{ content: { sha: string } }>(token, `/repos/${projectPath}/contents/${encodePath(filePath)}`, init);
+      ? { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...fileBody, sha }) }
+      : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fileBody) };
+    let data: { content: { sha: string } };
+    try {
+      data = await gt(token, `/repos/${projectPath}/contents/${encodePath(filePath)}`, init);
+    } catch (err) {
+      if (
+        !sha &&
+        err instanceof ProviderError &&
+        err.status === 422 &&
+        err.message.toLowerCase().includes("repository file already exists")
+      ) {
+        throw new ProviderError(409, `Gitea conflict: repository file already exists: ${filePath}`);
+      }
+      throw err;
+    }
     return { sha: data.content.sha };
   },
 

@@ -255,6 +255,10 @@ export function isOptionalAuthLoginRequired(error: unknown, provider: ProviderNa
   );
 }
 
+export function isGiteaWriteConflict(error: unknown, provider: ProviderName | null): boolean {
+  return provider === "gitea" && error instanceof ProviderError && error.status === 409;
+}
+
 // ── auth ───────────────────────────────────────────────
 // /api/auth/login?provider=github|gitlab&next=/edit/...
 app.get("/api/auth/login", (req, res) => {
@@ -1399,8 +1403,9 @@ app.get("/site/:provider/:project", async (req, res) => {
 });
 
 app.put("/api/file/:provider/:project/*", async (req, res) => {
+  let provider: ProviderName | null = null;
   try {
-    const provider = routeProvider(req);
+    provider = routeProvider(req);
     const project = projectParam(req);
     const mode = getMode(provider, project);
 
@@ -1506,6 +1511,10 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     );
     res.json(result);
   } catch (e) {
+    if (isGiteaWriteConflict(e, provider)) {
+      res.status(409).json({ error: "sha_mismatch", reason: "file_exists" });
+      return;
+    }
     handleError(res, e);
   }
 });

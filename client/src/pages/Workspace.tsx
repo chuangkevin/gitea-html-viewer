@@ -2,7 +2,12 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
 import { renderMarkdown, type LinkContext } from "../lib/markdown";
-import { ProviderIcon, providerLabel, type ProviderName } from "../lib/providers";
+import {
+  giteaRepoRedirectFromFileParam,
+  ProviderIcon,
+  providerLabel,
+  type ProviderName,
+} from "../lib/providers";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
@@ -394,6 +399,13 @@ export default function Workspace() {
       return undefined;
     }
   }, [me?.giteaUrl]);
+
+  useEffect(() => {
+    const redirect = giteaRepoRedirectFromFileParam(activePath, giteaHost);
+    if (!redirect) return;
+    pendingSaveRef.current = null;
+    window.location.replace(redirect);
+  }, [activePath, giteaHost]);
 
   useEffect(() => {
     void refreshMe();

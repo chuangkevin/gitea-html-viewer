@@ -81,10 +81,28 @@ describe("gitea provider", () => {
     await gitea.writeFile("tok", "kevin/repo", "a.md", "hello", "msg", undefined, "main");
     assert.equal(calls[0].method, "POST");
     assert.equal((calls[0].body as Record<string, unknown>).content, Buffer.from("hello").toString("base64"));
+    assert.equal((calls[0].body as Record<string, unknown>).branch, "main");
 
     await gitea.writeFile("tok", "kevin/repo", "a.md", "hello", "msg", "oldsha", "main");
     assert.equal(calls[1].method, "PUT");
     assert.equal((calls[1].body as Record<string, unknown>).sha, "oldsha");
+    assert.equal((calls[1].body as Record<string, unknown>).branch, "main");
+  });
+
+  it("writeFile：沒 sha 且檔案已存在時將 Gitea 422 映射為 409，且不自動覆寫", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch(
+      () => jsonResponse({ message: "repository file already exists" }, 422),
+      calls
+    );
+
+    await assert.rejects(
+      () => gitea.writeFile("tok", "kevin/repo", "a.md", "hello", "msg", undefined, "main"),
+      (err: unknown) => err instanceof ProviderError && err.status === 409
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, "POST");
   });
 
   it("moveFile：只打一次 POST /contents，files[0] 是 rename", async () => {
