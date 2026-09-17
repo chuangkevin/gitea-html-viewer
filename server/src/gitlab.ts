@@ -66,6 +66,7 @@ function toMeta(p: GlProject): RepoMeta {
   return {
     projectPath: p.path_with_namespace,
     private: p.visibility !== "public",
+    mirror: false,
     defaultBranch: p.default_branch || "main",
     pushedAt: p.last_activity_at,
     canPush: accessLevel(p) >= 30, // 30 = Developer

@@ -43,6 +43,7 @@ function toMeta(r: GhRepo): RepoMeta {
   return {
     projectPath: r.full_name,
     private: r.private,
+    mirror: false,
     defaultBranch: r.default_branch,
     pushedAt: r.pushed_at,
     canPush: Boolean(r.permissions?.push),

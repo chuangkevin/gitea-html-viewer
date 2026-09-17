@@ -55,6 +55,7 @@ const fake: Provider = {
   getRepo: async (_token, projectPath) => ({
     projectPath,
     private: false,
+    mirror: false,
     defaultBranch: "main",
     pushedAt: "",
     canPush,

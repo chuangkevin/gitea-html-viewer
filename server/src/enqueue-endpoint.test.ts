@@ -16,6 +16,16 @@ process.env.ADMIN_LOGINS = "queue-admin";
 const { app } = await import("./index.js");
 const { setMode } = await import("./access.js");
 const { createSession, db } = await import("./db.js");
+const { gitlab } = await import("./gitlab.js");
+
+gitlab.getRepo = async (_token, projectPath) => ({
+  projectPath,
+  private: false,
+  mirror: projectPath.includes("mirror"),
+  defaultBranch: "main",
+  pushedAt: "",
+  canPush: !projectPath.includes("mirror"),
+});
 
 const server = http.createServer(app);
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -84,6 +94,24 @@ describe("互動頁寫入佇列的 HTTP 端點", () => {
       files: [{ path: "open.md", content: "open" }],
     });
     assert.equal(open.status, 202);
+  });
+
+  it("鏡像 repo 不建立 job，正常可寫 repo 仍接受", async () => {
+    const mirrorProject = "interagent-io/mirror-doc";
+    setMode("gitlab", mirrorProject, "open", "test");
+
+    const mirror = await post(`/api/enqueue-file/gitlab/${encodeURIComponent(mirrorProject)}`, {
+      files: [{ path: "mirror.md", content: "must not queue" }],
+    });
+    assert.equal(mirror.status, 403);
+    assert.deepEqual(await mirror.json(), { error: "no_write_permission" });
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM write_jobs").get() as { n: number }).n, 0);
+
+    const writable = await post(`/api/enqueue-file/${REF}`, {
+      files: [{ path: "writable.md", content: "accepted" }],
+    });
+    assert.equal(writable.status, 202);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM write_jobs").get() as { n: number }).n, 1);
   });
 
   it("jobId 狀態只回給相同 actor 與 repo context", async () => {

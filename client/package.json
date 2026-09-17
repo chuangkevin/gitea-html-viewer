@@ -1,13 +1,13 @@
 {
   "name": "client",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/autosave-schedule.test.ts src/lib/doc-paths.test.ts src/lib/drop-position.test.ts src/lib/view-mode.test.ts src/lib/move-path.test.ts src/lib/paste-image.test.ts src/lib/cm-live-preview.test.ts src/lib/block-insert.test.ts src/lib/text-diff.test.ts src/lib/collab-color.test.ts src/lib/collab-edit.test.ts src/lib/target-dir.test.ts src/lib/duplicate-name.test.ts src/lib/new-file-name.test.ts src/lib/file-list.test.ts src/lib/sidebar-width.test.ts src/lib/providers-gitea.test.ts src/lib/gitea-branch.test.ts src/lib/request-guards.test.ts src/lib/pending-queue.test.ts src/lib/markdown-links.test.ts"
+    "test": "tsx --test src/lib/autosave-schedule.test.ts src/lib/doc-paths.test.ts src/lib/drop-position.test.ts src/lib/view-mode.test.ts src/lib/move-path.test.ts src/lib/paste-image.test.ts src/lib/cm-live-preview.test.ts src/lib/block-insert.test.ts src/lib/text-diff.test.ts src/lib/collab-color.test.ts src/lib/collab-edit.test.ts src/lib/target-dir.test.ts src/lib/duplicate-name.test.ts src/lib/new-file-name.test.ts src/lib/file-list.test.ts src/lib/sidebar-width.test.ts src/lib/providers-gitea.test.ts src/lib/gitea-branch.test.ts src/lib/request-guards.test.ts src/lib/pending-queue.test.ts src/lib/markdown-links.test.ts src/lib/readonly-label.test.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

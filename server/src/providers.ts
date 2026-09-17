@@ -49,6 +49,7 @@ export interface ProviderUser {
 export interface RepoMeta {
   projectPath: string;
   private: boolean;
+  mirror: boolean;
   defaultBranch: string;
   pushedAt: string;
   canPush: boolean;

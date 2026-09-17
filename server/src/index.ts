@@ -794,6 +794,7 @@ app.get("/api/access/:provider/:project", async (req, res) => {
     res.json({
       branch,
       private: info.private,
+      mirror: info.mirror,
       canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
       access: mode,
       guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
@@ -832,6 +833,7 @@ app.get("/api/files/:provider/:project", async (req, res) => {
     res.json({
       branch,
       private: info.private,
+      mirror: info.mirror,
       canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
       access: mode,
       guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
@@ -1739,17 +1741,19 @@ app.post("/api/enqueue-file/:provider/:project", async (req, res) => {
     if (!enforceRepoWriteAccess(req, res, provider, project, actor)) return;
     const body = (req.body ?? {}) as { files?: QueueFile[]; sourceGroup?: string; message?: string };
 
+    const p = getProvider(provider);
+    const info = await getRepoCached(provider, actor.token, project);
+    await effectiveBranch(req, provider, p, actor.token, project, info);
+    if (!info.canPush) {
+      res.status(403).json({ error: "no_write_permission" });
+      return;
+    }
+
     const ref = queueActorRef(req, res, provider, project);
     if (!ref) {
       res.status(401).json({ error: "not_authenticated" });
       return;
     }
-    if (requestedBranch(req, provider)) {
-      const p = getProvider(provider);
-      const info = await getRepoCached(provider, actor.token, project);
-      await effectiveBranch(req, provider, p, actor.token, project, info);
-    }
-
     const result = enqueueWrite({
       provider,
       project,

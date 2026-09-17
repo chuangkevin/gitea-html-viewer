@@ -52,6 +52,42 @@ function stubFetch(
 }
 
 describe("gitea provider", () => {
+  it("marks mirror repos as non-writable even when Gitea reports push permission", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch(() => jsonResponse({
+      full_name: "kevin/mirror",
+      private: false,
+      default_branch: "main",
+      updated_at: "2026-09-18T00:00:00Z",
+      permissions: { push: true },
+      mirror: true,
+    }), calls);
+
+    const repo = await gitea.getRepo("tok", "kevin/mirror");
+
+    assert.equal(repo.mirror, true);
+    assert.equal(repo.canPush, false);
+  });
+
+  it("keeps normal Gitea repos writable", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch(() => jsonResponse({
+      full_name: "kevin/normal",
+      private: false,
+      default_branch: "main",
+      updated_at: "2026-09-18T00:00:00Z",
+      permissions: { push: true },
+      mirror: false,
+    }), calls);
+
+    const repo = await gitea.getRepo("tok", "kevin/normal");
+
+    assert.equal(repo.mirror, false);
+    assert.equal(repo.canPush, true);
+  });
+
   it("validates an exact slash and Unicode branch with one bounded request", async () => {
     process.env.GITEA_URL = "https://gitea.example";
     const calls: FetchCall[] = [];

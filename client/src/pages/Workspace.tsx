@@ -57,6 +57,7 @@ import {
 } from "../lib/sidebar-width";
 import { nextAutosaveDelay } from "../lib/autosave-schedule";
 import { flushPendingQueueJobs } from "../lib/pending-queue";
+import { readonlyLabel } from "../lib/readonly-label";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -267,6 +268,7 @@ export default function Workspace() {
   const [shareUrl, setShareUrl] = useState<{ url: string; slidesUrl: string } | null>(null);
   const [presentMode, setPresentMode] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
+  const [mirror, setMirror] = useState(false);
   const [rawGrant, setRawGrant] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
@@ -546,6 +548,7 @@ export default function Workspace() {
         setFiles(r.files.map((f) => f.path));
         setCanWrite(r.canWrite);
         setIsPrivate(r.private);
+        setMirror(r.mirror);
         if (r.access) setAccessMode(r.access);
         if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
         touchRecent(provider, projectPath, branch);
@@ -573,6 +576,8 @@ export default function Workspace() {
   useEffect(() => {
     setAccessReady(false);
     setFiles(null);
+    setCanWrite(false);
+    setMirror(false);
   }, [refPath, reloadKey, hasRepo, branch, identityId]);
 
   useEffect(loadFiles, [loadFiles]);
@@ -585,6 +590,13 @@ export default function Workspace() {
 
   const activeKind = activePath ? kindOf(activePath) : null;
   const readOnly = !canWrite;
+  const needsIdentity = Boolean(me?.team?.enabled && !me.team.selected && !me.login);
+  const readOnlyLabel = readonlyLabel({ mirror, needsIdentity });
+  const readOnlyTitle = mirror
+    ? "此為鏡像repo，無法編輯"
+    : needsIdentity
+      ? "先在右上角選「你是誰」才能編輯"
+      : "沒有這個 repo 的寫入權限";
   const effectiveView = resolveViewMode(view, { readOnly, isDesktop });
   const effectivePane = resolvePaneMode(paneMode, { view: effectiveView, canWrite });
 
@@ -2747,14 +2759,15 @@ export default function Workspace() {
         {readOnly && (
           <span
             className="hidden lg:inline-flex rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 whitespace-nowrap shrink-0"
-            title={
-              me?.team?.enabled && !me.team.selected
-                ? "先在右上角選「你是誰」才能編輯"
-                : "沒有這個 repo 的寫入權限"
-            }
+            title={readOnlyTitle}
           >
-            {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
+            {readOnlyLabel}
           </span>
+        )}
+        {mirror && (
+          <div className="lg:hidden w-full min-w-0 max-w-full rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-400 break-words [overflow-wrap:anywhere]">
+            {readOnlyLabel}
+          </div>
         )}
         <div className="flex-1 min-w-0" />
         {hasRepo && activePath && (activeKind === "md" || activeKind === "html") && !readOnly && (
@@ -2964,13 +2977,9 @@ export default function Workspace() {
                 <span className="text-xs text-zinc-400">權限</span>
                 <span
                   className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400 whitespace-nowrap"
-                  title={
-                    me?.team?.enabled && !me.team.selected
-                      ? "先在右上角選「你是誰」才能編輯"
-                      : "沒有這個 repo 的寫入權限"
-                  }
+                  title={readOnlyTitle}
                 >
-                  {me?.team?.enabled && !me.team.selected && !me.login ? "唯讀 · 先選身分" : "唯讀"}
+                  {readOnlyLabel}
                 </span>
               </div>
             )}

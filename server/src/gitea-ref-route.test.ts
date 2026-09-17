@@ -26,6 +26,29 @@ globalThis.fetch = async (input, init) => {
       permissions: { push: false },
     });
   }
+  if (url.endsWith("/repos/mirror/repo")) {
+    return Response.json({
+      full_name: "mirror/repo",
+      private: false,
+      default_branch: "main",
+      updated_at: "2026-09-18T00:00:00Z",
+      permissions: { push: true },
+      mirror: true,
+    });
+  }
+  if (url.endsWith("/repos/writable/repo")) {
+    return Response.json({
+      full_name: "writable/repo",
+      private: false,
+      default_branch: "main",
+      updated_at: "2026-09-18T00:00:00Z",
+      permissions: { push: true },
+      mirror: false,
+    });
+  }
+  if (url.includes("/repos/mirror/repo/git/trees/main") || url.includes("/repos/writable/repo/git/trees/main")) {
+    return Response.json({ tree: [{ path: "README.md", type: "blob" }], truncated: false });
+  }
   if (url.endsWith("/repos/private/repo")) {
     return Response.json({ message: "not found" }, { status: 404 });
   }
@@ -98,6 +121,28 @@ async function postJson(pathname: string, body: unknown, cookie: string): Promis
   });
 }
 
+async function putJson(pathname: string, body: unknown): Promise<{ status: number; body: any }> {
+  return await new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = http.request(`${baseUrl}${pathname}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => {
+        const raw = Buffer.concat(chunks).toString("utf8");
+        resolve({ status: response.statusCode ?? 0, body: raw ? JSON.parse(raw) : null });
+      });
+    });
+    request.on("error", reject);
+    request.end(payload);
+  });
+}
+
 async function getJson(pathname: string): Promise<{ status: number; body: any }> {
   return await new Promise((resolve, reject) => {
     http.get(`${baseUrl}${pathname}`, (response) => {
@@ -112,6 +157,40 @@ async function getJson(pathname: string): Promise<{ status: number; body: any }>
 }
 
 describe("Gitea ref HTTP validation", () => {
+  it("returns mirror metadata and disables writes for access and files", async () => {
+    setMode("gitea", "mirror/repo", "open", "test");
+
+    const access = await getJson("/api/access/gitea/mirror%2Frepo");
+    assert.equal(access.status, 200);
+    assert.equal(access.body.mirror, true);
+    assert.equal(access.body.canWrite, false);
+
+    const files = await getJson("/api/files/gitea/mirror%2Frepo");
+    assert.equal(files.status, 200);
+    assert.equal(files.body.mirror, true);
+    assert.equal(files.body.canWrite, false);
+  });
+
+  it("rejects a direct write to a mirror before calling the Gitea write API", async () => {
+    setMode("gitea", "mirror/repo", "open", "test");
+
+    const response = await putJson("/api/file/gitea/mirror%2Frepo/README.md", {
+      content: "changed",
+    });
+
+    assert.equal(response.status, 403);
+    assert.deepEqual(response.body, { error: "no_write_permission" });
+  });
+
+  it("keeps a normal Gitea repo writable", async () => {
+    setMode("gitea", "writable/repo", "open", "test");
+
+    const access = await getJson("/api/access/gitea/writable%2Frepo");
+    assert.equal(access.status, 200);
+    assert.equal(access.body.mirror, false);
+    assert.equal(access.body.canWrite, true);
+  });
+
   it("returns 400 for explicitly empty and duplicate refs", async () => {
     assert.equal(await status("/api/access/gitea/org%2Frepo?ref="), 400);
     assert.equal(await status("/api/access/gitea/org%2Frepo?ref=one&ref=two"), 400);

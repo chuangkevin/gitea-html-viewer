@@ -162,6 +162,7 @@ export const api = {
       j<{
         branch: string;
         private: boolean;
+        mirror: boolean;
         canWrite: boolean;
         access: AccessMode;
         guestName: string | null;
@@ -173,6 +174,7 @@ export const api = {
       j<{
         branch: string;
         private: boolean;
+        mirror: boolean;
         canWrite: boolean;
         access: AccessMode;
         guestName: string | null;

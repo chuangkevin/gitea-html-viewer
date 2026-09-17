@@ -50,6 +50,7 @@ async function gt<T>(token: string, path: string, init?: RequestInit): Promise<T
 interface GtRepo {
   full_name: string;
   private: boolean;
+  mirror?: boolean;
   default_branch: string;
   updated_at: string;
   permissions?: { push?: boolean };
@@ -59,9 +60,10 @@ function toMeta(r: GtRepo): RepoMeta {
   return {
     projectPath: r.full_name,
     private: r.private,
+    mirror: Boolean(r.mirror),
     defaultBranch: r.default_branch,
     pushedAt: r.updated_at,
-    canPush: Boolean(r.permissions?.push),
+    canPush: !r.mirror && Boolean(r.permissions?.push),
   };
 }
 
