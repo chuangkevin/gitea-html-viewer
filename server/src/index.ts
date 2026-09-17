@@ -247,6 +247,14 @@ export function isProviderNotFound(message: string): boolean {
   return /\b404\b/.test(message);
 }
 
+export function isOptionalAuthLoginRequired(error: unknown, provider: ProviderName, authed: boolean): boolean {
+  return (
+    !authed &&
+    error instanceof ProviderError &&
+    (error.status === 404 || (provider === "gitea" && (error.status === 401 || error.status === 403)))
+  );
+}
+
 // ── auth ───────────────────────────────────────────────
 // /api/auth/login?provider=github|gitlab&next=/edit/...
 app.get("/api/auth/login", (req, res) => {
@@ -699,7 +707,10 @@ app.get("/api/access/:provider/:project", async (req, res) => {
       guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
     });
   } catch (e) {
-    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+    if (
+      isProviderName(req.params.provider) &&
+      isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
+    ) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;
     }
@@ -730,7 +741,10 @@ app.get("/api/files/:provider/:project", async (req, res) => {
       files: files.map((f) => ({ path: f.path })),
     });
   } catch (e) {
-    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+    if (
+      isProviderName(req.params.provider) &&
+      isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
+    ) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;
     }
@@ -759,7 +773,10 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
       res.status(404).json({ error: "not_found" });
       return;
     }
-    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+    if (
+      isProviderName(req.params.provider) &&
+      isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
+    ) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
       return;
     }
@@ -835,8 +852,23 @@ app.get("/api/zip/:provider/:project/*", async (req, res) => {
 
     await archive.finalize();
   } catch (e) {
-    if (e instanceof ProviderError && e.status === 404 && !actor?.authed) {
+    if (
+      !res.headersSent &&
+      isProviderName(req.params.provider) &&
+      isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
+    ) {
       res.status(401).json({ error: "login_required", reason: "not_found_or_private" });
+      return;
+    }
+    if (
+      res.headersSent &&
+      req.params.provider === "gitea" &&
+      !actor?.authed &&
+      e instanceof ProviderError &&
+      (e.status === 401 || e.status === 403)
+    ) {
+      console.error("[zip route error]", e);
+      res.destroy(e);
       return;
     }
     if (!res.headersSent) {

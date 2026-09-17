@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ProviderError } from "./providers.js";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "note-file-route-"));
 process.env.DATA_DIR = dataDir;
 process.env.NODE_ENV = "test";
 
-const { isProviderNotFound } = await import("./index.js");
+const { isOptionalAuthLoginRequired, isProviderNotFound } = await import("./index.js");
 const { db } = await import("./db.js");
 
 test.after(() => {
@@ -32,5 +33,31 @@ describe("isProviderNotFound", () => {
 
   it("does not treat an empty message as not found", () => {
     assert.equal(isProviderNotFound(""), false);
+  });
+});
+
+describe("isOptionalAuthLoginRequired", () => {
+  it("requires login for an unauthenticated Gitea 403", () => {
+    assert.equal(isOptionalAuthLoginRequired(new ProviderError(403, "Forbidden"), "gitea", false), true);
+  });
+
+  it("requires login for an unauthenticated Gitea 401", () => {
+    assert.equal(isOptionalAuthLoginRequired(new ProviderError(401, "Unauthorized"), "gitea", false), true);
+  });
+
+  it("does not require login for an authenticated Gitea 403", () => {
+    assert.equal(isOptionalAuthLoginRequired(new ProviderError(403, "Forbidden"), "gitea", true), false);
+  });
+
+  it("preserves unauthenticated GitLab 404 handling", () => {
+    assert.equal(isOptionalAuthLoginRequired(new ProviderError(404, "Not Found"), "gitlab", false), true);
+  });
+
+  it("does not classify an unauthenticated GitLab 403 as requiring login", () => {
+    assert.equal(isOptionalAuthLoginRequired(new ProviderError(403, "Forbidden"), "gitlab", false), false);
+  });
+
+  it("does not classify non-provider errors as requiring login", () => {
+    assert.equal(isOptionalAuthLoginRequired(new Error("boom"), "gitea", false), false);
   });
 });
