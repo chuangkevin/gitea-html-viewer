@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type TeamInfo, type IdentitySuggestion } from "../lib/api";
+import { identityQueryAfterSwitch, runIdentitySwitch } from "../lib/request-guards";
 
 /**
  * 團隊模式的「你是誰」帶 autocomplete 的組合輸入。
@@ -10,10 +11,12 @@ import { api, type TeamInfo, type IdentitySuggestion } from "../lib/api";
 export default function IdentityPicker({
   team,
   onChange,
+  onBeforeChange,
   size = "sm",
 }: {
   team: TeamInfo;
-  onChange: () => void;
+  onChange: () => void | Promise<void>;
+  onBeforeChange?: () => Promise<boolean>;
   size?: "sm" | "lg";
 }) {
   const [busy, setBusy] = useState(false);
@@ -55,8 +58,11 @@ export default function IdentityPicker({
   async function pickByIndex(index: number) {
     setBusy(true);
     try {
-      await api.selectIdentity(index);
-      onChange();
+      await runIdentitySwitch(
+        onBeforeChange,
+        async () => { await api.selectIdentity(index); },
+        onChange
+      );
     } finally {
       setBusy(false);
     }
@@ -67,16 +73,18 @@ export default function IdentityPicker({
     setOpen(false);
     setBusy(true);
     try {
-      const idx = team.members.findIndex(
-        (m) => m.name.toLowerCase() === s.name.toLowerCase()
-      );
-      if (idx >= 0) {
-        await api.selectIdentity(idx);
-      } else {
-        await api.selectIdentity(null);
-        await api.setGuestName(s.name);
-      }
-      onChange();
+      const switched = await runIdentitySwitch(onBeforeChange, async () => {
+        const idx = team.members.findIndex(
+          (m) => m.name.toLowerCase() === s.name.toLowerCase()
+        );
+        if (idx >= 0) {
+          await api.selectIdentity(idx);
+        } else {
+          await api.selectIdentity(null);
+          await api.setGuestName(s.name);
+        }
+      }, onChange);
+      setQuery(identityQueryAfterSwitch(switched, s.name, team.selected?.name));
     } finally {
       setBusy(false);
     }
@@ -87,21 +95,23 @@ export default function IdentityPicker({
     setOpen(false);
     setBusy(true);
     try {
-      if (!text) {
-        await api.selectIdentity(null);
-        await api.setGuestName("");
-      } else {
-        const idx = team.members.findIndex(
-          (m) => m.name.toLowerCase() === text.toLowerCase()
-        );
-        if (idx >= 0) {
-          await api.selectIdentity(idx);
-        } else {
+      const switched = await runIdentitySwitch(onBeforeChange, async () => {
+        if (!text) {
           await api.selectIdentity(null);
-          await api.setGuestName(text);
+          await api.setGuestName("");
+        } else {
+          const idx = team.members.findIndex(
+            (m) => m.name.toLowerCase() === text.toLowerCase()
+          );
+          if (idx >= 0) {
+            await api.selectIdentity(idx);
+          } else {
+            await api.selectIdentity(null);
+            await api.setGuestName(text);
+          }
         }
-      }
-      onChange();
+      }, onChange);
+      setQuery(identityQueryAfterSwitch(switched, text, team.selected?.name));
     } finally {
       setBusy(false);
     }

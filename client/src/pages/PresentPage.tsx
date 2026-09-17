@@ -22,22 +22,28 @@ export default function PresentPage() {
 
   const title = params.get("title") || project;
   const grant = params.get("grant") || "";
-  const rawBase = grant ? `/rawt/${grant}` : "/raw";
+  const branch = provider === "gitea" ? params.get("ref") || undefined : undefined;
+  const rawBase = branch
+    ? grant ? `/rawtb/${grant}/${encodeURIComponent(branch)}` : `/rawb/${encodeURIComponent(branch)}`
+    : grant ? `/rawt/${grant}` : "/raw";
+  const exitQuery = branch ? `?ref=${encodeURIComponent(branch)}` : "";
 
   return (
     <Presenter
       title={title}
       items={items}
-      loadText={(p) => api.readFile(refPath, p).then((f) => f.content)}
+      loadText={(p) => api.readFile(refPath, p, branch).then((f) => f.content)}
       rawUrl={(p) => `${rawBase}/${refPath}/${p.split("/").map(encodeURIComponent).join("/")}`}
-      exitUrl={`/edit/${refPath}`}
+      exitUrl={`/edit/${refPath}${exitQuery}`}
       linkCtx={{
         provider,
         project,
         currentPath: "",
         files: [],
         rawBase,
+        branch,
       }}
+      cacheIdentity={branch}
     />
   );
 }

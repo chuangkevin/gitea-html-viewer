@@ -22,13 +22,16 @@ export function buildPreviewBaseUrl(opts: {
   project: string;
   folderPath?: string;
   grant?: string | null;
+  branch?: string;
 }): string {
-  const { provider, project, folderPath = "", grant } = opts;
+  const { provider, project, folderPath = "", grant, branch } = opts;
   const cleanFolder = encodeFolderPath(folderPath);
   const encodedProject = encodeURIComponent(project);
   if (grant) {
+    if (provider === "gitea" && branch) return `/site-assetstb/${encodeURIComponent(grant)}/${encodeURIComponent(branch)}/${provider}/${encodedProject}/${cleanFolder}`;
     return `/site-assetst/${encodeURIComponent(grant)}/${provider}/${encodedProject}/${cleanFolder}`;
   }
+  if (provider === "gitea" && branch) return `/site-assetsb/${encodeURIComponent(branch)}/${provider}/${encodedProject}/${cleanFolder}`;
   return `/site-assets/${provider}/${encodedProject}/${cleanFolder}`;
 }
 

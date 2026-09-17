@@ -100,6 +100,7 @@ interface Props {
   onCheckedChange: (next: Set<string>) => void;
   rawBase?: string;
   refPath?: string;
+  branch?: string;
   /** 把某個檔案插入編輯區（拖曳或按「＋」鈕）。不給就不顯示插入鈕、也不開啟拖曳。 */
   onInsertFile?: (path: string) => void;
   /** 把檔案移到某個資料夾（拖曳放開時觸發）。不給就不啟用移動。 */
@@ -130,6 +131,7 @@ export default function FileTree({
   onCheckedChange,
   rawBase,
   refPath,
+  branch,
   onInsertFile,
   onMoveFile,
   onRenameFile,
@@ -280,7 +282,7 @@ export default function FileTree({
         const someChecked = checkedCount > 0 && !allChecked;
         const isBusy = busyPath !== undefined && node.path === busyPath;
         const downloadUrl = isFolder
-          ? `/api/zip/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}`
+          ? `/api/zip/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}${branch ? `?ref=${encodeURIComponent(branch)}` : ""}`
           : `${rawBase}/${refPath}/${node.path.split("/").map(encodeURIComponent).join("/")}?download=1`;
         return (
           <li key={(isFolder ? "d:" : "f:") + node.path}>

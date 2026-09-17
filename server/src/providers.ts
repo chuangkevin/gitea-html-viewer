@@ -93,8 +93,14 @@ export interface Provider {
   createRepo(token: string, name: string, isPrivate: boolean): Promise<RepoMeta>;
   getRepo(token: string, projectPath: string): Promise<RepoMeta>;
   listAllFiles(token: string, projectPath: string, branch: string): Promise<{ path: string }[]>;
-  readFile(token: string, projectPath: string, filePath: string): Promise<RepoFile>;
-  readFileRaw(token: string, projectPath: string, filePath: string): Promise<Buffer>;
+  readFile(token: string, projectPath: string, filePath: string, branch?: string): Promise<RepoFile>;
+  readFileRaw(token: string, projectPath: string, filePath: string, branch?: string): Promise<Buffer>;
+  validateBranch?(token: string, projectPath: string, branch: string): Promise<void>;
+  resolveBranchPath?(
+    token: string,
+    projectPath: string,
+    suffix: string
+  ): Promise<{ branch: string; path: string }>;
   /** author 省略時就用 token 帳號當作者（個人 OAuth 登入的情況）。 */
   writeFile(
     token: string,
@@ -168,12 +174,12 @@ export function isProviderName(x: string): x is ProviderName {
   return x === "github" || x === "gitlab" || x === "gitea";
 }
 
-/** 自架 Gitea 的 hostname（從 GITEA_URL 取，小寫；沒設回 ""） */
+/** 自架 Gitea 的 authority（host + non-default port，從 GITEA_URL 取，小寫；沒設回 ""） */
 export function giteaHost(): string {
   const url = (process.env.GITEA_URL || "").trim();
   if (!url) return "";
   try {
-    return new URL(url).hostname.toLowerCase();
+    return new URL(url).host.toLowerCase();
   } catch {
     return "";
   }
@@ -188,7 +194,11 @@ export function giteaHost(): string {
  *   owner/repo            → 視為 GitHub（向後相容）
  * 回傳 null 表示無法解析。
  */
-export function parseRepoInput(input: string): { provider: ProviderName; projectPath: string } | null {
+export function parseRepoInput(input: string): {
+  provider: ProviderName;
+  projectPath: string;
+  giteaBranchSuffix?: string;
+} | null {
   const raw = input.trim();
   if (!raw) return null;
 
@@ -209,7 +219,10 @@ export function parseRepoInput(input: string): { provider: ProviderName; project
     const gh = giteaHost();
     if (gh && host === gh) {
       const path = cleanGitHubPath(rest);
-      return path ? { provider: "gitea", projectPath: path } : null;
+      if (!path) return null;
+      const suffix = giteaBranchSuffix(raw);
+      if (rest.includes("/src/branch/") && !suffix) return null;
+      return suffix ? { provider: "gitea", projectPath: path, giteaBranchSuffix: suffix } : { provider: "gitea", projectPath: path };
     }
     return null;
   }
@@ -220,6 +233,19 @@ export function parseRepoInput(input: string): { provider: ProviderName; project
     return { provider: "github", projectPath: bare };
   }
   return null;
+}
+
+function giteaBranchSuffix(raw: string): string | undefined {
+  try {
+    const marker = "/src/branch/";
+    const pathname = new URL(raw).pathname;
+    const index = pathname.indexOf(marker);
+    if (index < 0) return undefined;
+    const encoded = pathname.slice(index + marker.length).replace(/^\/+|\/+$/g, "");
+    return encoded ? decodeURIComponent(encoded) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function cleanGitHubPath(rest: string): string | null {
@@ -304,4 +330,3 @@ export function normalizeProjectInput(
   const projectPath = parts.join("/");
   return { provider, projectPath };
 }
-

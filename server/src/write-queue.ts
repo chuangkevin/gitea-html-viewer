@@ -52,6 +52,7 @@ export interface ActorRef {
 export interface EnqueueInput {
   provider: ProviderName;
   project: string;
+  branch?: string;
   /** 同一組的多次寫入會被合併成一個 commit。預設用第一個檔案路徑。 */
   sourceGroup?: string;
   files: QueueFile[];
@@ -64,6 +65,7 @@ interface JobRow {
   id: string;
   provider: string;
   project: string;
+  branch: string | null;
   source_group: string;
   files_json: string;
   author_name: string | null;
@@ -108,6 +110,11 @@ CREATE TABLE IF NOT EXISTS write_jobs (
 CREATE INDEX IF NOT EXISTS idx_write_jobs_due ON write_jobs(status, quiet_deadline);
 CREATE INDEX IF NOT EXISTS idx_write_jobs_group ON write_jobs(provider, project, source_group, status);
 `);
+  const columns = (db.prepare("PRAGMA table_info(write_jobs)").all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes("branch")) db.exec("ALTER TABLE write_jobs ADD COLUMN branch TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_write_jobs_pending_coalesce
+    ON write_jobs(status, provider, LOWER(project), branch, source_group,
+                  actor_kind, actor_sid, actor_identity, created_at DESC)`);
 }
 
 // 模組載入就確保表存在：端點與測試不需要先啟動 worker。
@@ -155,7 +162,7 @@ function normalizeFiles(files: QueueFile[]): QueueFile[] | null {
 }
 
 /**
- * 排入一次寫入。同一 (provider, project, source_group) 若已有等待中的項目，
+ * 排入一次寫入。同一 (provider, project, branch, source_group, actor) 若已有等待中的項目，
  * 直接以最新內容取代（合併），回傳既有的 jobId。
  *
  * 進行中（running）的項目不會被取代：它已經在寫上游，內容不可變，
@@ -175,10 +182,19 @@ export function enqueueWrite(input: EnqueueInput): { jobId: string; merged: bool
   const pending = db
     .prepare(
       `SELECT * FROM write_jobs
-        WHERE provider = ? AND LOWER(project) = LOWER(?) AND source_group = ? AND status = 'pending'
+        WHERE provider = ? AND LOWER(project) = LOWER(?) AND branch IS ? AND source_group = ?
+          AND actor_kind = ? AND actor_sid IS ? AND actor_identity IS ? AND status = 'pending'
         ORDER BY created_at DESC LIMIT 1`
     )
-    .get(input.provider, project, group) as JobRow | undefined;
+    .get(
+      input.provider,
+      project,
+      input.branch ?? null,
+      group,
+      input.actor.kind,
+      input.actor.sid ?? null,
+      input.actor.identityName ?? null
+    ) as JobRow | undefined;
 
   if (pending) {
     db.prepare(
@@ -205,14 +221,15 @@ export function enqueueWrite(input: EnqueueInput): { jobId: string; merged: bool
   const id = crypto.randomUUID();
   db.prepare(
     `INSERT INTO write_jobs
-       (id, provider, project, source_group, files_json, author_name, author_email,
+       (id, provider, project, branch, source_group, files_json, author_name, author_email,
         actor_kind, actor_sid, actor_identity, message, status, attempts, last_error,
         conflict_json, created_at, updated_at, quiet_deadline, cap_deadline)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, ?, ?, ?, ?)`
   ).run(
     id,
     input.provider,
     project,
+    input.branch ?? null,
     group,
     JSON.stringify(files),
     input.author?.name ?? null,
@@ -262,54 +279,102 @@ function toView(row: JobRow): JobView {
   return view;
 }
 
-/** 依 jobId 或 (provider, project, sourceGroup) 查狀態。 */
-export function jobStatus(q: { jobId?: string; provider?: string; project?: string; sourceGroup?: string }): JobView | null {
+function actorFilter(actor?: ActorRef): { clause: string; args: unknown[] } {
+  if (!actor) return { clause: "", args: [] };
+  return {
+    clause: " AND actor_kind = ? AND actor_sid IS ? AND actor_identity IS ?",
+    args: [actor.kind, actor.sid ?? null, actor.identityName ?? null],
+  };
+}
+
+type JobStatusQuery =
+  | {
+      jobId: string;
+      provider: string;
+      project: string;
+      branch?: string;
+      sourceGroup?: string;
+      actor: ActorRef;
+    }
+  | {
+      jobId?: undefined;
+      provider: string;
+      project: string;
+      branch?: string;
+      sourceGroup?: string;
+      actor?: ActorRef;
+    };
+
+/** 依 jobId 或 (provider, project, sourceGroup) 查狀態。jobId 查詢必須帶完整 actor 與 repo context。 */
+export function jobStatus(q: JobStatusQuery): JobView | null {
+  const actor = actorFilter(q.actor);
   if (q.jobId) {
-    const row = db.prepare("SELECT * FROM write_jobs WHERE id = ?").get(q.jobId) as JobRow | undefined;
+    if (!q.actor || !q.provider || !q.project) return null;
+    const row = db
+      .prepare(
+        `SELECT * FROM write_jobs
+          WHERE id = ? AND provider = ? AND LOWER(project) = LOWER(?) AND branch IS ?${actor.clause}`
+      )
+      .get(q.jobId, q.provider, q.project, q.branch ?? null, ...actor.args) as JobRow | undefined;
     return row ? toView(row) : null;
   }
   if (!q.provider || !q.project) return null;
   const row = q.sourceGroup
     ? (db
         .prepare(
-          `SELECT * FROM write_jobs WHERE provider = ? AND LOWER(project) = LOWER(?) AND source_group = ?
+           `SELECT * FROM write_jobs WHERE provider = ? AND LOWER(project) = LOWER(?) AND branch IS ? AND source_group = ?${actor.clause}
             ORDER BY created_at DESC LIMIT 1`
         )
-        .get(q.provider, q.project, q.sourceGroup) as JobRow | undefined)
+         .get(q.provider, q.project, q.branch ?? null, q.sourceGroup, ...actor.args) as JobRow | undefined)
     : (db
         .prepare(
-          `SELECT * FROM write_jobs WHERE provider = ? AND LOWER(project) = LOWER(?)
+           `SELECT * FROM write_jobs WHERE provider = ? AND LOWER(project) = LOWER(?) AND branch IS ?${actor.clause}
             ORDER BY created_at DESC LIMIT 1`
         )
-        .get(q.provider, q.project) as JobRow | undefined);
+         .get(q.provider, q.project, q.branch ?? null, ...actor.args) as JobRow | undefined);
   return row ? toView(row) : null;
 }
 
 /** 該 repo 有沒有尚未落地的寫入（頁面用來決定要不要提示未儲存）。 */
-export function hasUnlanded(provider: string, project: string, sourceGroup?: string): boolean {
+export function hasUnlanded(provider: string, project: string, sourceGroup?: string, branch?: string, actorRef?: ActorRef): boolean {
   const clause = sourceGroup ? " AND source_group = ?" : "";
-  const args = sourceGroup ? [provider, project, sourceGroup] : [provider, project];
+  const actor = actorFilter(actorRef);
+  const args = sourceGroup ? [provider, project, branch ?? null, sourceGroup] : [provider, project, branch ?? null];
   const row = db
     .prepare(
       `SELECT 1 FROM write_jobs
-        WHERE provider = ? AND LOWER(project) = LOWER(?)${clause} AND status IN ('pending','running')
+        WHERE provider = ? AND LOWER(project) = LOWER(?) AND branch IS ?${clause}${actor.clause} AND status IN ('pending','running')
         LIMIT 1`
     )
-    .get(...args);
+    .get(...args, ...actor.args);
   return Boolean(row);
 }
 
 /** 強制落地：跳過安靜視窗（頁面離開時用）。 */
-export function flushGroup(q: { provider: string; project: string; sourceGroup?: string }): number {
+export function flushGroup(q: { provider: string; project: string; branch?: string; sourceGroup?: string; actor?: ActorRef }): number {
   const now = Date.now();
   const clause = q.sourceGroup ? " AND source_group = ?" : "";
-  const args: unknown[] = q.sourceGroup ? [q.provider, q.project, q.sourceGroup] : [q.provider, q.project];
+  const actor = actorFilter(q.actor);
+  const args: unknown[] = q.sourceGroup ? [q.provider, q.project, q.branch ?? null, q.sourceGroup] : [q.provider, q.project, q.branch ?? null];
   const res = db
     .prepare(
       `UPDATE write_jobs SET quiet_deadline = ?, updated_at = ?
-        WHERE provider = ? AND LOWER(project) = LOWER(?)${clause} AND status = 'pending'`
+        WHERE provider = ? AND LOWER(project) = LOWER(?) AND branch IS ?${clause}${actor.clause} AND status = 'pending'`
     )
-    .run(now, now, ...args);
+    .run(now, now, ...args, ...actor.args);
+  return res.changes;
+}
+
+/** 強制落地單一 job；完整 context 不符時不揭露也不操作該 job。 */
+export function flushJob(q: { jobId: string; provider: string; project: string; branch?: string; actor: ActorRef }): number {
+  const now = Date.now();
+  const actor = actorFilter(q.actor);
+  const res = db
+    .prepare(
+      `UPDATE write_jobs SET quiet_deadline = ?, updated_at = ?
+        WHERE id = ? AND provider = ? AND LOWER(project) = LOWER(?) AND branch IS ?${actor.clause} AND status = 'pending'`
+    )
+    .run(now, now, q.jobId, q.provider, q.project, q.branch ?? null, ...actor.args);
   return res.changes;
 }
 
@@ -360,17 +425,21 @@ async function land(job: JobRow): Promise<LandResult> {
 
   const meta = await provider.getRepo(actor.token, job.project);
   if (!meta.canPush) return { outcome: "error", error: "no_write_permission" };
+  const branch = job.provider === "gitea" && job.branch ? job.branch : meta.defaultBranch;
 
   // 逐檔比對：遠端已經等於我們的內容 → 這檔視為已落地（重啟後不重複 commit）。
   const conflicts: { path: string; currentSha: string }[] = [];
+  const currentShas = new Map<string, string>();
   let allAlreadyLanded = true;
   for (const f of files) {
     let cur: { content: string; sha: string } | null = null;
     try {
-      cur = await provider.readFile(actor.token, job.project, f.path);
-    } catch {
-      cur = null; // 新檔
+      cur = await provider.readFile(actor.token, job.project, f.path, branch);
+    } catch (error) {
+      if (!(error instanceof ProviderError) || error.status !== 404) throw error;
+      cur = null;
     }
+    if (cur?.sha) currentShas.set(f.path, cur.sha);
     if (cur && cur.content === contentOf(f)) continue; // 已落地
     allAlreadyLanded = false;
     if (cur && f.sha && cur.sha && cur.sha !== f.sha) {
@@ -393,8 +462,8 @@ async function land(job: JobRow): Promise<LandResult> {
         f.path,
         isB64 ? (f.contentBase64 as string) : (f.content as string),
         message,
-        undefined, // 上面已做過樂觀鎖比對；寫入用最新 sha，避免落後一拍又失敗
-        meta.defaultBranch,
+        currentShas.get(f.path),
+        branch,
         author ?? actor.author,
         isB64
       );
@@ -410,7 +479,7 @@ async function land(job: JobRow): Promise<LandResult> {
       contentBase64: typeof f.contentBase64 === "string" ? f.contentBase64 : Buffer.from(f.content ?? "", "utf8").toString("base64"),
     })),
     message,
-    meta.defaultBranch,
+    branch,
     author ?? actor.author
   );
   if (res.failed.length > 0) {

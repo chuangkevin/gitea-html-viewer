@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { api, type Me } from "../lib/api";
 import { providerLabel, refPathOf, type ProviderName } from "../lib/providers";
 import SlideDeck from "../components/SlideDeck";
@@ -11,6 +11,8 @@ export default function DirectSlidesPage() {
   const projectPath = params.project || "";
   const refPath = refPathOf(provider, projectPath);
   const filePath = params["*"] || "";
+  const [searchParams] = useSearchParams();
+  const branch = provider === "gitea" ? searchParams.get("ref") || undefined : undefined;
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [me, setMe] = useState<Me | null>(null);
@@ -20,14 +22,21 @@ export default function DirectSlidesPage() {
   }, []);
 
   useEffect(() => {
+    let current = true;
+    setContent(null);
+    setError("");
     api
-      .readFile(refPath, filePath)
+      .readFile(refPath, filePath, branch)
       .then((f) => {
+        if (!current) return;
         setContent(f.content);
         document.title = `${filePath.split("/").pop()} — 簡報`;
       })
-      .catch((e) => setError(String((e as Error).message || e)));
-  }, [refPath, filePath]);
+      .catch((e) => {
+        if (current) setError(String((e as Error).message || e));
+      });
+    return () => { current = false; };
+  }, [refPath, filePath, branch]);
 
   if (error) {
     const canLogin = me?.providers?.[provider as ProviderName];
@@ -37,7 +46,7 @@ export default function DirectSlidesPage() {
           <p className="text-zinc-400 mb-4">{error === "login_required" ? "這是私有 repo，需要登入。" : error}</p>
           {canLogin ? (
             <a
-              href={`/api/auth/login?provider=${provider}&next=${encodeURIComponent(location.pathname)}`}
+              href={`/api/auth/login?provider=${provider}&next=${encodeURIComponent(location.pathname + location.search)}`}
               className="rounded-lg border border-zinc-700 px-4 py-2 text-sm hover:border-zinc-400"
             >
               使用 {providerLabel(provider)} 登入
@@ -57,8 +66,12 @@ export default function DirectSlidesPage() {
     project: projectPath,
     currentPath: filePath,
     files: [],
-    rawBase: "/raw",
+    rawBase: branch ? `/rawb/${encodeURIComponent(branch)}` : "/raw",
+    branch,
   };
 
-  return <SlideDeck content={content} docUrl={`/edit/${refPath}?f=${encodeURIComponent(filePath)}`} linkCtx={linkCtx} />;
+  const query = new URLSearchParams();
+  if (branch) query.set("ref", branch);
+  query.set("f", filePath);
+  return <SlideDeck content={content} docUrl={`/edit/${refPath}?${query.toString()}`} linkCtx={linkCtx} />;
 }

@@ -55,6 +55,7 @@ export interface AdminShareInventoryItem {
   token: string;
   ownerLogin: string;
   provider: string;
+  branch: string | null;
   repo: string;
   path: string | null;
   paths: string[] | null;
@@ -110,6 +111,7 @@ export interface IdentitySuggestion {
 export interface UserRepoPref {
   provider: string;
   project: string;
+  branch: string | null;
   pinned: boolean;
   lastSeenAt: number;
 }
@@ -132,6 +134,8 @@ async function j<T>(res: Response): Promise<T> {
 
 // filePath 各段編碼，保留斜線結構（給 catch-all route）
 const encFilePath = (p: string) => p.split("/").map(encodeURIComponent).join("/");
+export const withGiteaBranch = (url: string, branch?: string) =>
+  branch && /\/gitea\//.test(url) ? `${url}${url.includes("?") ? "&" : "?"}ref=${encodeURIComponent(branch)}` : url;
 
 export const api = {
   me: () => fetch("/api/me").then((r) => j<Me>(r)),
@@ -153,8 +157,8 @@ export const api = {
       body: JSON.stringify({ name, isPrivate }),
     }).then((r) => j<RepoInfo>(r)),
   // ref = `<provider>/<encodeURIComponent(projectPath)>`
-  files: (ref: string) =>
-    fetch(`/api/files/${ref}`).then((r) =>
+  files: (ref: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/files/${ref}`, branch)).then((r) =>
       j<{
         branch: string;
         private: boolean;
@@ -164,8 +168,8 @@ export const api = {
         files: { path: string }[];
       }>(r)
     ),
-  access: (ref: string) =>
-    fetch(`/api/access/${ref}`).then((r) =>
+  access: (ref: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/access/${ref}`, branch)).then((r) =>
       j<{
         branch: string;
         private: boolean;
@@ -174,50 +178,50 @@ export const api = {
         guestName: string | null;
       }>(r)
     ),
-  readFile: (ref: string, path: string) =>
-    fetch(`/api/file/${ref}/${encFilePath(path)}`).then((r) => j<{ content: string; sha: string; path: string }>(r)),
-  saveFile: (ref: string, path: string, content?: string, sha?: string, message?: string, contentBase64?: string) =>
-    fetch(`/api/file/${ref}/${encFilePath(path)}`, {
+  readFile: (ref: string, path: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/file/${ref}/${encFilePath(path)}`, branch)).then((r) => j<{ content: string; sha: string; path: string }>(r)),
+  saveFile: (ref: string, path: string, content?: string, sha?: string, message?: string, contentBase64?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/file/${ref}/${encFilePath(path)}`, branch), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(contentBase64 ? { contentBase64, sha, message } : { content, sha, message }),
     }).then((r) => j<{ sha: string }>(r)),
-  uploadFile: (ref: string, path: string, contentBase64: string, message?: string) =>
-    fetch(`/api/file/${ref}/${encFilePath(path)}`, {
+  uploadFile: (ref: string, path: string, contentBase64: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/file/${ref}/${encFilePath(path)}`, branch), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contentBase64, message }),
     }).then((r) => j<{ sha: string }>(r)),
-  moveFile: (ref: string, from: string, to: string, message?: string) =>
-    fetch(`/api/move/${ref}`, {
+  moveFile: (ref: string, from: string, to: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/move/${ref}`, branch), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }),
     }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
-  deleteFile: (ref: string, path: string, message?: string) =>
-    fetch(`/api/file/${ref}/${encFilePath(path)}`, {
+  deleteFile: (ref: string, path: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/file/${ref}/${encFilePath(path)}`, branch), {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
     }).then((r) => j<{ ok: boolean; path: string }>(r)),
-  copyFile: (ref: string, from: string, to: string, message?: string) =>
-    fetch(`/api/copy/${ref}`, {
+  copyFile: (ref: string, from: string, to: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/copy/${ref}`, branch), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }),
     }).then((r) => j<{ ok: boolean; from: string; to: string }>(r)),
-  pathRefs: (ref: string, path: string, kind: "file" | "folder") =>
-    fetch(`/api/path-refs/${ref}?path=${encodeURIComponent(path)}&kind=${kind}`).then((r) =>
+  pathRefs: (ref: string, path: string, kind: "file" | "folder", branch?: string) =>
+    fetch(withGiteaBranch(`/api/path-refs/${ref}?path=${encodeURIComponent(path)}&kind=${kind}`, branch)).then((r) =>
       j<{ shares: number; shortLinks: { alias: string; label: string | null }[] }>(r)
     ),
-  moveFolder: (ref: string, from: string, to: string, message?: string) =>
-    fetch(`/api/move-folder/${ref}`, { method: "POST", headers: { "Content-Type": "application/json" },
+  moveFolder: (ref: string, from: string, to: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/move-folder/${ref}`, branch), { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from, to, message }) }).then((r) => j<{ ok: boolean; from: string; to: string; count: number }>(r)),
-  deleteFolder: (ref: string, path: string, message?: string) =>
-    fetch(`/api/folder/${ref}/${encFilePath(path)}`, { method: "DELETE", headers: { "Content-Type": "application/json" },
+  deleteFolder: (ref: string, path: string, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/folder/${ref}/${encFilePath(path)}`, branch), { method: "DELETE", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }) }).then((r) => j<{ ok: boolean; path: string; count: number }>(r)),
-  batchUpload: (ref: string, files: Array<{ path: string; contentBase64: string }>, message?: string) =>
-    fetch(`/api/upload/${ref}`, {
+  batchUpload: (ref: string, files: Array<{ path: string; contentBase64: string }>, message?: string, branch?: string) =>
+    fetch(withGiteaBranch(`/api/upload/${ref}`, branch), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ files, message }),
@@ -268,12 +272,11 @@ export const api = {
     fetch(`/api/admin/shares${q ? `?q=${encodeURIComponent(q)}` : ""}`).then((r) => j<AdminSharesResult>(r)),
   revokeAdminShare: (token: string) =>
     fetch(`/api/admin/shares/${encodeURIComponent(token)}`, { method: "DELETE" }).then((r) => j<AdminRevokeShareResult>(r)),
-  // repo = projectPath（server 依 session 決定 provider）
-  share: (repo: string, path: string, title?: string) =>
+  share: (provider: string, repo: string, path: string, title?: string, branch?: string) =>
     fetch("/api/share", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, path, title }),
+      body: JSON.stringify({ provider, repo, path, title, branch }),
     }).then((r) => j<{ token: string; url: string; slidesUrl: string }>(r)),
   rawGrant: (provider: string, repo: string) =>
     fetch("/api/raw-grant", {
@@ -281,17 +284,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider, repo }),
     }).then((r) => j<{ grant: string }>(r)),
-  setLastRepo: (provider: string, project: string, file?: string) =>
+  setLastRepo: (provider: string, project: string, file?: string, branch?: string) =>
     fetch("/api/prefs/last-repo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, project, file }),
+      body: JSON.stringify({ provider, project, file, branch }),
     }).then((r) => j<{ ok: boolean }>(r)),
-  shareSet: (repo: string, paths: string[], title?: string) =>
+  shareSet: (provider: string, repo: string, paths: string[], title?: string, branch?: string) =>
     fetch("/api/share", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, paths, title }),
+      body: JSON.stringify({ provider, repo, paths, title, branch }),
     }).then((r) => j<{ token: string; url: string; slidesUrl: string }>(r)),
   publicDoc: (token: string) => fetch(`/api/public/${token}`).then((r) => j<PublicDoc>(r)),
   publicSetFile: (token: string, path: string) =>
@@ -313,16 +316,19 @@ export const api = {
     ref: string,
     files: Array<{ path: string; content?: string; contentBase64?: string; sha?: string }>,
     sourceGroup?: string,
-    message?: string
+    message?: string,
+    branch?: string
   ) =>
-    fetch(`/api/enqueue-file/${ref}`, {
+    fetch(withGiteaBranch(`/api/enqueue-file/${ref}`, branch), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ files, sourceGroup, message }),
     }).then((r) => j<{ ok: boolean; jobId: string; status: string; merged: boolean; quietMs: number }>(r)),
-  enqueueStatus: (provider: string, project: string, sourceGroup?: string) => {
+  enqueueStatus: (jobId: string, provider: string, project: string, sourceGroup?: string, branch?: string) => {
     const q = new URLSearchParams({ provider, project });
+    q.set("jobId", jobId);
     if (sourceGroup) q.set("sourceGroup", sourceGroup);
+    if (branch) q.set("ref", branch);
     return fetch(`/api/enqueue-status?${q.toString()}`).then((r) =>
       j<{
         jobId: string;
@@ -335,25 +341,32 @@ export const api = {
       }>(r)
     );
   },
-  enqueueFlush: (provider: string, project: string, sourceGroup?: string) =>
+  enqueueFlush: (provider: string, project: string, sourceGroup?: string, branch?: string, jobId?: string) =>
     fetch("/api/enqueue-flush", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, project, sourceGroup }),
+      body: JSON.stringify({ provider, project, sourceGroup, ref: branch, jobId }),
       keepalive: true,
     }).then((r) => j<{ ok: boolean; flushed: number; pending: boolean }>(r)),
   getUserPrefs: () => fetch("/api/user-prefs").then((r) => j<UserPrefsResult>(r)),
   updateUserPrefs: (body: {
-    action: "upsert" | "delete" | "merge";
+    action: "upsert" | "delete" | "merge" | "touch";
     provider?: string;
     project?: string;
+    branch?: string | null;
     pinned?: boolean;
     lastSeenAt?: number;
-    items?: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[];
+    items?: { provider: string; project: string; branch?: string | null; pinned: boolean; lastSeenAt: number }[];
   }) =>
     fetch("/api/user-prefs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then((r) => j<UserPrefsResult>(r)),
+  resolveGiteaUrl: (url: string) =>
+    fetch("/api/gitea/resolve-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }).then((r) => j<{ provider: "gitea"; project: string; branch: string; path: string }>(r)),
 };

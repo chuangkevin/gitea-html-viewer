@@ -58,8 +58,8 @@ const ALIAS_RE = /^[a-z0-9-]{2,48}$/;
 const ALIAS_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
 // edit/site/present receive an URL-encoded project as one route parameter.
 // Direct presentation also accepts a trailing document path after that project.
-const DOCUMENT_UI_ROUTE = /^\/(?:edit|site|present)\/(?:github|gitlab)\/[^/]+$/;
-const DIRECT_PRESENTATION_ROUTE = /^\/p\/(?:github|gitlab)\/[^/]+(?:\/.*)?$/;
+const DOCUMENT_UI_ROUTE = /^\/(?:edit|site|present)\/(?:github|gitlab|gitea)\/[^/]+$/;
+const DIRECT_PRESENTATION_ROUTE = /^\/p\/(?:github|gitlab|gitea)\/[^/]+(?:\/.*)?$/;
 
 function rowToShortLink(row: ShortLinkRow): ShortLink {
   return {

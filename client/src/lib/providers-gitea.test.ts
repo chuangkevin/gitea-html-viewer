@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { giteaRepoRedirectFromFileParam, parseRepoInput } from "./providers.js";
 
 describe("giteaRepoRedirectFromFileParam", () => {
-  it("redirects a Gitea Unicode branch URL to the encoded repo editor path", () => {
+  it("redirects a Gitea Unicode branch URL to the encoded repo editor path with its branch suffix", () => {
+    const branch = "kevin/sara-5605-補報工上傳優化討論";
     assert.equal(
       giteaRepoRedirectFromFileParam(
-        "https://gitea.ia/SARA_BACKEND/sara-v2/src/branch/kevin/sara-5605-補報工上傳優化討論",
+        `https://gitea.ia/SARA_BACKEND/sara-v2/src/branch/${branch}`,
         "gitea.ia"
       ),
-      "/edit/gitea/SARA_BACKEND%2Fsara-v2"
+      `/edit/gitea/SARA_BACKEND%2Fsara-v2?ref=${encodeURIComponent(branch)}`
     );
   });
 
@@ -33,8 +34,40 @@ describe("parseRepoInput gitea", () => {
     });
   });
 
-  it("trims subpaths of a gitea blob url", () => {
-    assert.deepEqual(parseRepoInput("https://gitea.ia/kevin/secret/src/branch/main/x.md", "gitea.ia"), {
+  it("preserves the suffix of a gitea branch url", () => {
+    assert.deepEqual(
+      parseRepoInput(
+        "https://gitea.ia/SARA_BACKEND/sara-v2/src/branch/kevin/sara-5605-補報工上傳優化討論",
+        "gitea.ia"
+      ),
+      {
+        provider: "gitea",
+        projectPath: "SARA_BACKEND/sara-v2",
+        giteaBranchSuffix: "kevin/sara-5605-補報工上傳優化討論",
+      }
+    );
+  });
+
+  it("matches a configured non-default port as part of the Gitea authority", () => {
+    assert.deepEqual(
+      parseRepoInput(
+        "https://gitea.example:3443/acme/docs/src/branch/feature/port-fix",
+        "gitea.example:3443"
+      ),
+      {
+        provider: "gitea",
+        projectPath: "acme/docs",
+        giteaBranchSuffix: "feature/port-fix",
+      }
+    );
+    assert.equal(
+      parseRepoInput("https://gitea.example/acme/docs/src/branch/feature/port-fix", "gitea.example:3443"),
+      null
+    );
+  });
+
+  it("keeps a plain gitea url without a branch suffix", () => {
+    assert.deepEqual(parseRepoInput("https://gitea.ia/kevin/secret", "gitea.ia"), {
       provider: "gitea",
       projectPath: "kevin/secret",
     });

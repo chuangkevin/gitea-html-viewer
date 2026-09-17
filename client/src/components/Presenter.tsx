@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { renderMarkdown, type LinkContext } from "../lib/markdown";
+import { presentationCacheKey } from "../lib/providers";
 import { fileIcon } from "./FileTree";
 
 /** 多檔連續展示器。播放清單依資料夾排序；.md 直接渲染、.html 走
@@ -36,13 +37,15 @@ interface Props {
   rawUrl: (path: string) => string;
   exitUrl?: string;
   linkCtx?: LinkContext;
+  cacheIdentity?: string;
 }
 
-export default function Presenter({ title, items, loadText, rawUrl, exitUrl, linkCtx }: Props) {
+export default function Presenter({ title, items, loadText, rawUrl, exitUrl, linkCtx, cacheIdentity }: Props) {
   const [idx, setIdx] = useState(0);
   const [texts, setTexts] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const path = items[idx] ?? "";
+  const textKey = presentationCacheKey(cacheIdentity, path);
   const kind = useMemo(() => kindOf(path), [path]);
 
   const effectiveLinkCtx = useMemo(() => {
@@ -74,17 +77,24 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl, lin
   }, [title]);
 
   useEffect(() => {
-    if (!path || kind === "html" || kind === "image" || kind === "pdf" || kind === "other" || texts[path] !== undefined) return;
+    if (!path || kind === "html" || kind === "image" || kind === "pdf" || kind === "other" || texts[textKey] !== undefined) return;
+    let current = true;
+    setError("");
     loadText(path)
-      .then((c) => setTexts((t) => ({ ...t, [path]: c })))
-      .catch((e) => setError(String((e as Error).message || e)));
-  }, [path, kind, texts, loadText]);
+      .then((c) => {
+        if (current) setTexts((t) => ({ ...t, [textKey]: c }));
+      })
+      .catch((e) => {
+        if (current) setError(String((e as Error).message || e));
+      });
+    return () => { current = false; };
+  }, [path, kind, texts, loadText, textKey]);
 
   if (items.length === 0) {
     return <div className="min-h-screen grid place-items-center text-zinc-500">展示清單是空的</div>;
   }
 
-  const text = texts[path];
+  const text = texts[textKey];
 
   return (
     <div className="h-dvh flex flex-col">
@@ -98,7 +108,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl, lin
           // 獨立分享網站：sandbox 只給 allow-scripts（無 same-origin），
           // 頁內 script 拿不到本站 cookie/API；相對路徑資產自然落回 raw 前綴
           <iframe
-            key={path}
+            key={textKey}
             src={rawUrl(path)}
             sandbox="allow-scripts"
             className="w-full h-full bg-white"
@@ -110,7 +120,7 @@ export default function Presenter({ title, items, loadText, rawUrl, exitUrl, lin
           </div>
         ) : kind === "pdf" ? (
           <iframe
-            key={path}
+            key={textKey}
             src={`${rawUrl(path)}#view=FitH`}
             className="w-full h-full border-0 bg-white"
             title={path}

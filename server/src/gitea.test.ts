@@ -16,6 +16,19 @@ interface FetchCall {
   body: unknown;
 }
 
+type BranchAwareGitea = typeof gitea & {
+  validateBranch(token: string, projectPath: string, branch: string): Promise<void>;
+  resolveBranchPath(
+    token: string,
+    projectPath: string,
+    suffix: string
+  ): Promise<{ branch: string; path: string }>;
+  readFile(token: string, projectPath: string, filePath: string, branch?: string): ReturnType<typeof gitea.readFile>;
+  readFileRaw(token: string, projectPath: string, filePath: string, branch?: string): ReturnType<typeof gitea.readFileRaw>;
+};
+
+const branchAwareGitea = gitea as BranchAwareGitea;
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -39,6 +52,34 @@ function stubFetch(
 }
 
 describe("gitea provider", () => {
+  it("validates an exact slash and Unicode branch with one bounded request", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    const branch = "kevin/補報工";
+    stubFetch(() => jsonResponse({ name: branch }), calls);
+
+    await branchAwareGitea.validateBranch("tok", "SARA_BACKEND/sara-v2", branch);
+
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0].url,
+      `https://gitea.example/api/v1/repos/SARA_BACKEND/sara-v2/branches/${encodeURIComponent(branch)}`
+    );
+  });
+
+  it("returns 404 for an invalid exact branch without listing branches", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch(() => jsonResponse({ message: "branch not found" }, 404), calls);
+
+    await assert.rejects(
+      () => branchAwareGitea.validateBranch("tok", "SARA_BACKEND/sara-v2", "missing/ref"),
+      (err: unknown) => err instanceof ProviderError && err.status === 404
+    );
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls[0].url, /branches\?page=/);
+  });
+
   it("listRepos 翻頁直到回傳筆數 < 50，只留 push=true，pushedAt 來自 updated_at", async () => {
     process.env.GITEA_URL = "https://gitea.example";
     const calls: FetchCall[] = [];
@@ -72,6 +113,93 @@ describe("gitea provider", () => {
     const small = repos.find((r) => r.projectPath === "kevin/small");
     assert.equal(small?.pushedAt, "2026-02-02T00:00:00Z");
     assert.equal(small?.private, true);
+  });
+
+  it("resolveBranchPath follows pagination and chooses the longest matching branch prefix", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    const branch = "kevin/sara-5605-補報工上傳優化討論";
+    stubFetch((u) => {
+      if (u.includes("page=1")) {
+        return jsonResponse([
+          { name: "dev" },
+          { name: branch },
+          ...Array.from({ length: 48 }, (_, i) => ({ name: `archive/${i}` })),
+        ]);
+      }
+      return jsonResponse([{ name: `${branch}/docs` }]);
+    }, calls);
+
+    const resolved = await branchAwareGitea.resolveBranchPath(
+      "tok",
+      "SARA_BACKEND/sara-v2",
+      `${branch}/docs/guide.md`
+    );
+
+    assert.deepEqual(resolved, { branch: `${branch}/docs`, path: "guide.md" });
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].url, /\/repos\/SARA_BACKEND\/sara-v2\/branches\?page=1&limit=50$/);
+    assert.match(calls[1].url, /\/repos\/SARA_BACKEND\/sara-v2\/branches\?page=2&limit=50$/);
+  });
+
+  it("resolveBranchPath throws ProviderError 404 when no branch matches instead of using the default", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch(() => jsonResponse([{ name: "dev" }]), calls);
+
+    await assert.rejects(
+      () => branchAwareGitea.resolveBranchPath("tok", "SARA_BACKEND/sara-v2", "missing/file.md"),
+      (err: unknown) => err instanceof ProviderError && err.status === 404
+    );
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/branches\?page=1&limit=50$/);
+  });
+
+  it("resolveBranchPath fails after 20 full pages instead of requesting or guessing beyond the ceiling", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    stubFetch((u) => {
+      const page = Number(new URL(u).searchParams.get("page"));
+      if (page <= 20) {
+        return jsonResponse(Array.from({ length: 50 }, (_, i) => ({ name: `archive/${page}/${i}` })));
+      }
+      return jsonResponse([]);
+    }, calls);
+
+    await assert.rejects(
+      () => branchAwareGitea.resolveBranchPath("tok", "SARA_BACKEND/sara-v2", "feature/docs/a.md"),
+      (err: unknown) => err instanceof ProviderError && err.status === 503
+    );
+    assert.equal(calls.length, 20);
+    assert.match(calls[19].url, /\/branches\?page=20&limit=50$/);
+  });
+
+  it("readFile appends an encoded ref for a branch with slashes and Unicode", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    const branch = "kevin/sara-5605-補報工上傳優化討論";
+    stubFetch(() => jsonResponse({ content: Buffer.from("hello").toString("base64"), sha: "sha", path: "docs/a.md", type: "file" }), calls);
+
+    await branchAwareGitea.readFile("tok", "SARA_BACKEND/sara-v2", "docs/a.md", branch);
+
+    assert.equal(
+      calls[0].url,
+      `https://gitea.example/api/v1/repos/SARA_BACKEND/sara-v2/contents/docs/a.md?ref=${encodeURIComponent(branch)}`
+    );
+  });
+
+  it("readFileRaw appends an encoded ref for a branch with slashes and Unicode", async () => {
+    process.env.GITEA_URL = "https://gitea.example";
+    const calls: FetchCall[] = [];
+    const branch = "kevin/sara-5605-補報工上傳優化討論";
+    stubFetch(() => new Response(Buffer.from("raw")), calls);
+
+    await branchAwareGitea.readFileRaw("tok", "SARA_BACKEND/sara-v2", "docs/a.md", branch);
+
+    assert.equal(
+      calls[0].url,
+      `https://gitea.example/api/v1/repos/SARA_BACKEND/sara-v2/media/docs/a.md?ref=${encodeURIComponent(branch)}`
+    );
   });
 
   it("writeFile：沒 sha → POST；有 sha → PUT 且 body 含 sha", async () => {
@@ -205,5 +333,28 @@ describe("gitea provider", () => {
       provider: "gitea",
       projectPath: "kevin/secret",
     });
+    assert.deepEqual(
+      parseRepoInput(
+        "https://gitea.example/SARA_BACKEND/sara-v2/src/branch/kevin/sara-5605-補報工上傳優化討論"
+      ),
+      {
+        provider: "gitea",
+        projectPath: "SARA_BACKEND/sara-v2",
+        giteaBranchSuffix: "kevin/sara-5605-補報工上傳優化討論",
+      }
+    );
+  });
+
+  it("parseRepoInput：Gitea non-default port 是 authority 的一部分", () => {
+    process.env.GITEA_URL = "https://gitea.example:3443";
+    assert.deepEqual(
+      parseRepoInput("https://gitea.example:3443/acme/docs/src/branch/feature/port-fix"),
+      {
+        provider: "gitea",
+        projectPath: "acme/docs",
+        giteaBranchSuffix: "feature/port-fix",
+      }
+    );
+    assert.equal(parseRepoInput("https://gitea.example/acme/docs/src/branch/feature/port-fix"), null);
   });
 });

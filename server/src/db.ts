@@ -61,6 +61,10 @@ if (!shareCols.includes("kind")) db.exec("ALTER TABLE shares ADD COLUMN kind TEX
 if (!shareCols.includes("paths")) db.exec("ALTER TABLE shares ADD COLUMN paths TEXT");
 // 多 provider：舊資料一律視為 github
 if (!shareCols.includes("provider")) db.exec("ALTER TABLE shares ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
+if (!shareCols.includes("branch")) db.exec("ALTER TABLE shares ADD COLUMN branch TEXT");
+
+const userPrefCols = (db.prepare("PRAGMA table_info(user_prefs)").all() as { name: string }[]).map((c) => c.name);
+if (!userPrefCols.includes("branch")) db.exec("ALTER TABLE user_prefs ADD COLUMN branch TEXT");
 
 const sessionCols = (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
 if (!sessionCols.includes("provider")) db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'");
@@ -187,6 +191,7 @@ export interface Share {
   kind: "doc" | "set";
   paths: string | null; // set 專用：JSON string[]，依資料夾排序
   provider: string;
+  branch: string | null;
 }
 
 /** 管理員可檢視的分享資料；刻意不包含 owner_sid 或任何 session 資訊。 */
@@ -194,6 +199,7 @@ export interface AdminShareInventoryItem {
   token: string;
   ownerLogin: string;
   provider: string;
+  branch: string | null;
   repo: string;
   path: string | null;
   paths: string[] | null;
@@ -207,6 +213,7 @@ interface AdminShareInventoryRow {
   token: string;
   owner_login: string;
   provider: string;
+  branch: string | null;
   repo: string;
   path: string | null;
   paths: string | null;
@@ -232,6 +239,7 @@ function toAdminShareInventoryItem(row: AdminShareInventoryRow): AdminShareInven
     token: row.token,
     ownerLogin: row.owner_login,
     provider: row.provider || "github",
+    branch: row.branch,
     repo: row.repo,
     path: row.path,
     paths: kind === "set" ? parseSharePaths(row.paths) : null,
@@ -243,25 +251,41 @@ function toAdminShareInventoryItem(row: AdminShareInventoryRow): AdminShareInven
 }
 
 /** 多檔展示集：勾選的檔案（已排序）打包成一個分享 token。 */
-export function createShareSet(s: Session, repo: string, paths: string[], title: string | null): string {
+export function createShareSet(
+  s: Session,
+  repo: string,
+  paths: string[],
+  title: string | null,
+  branch: string | null = null,
+  provider: string = s.provider
+): string {
+  const storedBranch = provider === "gitea" ? branch : null;
   const token = crypto.randomBytes(8).toString("base64url");
   db.prepare(
-    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, kind, paths, provider) VALUES (?, ?, ?, ?, ?, ?, ?, 'set', ?, ?)"
-  ).run(token, s.sid, s.login, repo, paths[0] ?? "", title, Date.now(), JSON.stringify(paths), s.provider);
+    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, kind, paths, provider, branch) VALUES (?, ?, ?, ?, ?, ?, ?, 'set', ?, ?, ?)"
+  ).run(token, s.sid, s.login, repo, paths[0] ?? "", title, Date.now(), JSON.stringify(paths), provider, storedBranch);
   return token;
 }
 
-export function createShare(s: Session, repo: string, filePath: string, title: string | null): string {
+export function createShare(
+  s: Session,
+  repo: string,
+  filePath: string,
+  title: string | null,
+  branch: string | null = null,
+  provider: string = s.provider
+): string {
+  const storedBranch = provider === "gitea" ? branch : null;
   // 同一份文件重複分享時回收既有 token，避免連結氾濫
   const existing = db
-    .prepare("SELECT token FROM shares WHERE owner_login = ? AND provider = ? AND repo = ? AND path = ? AND revoked = 0")
-    .get(s.login, s.provider, repo, filePath) as { token: string } | undefined;
+    .prepare("SELECT token FROM shares WHERE owner_login = ? AND provider = ? AND repo = ? AND path = ? AND branch IS ? AND revoked = 0")
+    .get(s.login, provider, repo, filePath, storedBranch) as { token: string } | undefined;
   if (existing) return existing.token;
 
   const token = crypto.randomBytes(8).toString("base64url");
   db.prepare(
-    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(token, s.sid, s.login, repo, filePath, title, Date.now(), s.provider);
+    "INSERT INTO shares (token, owner_sid, owner_login, repo, path, title, created_at, provider, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(token, s.sid, s.login, repo, filePath, title, Date.now(), provider, storedBranch);
   return token;
 }
 
@@ -278,10 +302,10 @@ export function listShares(login: string): Share[] {
 
 /** 某個 repo 底下所有「還沒撤銷」的分享，只回路徑資訊，
  *  刻意不回 token——token 是存取憑證，不可外流到這支 API 的呼叫端。 */
-export function listActiveSharePaths(provider: string, repo: string): { kind: string; path: string; paths: string | null }[] {
+export function listActiveSharePaths(provider: string, repo: string, branch: string | null = null): { kind: string; path: string; paths: string | null }[] {
   return db
-    .prepare("SELECT kind, path, paths FROM shares WHERE revoked = 0 AND provider = ? AND repo = ?")
-    .all(provider, repo) as { kind: string; path: string; paths: string | null }[];
+    .prepare("SELECT kind, path, paths FROM shares WHERE revoked = 0 AND provider = ? AND repo = ? AND branch IS ?")
+    .all(provider, repo, branch) as { kind: string; path: string; paths: string | null }[];
 }
 
 export function revokeShare(login: string, token: string): boolean {
@@ -295,7 +319,7 @@ export function revokeShare(login: string, token: string): boolean {
  */
 export function listAdminShares(query = ""): AdminShareInventoryItem[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const columns = "token, owner_login, provider, repo, path, paths, title, kind, created_at, revoked";
+  const columns = "token, owner_login, provider, repo, branch, path, paths, title, kind, created_at, revoked";
   let rows: AdminShareInventoryRow[];
   if (normalizedQuery) {
     const matches = `
@@ -303,6 +327,7 @@ export function listAdminShares(query = ""): AdminShareInventoryItem[] {
       OR instr(lower(owner_login), ?) > 0
       OR instr(lower(provider), ?) > 0
       OR instr(lower(repo), ?) > 0
+      OR instr(lower(COALESCE(branch, '')), ?) > 0
       OR instr(lower(COALESCE(path, '')), ?) > 0
       OR instr(lower(COALESCE(paths, '')), ?) > 0
       OR instr(lower(COALESCE(title, '')), ?) > 0
@@ -310,6 +335,7 @@ export function listAdminShares(query = ""): AdminShareInventoryItem[] {
     rows = db
       .prepare(`SELECT ${columns} FROM shares WHERE ${matches} ORDER BY created_at DESC, token DESC`)
       .all(
+        normalizedQuery,
         normalizedQuery,
         normalizedQuery,
         normalizedQuery,
@@ -433,27 +459,50 @@ CREATE TABLE IF NOT EXISTS user_repo_prefs (
   owner       TEXT NOT NULL,
   provider    TEXT NOT NULL,
   project     TEXT NOT NULL,
+  branch      TEXT,
   pinned      INTEGER NOT NULL DEFAULT 0,
-  last_seen_at INTEGER NOT NULL,
-  PRIMARY KEY (owner, provider, project)
+  last_seen_at INTEGER NOT NULL
 );
 `);
+
+const repoPrefCols = (db.prepare("PRAGMA table_info(user_repo_prefs)").all() as { name: string }[]).map((c) => c.name);
+if (!repoPrefCols.includes("branch")) {
+  db.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE user_repo_prefs RENAME TO user_repo_prefs_legacy;
+    CREATE TABLE user_repo_prefs (
+      owner TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      project TEXT NOT NULL,
+      branch TEXT,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      last_seen_at INTEGER NOT NULL
+    );
+    INSERT INTO user_repo_prefs (owner, provider, project, branch, pinned, last_seen_at)
+      SELECT owner, provider, project, NULL, pinned, last_seen_at FROM user_repo_prefs_legacy;
+    DROP TABLE user_repo_prefs_legacy;
+    COMMIT;
+  `);
+}
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_repo_prefs_identity
+  ON user_repo_prefs(owner, provider, project, COALESCE(branch, ''))`);
 
 export interface UserRepoPref {
   provider: string;
   project: string;
+  branch: string | null;
   pinned: boolean;
   lastSeenAt: number;
 }
 
 export function getUserRepoPrefs(owner: string): { pinned: UserRepoPref[]; recent: UserRepoPref[] } {
   const rows = db
-    .prepare("SELECT provider, project, pinned, last_seen_at FROM user_repo_prefs WHERE owner = ? ORDER BY last_seen_at DESC")
-    .all(owner) as { provider: string; project: string; pinned: number; last_seen_at: number }[];
+    .prepare("SELECT provider, project, branch, pinned, last_seen_at FROM user_repo_prefs WHERE owner = ? ORDER BY last_seen_at DESC")
+    .all(owner) as { provider: string; project: string; branch: string | null; pinned: number; last_seen_at: number }[];
   const pinned: UserRepoPref[] = [];
   const recent: UserRepoPref[] = [];
   for (const r of rows) {
-    const pref: UserRepoPref = { provider: r.provider, project: r.project, pinned: r.pinned === 1, lastSeenAt: r.last_seen_at };
+    const pref: UserRepoPref = { provider: r.provider, project: r.project, branch: r.branch, pinned: r.pinned === 1, lastSeenAt: r.last_seen_at };
     if (r.pinned === 1) pinned.push(pref);
     else if (recent.length < 8) recent.push(pref);
   }
@@ -464,35 +513,52 @@ export function upsertUserRepoPref(
   owner: string,
   provider: string,
   project: string,
+  branch: string | null,
   pinned: boolean,
   lastSeenAt: number,
 ): void {
   db.prepare(
-    `INSERT INTO user_repo_prefs (owner, provider, project, pinned, last_seen_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(owner, provider, project) DO UPDATE SET
+    `INSERT INTO user_repo_prefs (owner, provider, project, branch, pinned, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO UPDATE SET
        pinned = excluded.pinned,
        last_seen_at = CASE WHEN excluded.last_seen_at > user_repo_prefs.last_seen_at THEN excluded.last_seen_at ELSE user_repo_prefs.last_seen_at END`
-  ).run(owner, provider, project, pinned ? 1 : 0, lastSeenAt);
+  ).run(owner, provider, project, branch, pinned ? 1 : 0, lastSeenAt);
 }
 
-export function deleteUserRepoPref(owner: string, provider: string, project: string): void {
-  db.prepare("DELETE FROM user_repo_prefs WHERE owner = ? AND provider = ? AND project = ?").run(owner, provider, project);
+export function deleteUserRepoPref(owner: string, provider: string, project: string, branch: string | null): void {
+  db.prepare("DELETE FROM user_repo_prefs WHERE owner = ? AND provider = ? AND project = ? AND branch IS ?").run(owner, provider, project, branch);
+}
+
+export function touchUserRepoPref(
+  owner: string,
+  provider: string,
+  project: string,
+  branch: string | null,
+  lastSeenAt: number,
+): void {
+  db.prepare(
+    `INSERT INTO user_repo_prefs (owner, provider, project, branch, pinned, last_seen_at)
+     VALUES (?, ?, ?, ?, 0, ?)
+     ON CONFLICT DO UPDATE SET
+       last_seen_at = CASE WHEN excluded.last_seen_at > user_repo_prefs.last_seen_at THEN excluded.last_seen_at ELSE user_repo_prefs.last_seen_at END`
+  ).run(owner, provider, project, branch, lastSeenAt);
 }
 
 /** Merge-import: only insert if not already existing for this owner */
 export function mergeUserRepoPrefs(
   owner: string,
-  items: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[],
+  items: { provider: string; project: string; branch?: string | null; pinned: boolean; lastSeenAt: number }[],
 ): void {
   const stmt = db.prepare(
-    `INSERT INTO user_repo_prefs (owner, provider, project, pinned, last_seen_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(owner, provider, project) DO NOTHING`
+    `INSERT INTO user_repo_prefs (owner, provider, project, branch, pinned, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`
   );
   const tx = db.transaction(() => {
     for (const item of items) {
-      stmt.run(owner, item.provider, item.project, item.pinned ? 1 : 0, item.lastSeenAt);
+      const branch = item.provider === "gitea" ? item.branch ?? null : null;
+      stmt.run(owner, item.provider, item.project, branch, item.pinned ? 1 : 0, item.lastSeenAt);
     }
   });
   tx();
@@ -503,18 +569,19 @@ export interface LastRepo {
   provider: string;
   project: string;
   file: string | null;
+  branch: string | null;
 }
 
-export function setLastRepo(owner: string, provider: string, project: string, file: string | null): void {
+export function setLastRepo(owner: string, provider: string, project: string, file: string | null, branch: string | null = null): void {
   db.prepare(
-    "INSERT OR REPLACE INTO user_prefs (owner, provider, project, file, updated_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(owner, provider, project, file, Date.now());
+    "INSERT OR REPLACE INTO user_prefs (owner, provider, project, file, branch, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(owner, provider, project, file, branch, Date.now());
 }
 
 export function getLastRepo(owner: string): LastRepo | null {
-  const row = db.prepare("SELECT provider, project, file FROM user_prefs WHERE owner = ?").get(owner) as
-    | { provider: string; project: string; file: string | null }
+  const row = db.prepare("SELECT provider, project, file, branch FROM user_prefs WHERE owner = ?").get(owner) as
+    | { provider: string; project: string; file: string | null; branch: string | null }
     | undefined;
   if (!row) return null;
-  return { provider: row.provider, project: row.project, file: row.file };
+  return { provider: row.provider, project: row.project, file: row.file, branch: row.branch };
 }

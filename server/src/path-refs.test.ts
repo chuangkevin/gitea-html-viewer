@@ -1,8 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseShortLinkTarget, sharePathAffected, targetAffectedBy } from "./path-refs.js";
+import { parseShortLinkTarget, requestedBranch, sharePathAffected, targetAffectedBy } from "./path-refs.js";
+import { ProviderError } from "./providers.js";
 
 describe("parseShortLinkTarget", () => {
+  it("distinguishes an absent Gitea ref from invalid present values", () => {
+    assert.equal(requestedBranch("gitea", undefined), undefined);
+    assert.equal(requestedBranch("gitea", "feature/補報工"), "feature/補報工");
+    for (const invalid of ["", ["one", "two"], 1]) {
+      assert.throws(
+        () => requestedBranch("gitea", invalid),
+        (err: unknown) => err instanceof ProviderError && err.status === 400
+      );
+    }
+    assert.equal(requestedBranch("gitlab", ["ignored", "values"]), undefined);
+  });
+
   it("parses /edit ?f= as a file", () => {
     assert.deepEqual(parseShortLinkTarget("/edit/gitlab/interagent-io%2Fnote?f=docs%2Fa.md"), {
       provider: "gitlab",
@@ -60,6 +73,17 @@ describe("parseShortLinkTarget", () => {
     assert.equal(parseShortLinkTarget("/go/erp"), null);
     assert.equal(parseShortLinkTarget("/s/share-token"), null);
     assert.equal(parseShortLinkTarget("/p/gitlab/group%2Frepo"), null);
+  });
+
+  it("rejects empty and duplicate Gitea refs without affecting other providers", () => {
+    assert.equal(parseShortLinkTarget("/edit/gitea/group%2Frepo?ref=&f=a.md"), null);
+    assert.equal(parseShortLinkTarget("/edit/gitea/group%2Frepo?ref=one&ref=two&f=a.md"), null);
+    assert.deepEqual(parseShortLinkTarget("/edit/gitlab/group%2Frepo?ref=&ref=two&f=a.md"), {
+      provider: "gitlab",
+      project: "group/repo",
+      path: "a.md",
+      kind: "file",
+    });
   });
 });
 

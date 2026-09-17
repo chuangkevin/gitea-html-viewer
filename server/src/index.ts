@@ -29,6 +29,7 @@ import {
   encrypt,
   decrypt,
   setLastRepo,
+  touchUserRepoPref,
   getLastRepo,
   createRawGrant,
   getRawGrant,
@@ -56,6 +57,7 @@ import {
 import {
   enqueueWrite,
   flushGroup,
+  flushJob,
   hasUnlanded,
   jobStatus,
   startWriteQueue,
@@ -67,6 +69,7 @@ import {
   getProvider,
   isProviderName,
   normalizeProjectInput,
+  parseRepoInput,
   ProviderError,
   type Provider,
   type ProviderName,
@@ -109,7 +112,7 @@ import {
   shortLinkToResponse,
   updateShortLink,
 } from "./short-links.js";
-import { parseShortLinkTarget, sharePathAffected, targetAffectedBy } from "./path-refs.js";
+import { parseCollabDocKey, parseShortLinkTarget, requestedBranch as parseRequestedBranch, sharePathAffected, targetAffectedBy } from "./path-refs.js";
 import { attachCollab, flushRoom } from "./collab.js";
 
 registerProvider(github);
@@ -180,6 +183,7 @@ const oauthReady = (p: ProviderName) => Boolean(OAUTH[p].clientId && OAUTH[p].cl
 
 const COOKIE = "nb_sid";
 const IDENT_COOKIE = "nb_ident"; // 團隊模式：只存「選了哪位成員」，不存 token
+const QUEUE_ACTOR_COOKIE = "nb_queue_actor";
 const REDIRECT_URI = `${BASE_URL}/api/auth/callback`;
 
 async function resolveLiveSession(req: express.Request): Promise<Session | null> {
@@ -235,11 +239,17 @@ function requireAuth(req: express.Request, res: express.Response): Session | nul
 
 function handleError(res: express.Response, e: unknown): void {
   if (e instanceof ProviderError) {
-    res.status(e.status === 401 ? 401 : 502).json({ error: e.message });
+    const invalidBranchRef = e.status === 400 && e.message === "invalid Gitea ref";
+    const explicitBranchError = isExplicitGiteaBranchNotFound(e);
+    res.status(invalidBranchRef ? 400 : explicitBranchError ? 404 : e.status === 401 ? 401 : 502).json({ error: e.message });
   } else {
     console.error(e);
     res.status(500).json({ error: "internal_error" });
   }
+}
+
+function isExplicitGiteaBranchNotFound(error: unknown): boolean {
+  return error instanceof ProviderError && error.status === 404 && error.message.startsWith("Gitea branch not found: ");
 }
 
 /** 上游 provider 的錯誤訊息是不是「檔案不存在」（新檔情境，正常狀況，不該當錯誤）。 */
@@ -412,12 +422,13 @@ app.put("/api/user-prefs", (req, res) => {
     return;
   }
   const body = req.body as {
-    action: "upsert" | "delete" | "merge";
+    action: "upsert" | "delete" | "merge" | "touch";
     provider?: string;
     project?: string;
+    branch?: string | null;
     pinned?: boolean;
     lastSeenAt?: number;
-    items?: { provider: string; project: string; pinned: boolean; lastSeenAt: number }[];
+    items?: { provider: string; project: string; branch?: string | null; pinned: boolean; lastSeenAt: number }[];
   };
   if (body.action === "merge" && Array.isArray(body.items)) {
     mergeUserRepoPrefs(owner, body.items);
@@ -428,13 +439,17 @@ app.put("/api/user-prefs", (req, res) => {
     res.status(400).json({ error: "invalid parameters" });
     return;
   }
+  const branch = body.provider === "gitea" && typeof body.branch === "string" && body.branch ? body.branch : null;
   if (body.action === "delete") {
-    deleteUserRepoPref(owner, body.provider, body.project);
+    deleteUserRepoPref(owner, body.provider, body.project, branch);
+  } else if (body.action === "touch") {
+    touchUserRepoPref(owner, body.provider, body.project, branch, body.lastSeenAt ?? Date.now());
   } else {
     upsertUserRepoPref(
       owner,
       body.provider,
       body.project,
+      branch,
       body.pinned ?? false,
       body.lastSeenAt ?? Date.now(),
     );
@@ -464,6 +479,28 @@ function routeProvider(req: express.Request): ProviderName {
 }
 function projectParam(req: express.Request): string {
   return req.params.project; // Express 已 decodeURIComponent
+}
+function requestedBranch(req: express.Request, provider: ProviderName): string | undefined {
+  return parseRequestedBranch(provider, req.query.ref);
+}
+
+function hasGiteaRef(req: express.Request): boolean {
+  return req.params.provider === "gitea" && req.query.ref !== undefined;
+}
+
+async function effectiveBranch(
+  req: express.Request,
+  provider: ProviderName,
+  p: Provider,
+  token: string,
+  project: string,
+  info: RepoMeta
+): Promise<string> {
+  const requested = requestedBranch(req, provider);
+  if (!requested) return info.defaultBranch;
+  if (!p.validateBranch) throw new ProviderError(400, "branch selection is not supported");
+  await p.validateBranch(token, project, requested);
+  return requested;
 }
 /**
  * 這個請求要用「誰的 token」打 provider API。優先序：
@@ -585,6 +622,29 @@ function actorFor(req: express.Request, provider: ProviderName, project?: string
   return { token: OAUTH[provider].fallbackToken, authed: false };
 }
 
+function enforceRepoWriteAccess(
+  req: express.Request,
+  res: express.Response,
+  provider: ProviderName,
+  project: string,
+  actor: Actor
+): boolean {
+  const mode = getMode(provider, project);
+  if (mode === "admin" && !isAdmin(req)) {
+    res.status(403).json({ error: "admin_only" });
+    return false;
+  }
+  if (mode === "open" && !openTokenReady(provider) && !actor.authed) {
+    res.status(401).json({ error: "open_token_missing" });
+    return false;
+  }
+  if (mode !== "open" && !actor.authed) {
+    res.status(401).json({ error: "not_authenticated" });
+    return false;
+  }
+  return true;
+}
+
 // ── repos（登入者自己的）──────────────────────────────
 app.get("/api/repos", async (req, res) => {
   const s = requireAuth(req, res);
@@ -617,6 +677,33 @@ app.post("/api/repos", async (req, res) => {
     const r = await getProvider(s.provider).createRepo(s.token, name, isPrivate ?? true);
     res.json({ provider: s.provider, fullName: r.projectPath, defaultBranch: r.defaultBranch, private: r.private });
   } catch (e) {
+    handleError(res, e);
+  }
+});
+
+app.post("/api/gitea/resolve-url", async (req, res) => {
+  try {
+    const url = typeof req.body?.url === "string" ? req.body.url : "";
+    const parsed = parseRepoInput(url);
+    if (parsed?.provider !== "gitea" || !parsed.giteaBranchSuffix) {
+      res.status(400).json({ error: "invalid_gitea_branch_url" });
+      return;
+    }
+    const actor = actorFor(req, "gitea", parsed.projectPath);
+    const p = getProvider("gitea");
+    const info = await getRepoCached("gitea", actor.token, parsed.projectPath);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required", reason: "private_repo" });
+      return;
+    }
+    if (!p.resolveBranchPath) throw new ProviderError(500, "Gitea branch resolver unavailable");
+    const resolved = await p.resolveBranchPath(actor.token, parsed.projectPath, parsed.giteaBranchSuffix);
+    res.json({ provider: "gitea", project: parsed.projectPath, ...resolved });
+  } catch (e) {
+    if (e instanceof ProviderError) {
+      res.status(e.status).json({ error: e.message });
+      return;
+    }
     handleError(res, e);
   }
 });
@@ -702,15 +789,20 @@ app.get("/api/access/:provider/:project", async (req, res) => {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
+    const branch = await effectiveBranch(req, provider, getProvider(provider), actor.token, project, info);
     const mode = getMode(provider, project);
     res.json({
-      branch: info.defaultBranch,
+      branch,
       private: info.private,
       canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
       access: mode,
       guestName: typeof req.cookies?.nb_guest === "string" ? req.cookies.nb_guest : null,
     });
   } catch (e) {
+    if (hasGiteaRef(req) && e instanceof ProviderError && isExplicitGiteaBranchNotFound(e)) {
+      res.status(404).json({ error: e.message });
+      return;
+    }
     if (
       isProviderName(req.params.provider) &&
       isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
@@ -734,10 +826,11 @@ app.get("/api/files/:provider/:project", async (req, res) => {
       res.status(401).json({ error: "login_required", reason: "private_repo" });
       return;
     }
-    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
+    const files = await p.listAllFiles(actor.token, project, branch);
     const mode = getMode(provider, project);
     res.json({
-      branch: info.defaultBranch,
+      branch,
       private: info.private,
       canWrite: Boolean((mode !== "admin" || isAdmin(req)) && actor.authed && info.canPush),
       access: mode,
@@ -745,6 +838,10 @@ app.get("/api/files/:provider/:project", async (req, res) => {
       files: files.map((f) => ({ path: f.path })),
     });
   } catch (e) {
+    if (hasGiteaRef(req) && e instanceof ProviderError && isExplicitGiteaBranchNotFound(e)) {
+      res.status(404).json({ error: e.message });
+      return;
+    }
     if (
       isProviderName(req.params.provider) &&
       isOptionalAuthLoginRequired(e, req.params.provider, Boolean(actor?.authed))
@@ -770,9 +867,14 @@ app.get("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
     filePath = (req.params as Record<string, string>)[0] || "";
-    const f = await p.readFile(actor.token, project, filePath);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
+    const f = await p.readFile(actor.token, project, filePath, branch);
     res.json(f);
   } catch (e) {
+    if (hasGiteaRef(req) && e instanceof ProviderError && isExplicitGiteaBranchNotFound(e)) {
+      res.status(404).json({ error: e.message });
+      return;
+    }
     if (filePath !== null && e instanceof ProviderError && e.status === 404 && isProviderNotFound(e.message)) {
       res.status(404).json({ error: "not_found" });
       return;
@@ -804,7 +906,8 @@ app.get("/api/zip/:provider/:project/*", async (req, res) => {
     const cleanDir = dirPath.replace(/^\/+|\/+$/g, "");
     const prefix = cleanDir ? cleanDir + "/" : "";
 
-    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
+    const files = await p.listAllFiles(actor.token, project, branch);
     const matchingFiles = files.filter((f) => (cleanDir ? f.path.startsWith(prefix) : true));
 
     if (matchingFiles.length === 0) {
@@ -849,7 +952,7 @@ app.get("/api/zip/:provider/:project/*", async (req, res) => {
     archive.pipe(res);
 
     for (const file of matchingFiles) {
-      const buf = await p.readFileRaw(actor.token, project, file.path);
+      const buf = await p.readFileRaw(actor.token, project, file.path, branch);
       const relPath = prefix ? file.path.slice(prefix.length) : file.path;
       archive.append(buf, { name: relPath });
     }
@@ -905,6 +1008,30 @@ app.get("/raw/:provider/:project/*", async (req, res) => {
       return;
     }
     res.status(500).end();
+  }
+});
+
+app.get("/rawb/:branch/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    if (provider !== "gitea") throw new ProviderError(400, "branch route is Gitea-only");
+    const project = projectParam(req);
+    const actor = actorFor(req, provider, project);
+    const p = getProvider(provider);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required" });
+      return;
+    }
+    if (!p.validateBranch) throw new ProviderError(500, "Gitea branch validator unavailable");
+    await p.validateBranch(actor.token, project, req.params.branch);
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    const buf = await p.readFileRaw(actor.token, project, filePath, req.params.branch);
+    const download = req.query.download !== undefined && req.query.download !== "0" && req.query.download !== "false";
+    sendRaw(res, filePath, buf, download);
+  } catch (e) {
+    if (e instanceof ProviderError) res.status(e.status).end();
+    else res.status(500).end();
   }
 });
 
@@ -997,16 +1124,40 @@ app.get("/rawt/:grant/:provider/:project/*", async (req, res) => {
   }
 });
 
+app.get("/rawtb/:grant/:branch/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    if (provider !== "gitea") throw new ProviderError(400, "branch route is Gitea-only");
+    const project = projectParam(req);
+    const token = resolveGrant(req.params.grant, provider, project);
+    if (!token) {
+      res.status(401).json({ error: "grant_invalid" });
+      return;
+    }
+    const p = getProvider(provider);
+    if (!p.validateBranch) throw new ProviderError(500, "Gitea branch validator unavailable");
+    await p.validateBranch(token, project, req.params.branch);
+    const filePath = (req.params as Record<string, string>)[0] || "";
+    const buf = await p.readFileRaw(token, project, filePath, req.params.branch);
+    const download = req.query.download !== undefined && req.query.download !== "0" && req.query.download !== "false";
+    sendRaw(res, filePath, buf, download);
+  } catch (e) {
+    if (e instanceof ProviderError) res.status(e.status).end();
+    else res.status(500).end();
+  }
+});
+
 async function servePreviewAsset(
   req: express.Request,
   res: express.Response,
   p: ReturnType<typeof getProvider>,
   token: string,
   project: string,
-  filePath: string
+  filePath: string,
+  branch?: string
 ): Promise<void> {
   const assetPath = resolvePreviewAssetPath(filePath);
-  const buf = await readWithPublicFallback((path) => p.readFileRaw(token, project, path), assetPath);
+  const buf = await readWithPublicFallback((path) => p.readFileRaw(token, project, path, branch), assetPath);
 
   if (shouldServeCssShim(assetPath, req.query.site_preview_css)) {
     res.setHeader("Content-Type", "text/javascript; charset=utf-8");
@@ -1065,6 +1216,27 @@ app.get("/site-assets/:provider/:project/*", async (req, res) => {
   }
 });
 
+app.get("/site-assetsb/:branch/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    if (provider !== "gitea") throw new ProviderError(400, "branch route is Gitea-only");
+    const p = getProvider(provider);
+    const project = projectParam(req);
+    const actor = actorFor(req, provider, project);
+    const info = await p.getRepo(actor.token, project);
+    if (info.private && !actor.authed) {
+      res.status(401).json({ error: "login_required" });
+      return;
+    }
+    if (!p.validateBranch) throw new ProviderError(500, "Gitea branch validator unavailable");
+    await p.validateBranch(actor.token, project, req.params.branch);
+    await servePreviewAsset(req, res, p, actor.token, project, (req.params as Record<string, string>)[0] || "", req.params.branch);
+  } catch (e) {
+    if (e instanceof ProviderError) res.status(e.status).end();
+    else res.status(500).end();
+  }
+});
+
 app.get("/site-assetst/:grant/:provider/:project/*", async (req, res) => {
   try {
     const provider = routeProvider(req);
@@ -1083,6 +1255,26 @@ app.get("/site-assetst/:grant/:provider/:project/*", async (req, res) => {
       return;
     }
     res.status(500).end();
+  }
+});
+
+app.get("/site-assetstb/:grant/:branch/:provider/:project/*", async (req, res) => {
+  try {
+    const provider = routeProvider(req);
+    if (provider !== "gitea") throw new ProviderError(400, "branch route is Gitea-only");
+    const project = projectParam(req);
+    const token = resolveGrant(req.params.grant, provider, project);
+    if (!token) {
+      res.status(401).json({ error: "grant_invalid" });
+      return;
+    }
+    const p = getProvider(provider);
+    if (!p.validateBranch) throw new ProviderError(500, "Gitea branch validator unavailable");
+    await p.validateBranch(token, project, req.params.branch);
+    await servePreviewAsset(req, res, p, token, project, (req.params as Record<string, string>)[0] || "", req.params.branch);
+  } catch (e) {
+    if (e instanceof ProviderError) res.status(e.status).end();
+    else res.status(500).end();
   }
 });
 
@@ -1269,6 +1461,7 @@ app.get("/site/:provider/:project", async (req, res) => {
       throw err;
     }
 
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     const f = typeof req.query.f === "string" ? req.query.f : undefined;
     const dir = typeof req.query.dir === "string" ? req.query.dir : undefined;
 
@@ -1280,7 +1473,7 @@ app.get("/site/:provider/:project", async (req, res) => {
     if (f) {
       const ext = path.extname(f).toLowerCase();
       if (ext === ".html" || ext === ".htm") {
-        const buf = await p.readFileRaw(actor.token, project, f);
+        const buf = await p.readFileRaw(actor.token, project, f, branch);
         let html = buf.toString("utf8");
         const previewPath = f.replace(/\\/g, "/").replace(/^\/+/, "");
         const dirName = path.posix.dirname(previewPath);
@@ -1292,13 +1485,14 @@ app.get("/site/:provider/:project", async (req, res) => {
           project,
           folderPath,
           grant: validGrant,
+          branch: requestedBranch(req, provider),
         });
 
         let importMap: ImportMap | null = null;
         if (hasModuleScript(html)) {
           const pkgJson = await readClosestPackageJsonCached(
-            `${provider}|${project}`,
-            (filePath) => p.readFileRaw(actor.token, project, filePath),
+            `${provider}|${project}${requestedBranch(req, provider) ? `|${branch}` : ""}`,
+            (filePath) => p.readFileRaw(actor.token, project, filePath, branch),
             previewPath
           );
           importMap = pkgJson ? generateImportMap(pkgJson) : null;
@@ -1314,7 +1508,7 @@ app.get("/site/:provider/:project", async (req, res) => {
       }
 
       if (ext === ".md") {
-        const repoFile = await p.readFile(actor.token, project, f);
+        const repoFile = await p.readFile(actor.token, project, f, branch);
         // Note: Server-side markdown rendering for /site router does not sanitize HTML.
         // Trust model: Repository contents are trusted for internal usage.
         const contentHtml = await marked.parse(repoFile.content);
@@ -1327,12 +1521,13 @@ app.get("/site/:provider/:project", async (req, res) => {
 
       // 其他副檔名：302 轉到 /raw/<provider>/<project>/<f>
       const encodedF = f.split("/").map(encodeURIComponent).join("/");
-      res.redirect(302, `/raw/${provider}/${encodeURIComponent(project)}/${encodedF}`);
+      const rawPrefix = requestedBranch(req, provider) ? `/rawb/${encodeURIComponent(branch)}` : "/raw";
+      res.redirect(302, `${rawPrefix}/${provider}/${encodeURIComponent(project)}/${encodedF}`);
       return;
     }
 
     // query dir=<資料夾路徑>（沒有 f 時）
-    const files = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const files = await p.listAllFiles(actor.token, project, branch);
     const targetDir = (dir || "").trim().replace(/^\/+|\/+$/g, "");
     const mdFiles = files
       .filter((file) => {
@@ -1347,7 +1542,7 @@ app.get("/site/:provider/:project", async (req, res) => {
 
     for (let i = 0; i < sliceFiles.length; i++) {
       const file = sliceFiles[i];
-      const repoFile = await p.readFile(actor.token, project, file.path);
+      const repoFile = await p.readFile(actor.token, project, file.path, branch);
       // Note: Server-side markdown rendering for /site router does not sanitize HTML.
       // Trust model: Repository contents are trusted for internal usage.
       const fileHtml = await marked.parse(repoFile.content);
@@ -1407,33 +1602,11 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
   try {
     provider = routeProvider(req);
     const project = projectParam(req);
-    const mode = getMode(provider, project);
-
-    if (mode === "admin") {
-      if (!isAdmin(req)) {
-        res.status(403).json({ error: "admin_only" });
-        return;
-      }
-    }
-
     const actor = actorFor(req, provider, project);
-
-    if (mode === "open") {
-      if (!openTokenReady(provider) && !actor.authed) {
-        res.status(401).json({ error: "open_token_missing" });
-        return;
-      }
-    } else if (mode === "admin") {
-      if (!actor.authed) {
-        res.status(401).json({ error: "not_authenticated" });
-        return;
-      }
-    } else {
-      if (!actor.authed) {
-        res.status(401).json({ error: "not_authenticated" });
-        return;
-      }
-    }
+    if (!enforceRepoWriteAccess(req, res, provider, project, actor)) return;
+    const p = getProvider(provider);
+    const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
 
     const filePath = (req.params as Record<string, string>)[0] || "";
 
@@ -1471,7 +1644,7 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
     // 沒帶 sha 的舊呼叫端維持原行為，不受影響。
     if (typeof sha === "string" && sha) {
       try {
-        const cur = await getProvider(provider).readFile(actorFor(req, provider, project).token, project, filePath);
+        const cur = await p.readFile(actor.token, project, filePath, branch);
         if (cur.sha && cur.sha !== sha) {
           res.status(409).json({ error: "sha_mismatch", currentSha: cur.sha });
           return;
@@ -1491,8 +1664,6 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       return;
     }
 
-    const p = getProvider(provider);
-    const info = await getRepoCached(provider, actor.token, project); // 取預設分支（GitLab 寫入需要）
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1505,7 +1676,7 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
       writeContent,
       commitMsg,
       sha,
-      info.defaultBranch,
+      branch,
       actor.author, // 團隊模式 / open guest 才有；個人登入時 undefined = 用 token 帳號
       isBase64
     );
@@ -1524,36 +1695,65 @@ app.put("/api/file/:provider/:project/*", async (req, res) => {
  * 互動 HTML 頁（POC 看板、CRM 等）的寫入不直接 commit，先排進佇列立刻回覆，
  * 由背景 worker 合併後一次落地。既有 PUT /api/file 維持同步語意，不受影響。
  */
-function queueActorRef(req: express.Request, provider: ProviderName, project: string): ActorRef | null {
+function anonymousQueueActorId(req: express.Request, res: express.Response): string {
+  const existing = typeof req.cookies?.[QUEUE_ACTOR_COOKIE] === "string" ? req.cookies[QUEUE_ACTOR_COOKIE] : "";
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(existing)) {
+    return existing;
+  }
+  const id = crypto.randomUUID();
+  res.cookie(QUEUE_ACTOR_COOKIE, id, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: BASE_URL.startsWith("https"),
+    maxAge: 365 * 24 * 3600 * 1000,
+  });
+  return id;
+}
+
+function queueActorRef(req: express.Request, res: express.Response, provider: ProviderName, project: string): ActorRef | null {
   if (openTokenReady(provider) && getMode(provider, project) === "open") {
-    return { kind: "open" };
+    const s = req.nbSession ?? null;
+    if (s && s.provider === provider) return { kind: "open", sid: s.sid };
+    const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
+    if (sel && sel.identity.provider === provider) return { kind: "open", identityName: sel.identity.name };
+    if (s) return { kind: "open", sid: s.sid };
+    if (sel) return { kind: "open", identityName: sel.identity.name };
+    return { kind: "open", identityName: `browser:${anonymousQueueActorId(req, res)}` };
   }
   const s = req.nbSession ?? null;
   if (s && s.provider === provider) return { kind: "session", sid: s.sid };
   const sel = resolveSelection(req.cookies?.[IDENT_COOKIE]);
   if (sel && sel.identity.provider === provider) return { kind: "identity", identityName: sel.identity.name };
   if (openTokenReady(provider) && getMode(provider, project) === "admin" && isAdmin(req)) {
-    return { kind: "admin" };
+    if (s) return { kind: "admin", sid: s.sid };
+    return { kind: "admin", identityName: `admin:${currentAdminName(req)}` };
   }
   return null;
 }
 
-app.post("/api/enqueue-file/:provider/:project", (req, res) => {
+app.post("/api/enqueue-file/:provider/:project", async (req, res) => {
   try {
     const provider = routeProvider(req);
     const project = projectParam(req);
     const actor = actorFor(req, provider, project);
+    if (!enforceRepoWriteAccess(req, res, provider, project, actor)) return;
     const body = (req.body ?? {}) as { files?: QueueFile[]; sourceGroup?: string; message?: string };
 
-    const ref = queueActorRef(req, provider, project);
+    const ref = queueActorRef(req, res, provider, project);
     if (!ref) {
       res.status(401).json({ error: "not_authenticated" });
       return;
+    }
+    if (requestedBranch(req, provider)) {
+      const p = getProvider(provider);
+      const info = await getRepoCached(provider, actor.token, project);
+      await effectiveBranch(req, provider, p, actor.token, project, info);
     }
 
     const result = enqueueWrite({
       provider,
       project,
+      branch: requestedBranch(req, provider),
       sourceGroup: typeof body.sourceGroup === "string" ? body.sourceGroup : undefined,
       files: Array.isArray(body.files) ? body.files : [],
       message: typeof body.message === "string" ? body.message : undefined,
@@ -1575,16 +1775,18 @@ app.get("/api/enqueue-status", (req, res) => {
     const provider = typeof req.query.provider === "string" ? req.query.provider : "";
     const project = typeof req.query.project === "string" ? req.query.project : "";
     const sourceGroup = typeof req.query.sourceGroup === "string" ? req.query.sourceGroup : undefined;
+    const branch = isProviderName(provider) ? parseRequestedBranch(provider, req.query.ref) : undefined;
     const jobId = typeof req.query.jobId === "string" ? req.query.jobId : "";
-    if (!jobId && (!isProviderName(provider) || !project)) {
+    if (!jobId || !isProviderName(provider) || !project) {
       res.status(400).json({ error: "invalid_query" });
       return;
     }
-    if (isProviderName(provider) && project && !queueActorRef(req, provider, project)) {
-      res.status(401).json({ error: "not_authenticated" });
+    const actor = queueActorRef(req, res, provider, project);
+    if (!actor) {
+      res.status(404).json({ error: "not_found" });
       return;
     }
-    const view = jobStatus(jobId ? { jobId } : { provider, project, sourceGroup });
+    const view = jobStatus({ jobId, provider, project, sourceGroup, branch, actor });
     if (!view) {
       res.status(404).json({ error: "not_found" });
       return;
@@ -1601,19 +1803,28 @@ app.get("/api/enqueue-status", (req, res) => {
 /** 頁面離開時用：跳過安靜視窗立即落地。sendBeacon 以 application/json Blob 送出。 */
 app.post("/api/enqueue-flush", (req, res) => {
   try {
-    const body = (req.body ?? {}) as { provider?: string; project?: string; sourceGroup?: string };
+    const body = (req.body ?? {}) as { jobId?: string; provider?: string; project?: string; sourceGroup?: string; ref?: unknown };
     const provider = typeof body.provider === "string" ? body.provider : "";
     const project = typeof body.project === "string" ? body.project : "";
     if (!isProviderName(provider) || !project) {
       res.status(400).json({ error: "invalid_query" });
       return;
     }
-    if (!queueActorRef(req, provider, project)) {
+    const actor = queueActorRef(req, res, provider, project);
+    if (!actor) {
       res.status(401).json({ error: "not_authenticated" });
       return;
     }
-    const flushed = flushGroup({ provider, project, sourceGroup: body.sourceGroup });
-    res.json({ ok: true, flushed, pending: hasUnlanded(provider, project, body.sourceGroup) });
+    const branch = parseRequestedBranch(provider, body.ref);
+    const jobId = typeof body.jobId === "string" ? body.jobId : "";
+    const flushed = jobId
+      ? flushJob({ jobId, provider, project, branch, actor })
+      : flushGroup({ provider, project, branch, sourceGroup: body.sourceGroup, actor });
+    const job = jobId ? jobStatus({ jobId, provider, project, branch, actor }) : null;
+    const pending = jobId
+      ? Boolean(job && (job.status === "pending" || job.status === "running"))
+      : hasUnlanded(provider, project, body.sourceGroup, branch, actor);
+    res.json({ ok: true, flushed, pending });
   } catch (e) {
     handleError(res, e);
   }
@@ -1683,6 +1894,7 @@ app.post("/api/move/:provider/:project", async (req, res) => {
     }
 
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1691,7 +1903,7 @@ app.post("/api/move/:provider/:project", async (req, res) => {
     // 目標已存在就擋下來，不要蓋掉別人的檔案
     let targetExists = false;
     try {
-      await p.readFile(actor.token, project, toPath);
+      await p.readFile(actor.token, project, toPath, branch);
       targetExists = true;
     } catch {
       targetExists = false;
@@ -1708,7 +1920,7 @@ app.post("/api/move/:provider/:project", async (req, res) => {
       fromPath,
       toPath,
       commitMsg,
-      info.defaultBranch,
+      branch,
       actor.author
     );
     res.json({ ok: true, from: fromPath, to: toPath });
@@ -1769,8 +1981,14 @@ app.get("/api/path-refs/:provider/:project", async (req, res) => {
       return;
     }
 
+    const branch = requestedBranch(req, provider);
+    if (branch) {
+      const p = getProvider(provider);
+      const info = await getRepoCached(provider, actor.token, project);
+      await effectiveBranch(req, provider, p, actor.token, project, info);
+    }
     let shares = 0;
-    for (const row of listActiveSharePaths(provider, project)) {
+    for (const row of listActiveSharePaths(provider, project, branch ?? null)) {
       if (row.kind === "set" && row.paths) {
         let parsed: unknown;
         try {
@@ -1792,7 +2010,7 @@ app.get("/api/path-refs/:provider/:project", async (req, res) => {
         if (!link.isEnabled) return false;
         const target = parseShortLinkTarget(link.targetPath);
         if (!target) return false;
-        return targetAffectedBy(target, provider, project, pathValue, changedKind);
+        return targetAffectedBy(target, provider, project, pathValue, changedKind, branch);
       })
       .map((link) => ({ alias: link.alias, label: link.label }));
 
@@ -1850,13 +2068,14 @@ app.delete("/api/file/:provider/:project/*", async (req, res) => {
     }
 
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
     }
 
     const commitMsg = message || `docs: 刪除 ${filePath}`;
-    await p.deleteFile(actor.token, project, filePath, commitMsg, info.defaultBranch, actor.author);
+    await p.deleteFile(actor.token, project, filePath, commitMsg, branch, actor.author);
     res.json({ ok: true, path: filePath });
   } catch (e) {
     handleError(res, e);
@@ -1917,6 +2136,7 @@ app.post("/api/copy/:provider/:project", async (req, res) => {
 
     const p = getProvider(provider);
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -1924,7 +2144,7 @@ app.post("/api/copy/:provider/:project", async (req, res) => {
 
     let targetExists = false;
     try {
-      await p.readFile(actor.token, project, toPath);
+      await p.readFile(actor.token, project, toPath, branch);
       targetExists = true;
     } catch {
       targetExists = false;
@@ -1934,7 +2154,7 @@ app.post("/api/copy/:provider/:project", async (req, res) => {
       return;
     }
 
-    const buf = await p.readFileRaw(actor.token, project, fromPath);
+    const buf = await p.readFileRaw(actor.token, project, fromPath, branch);
     const MAX_SIZE = 20 * 1024 * 1024;
     if (buf.byteLength > MAX_SIZE) {
       res.status(413).json({ error: "file_too_large" });
@@ -1949,7 +2169,7 @@ app.post("/api/copy/:provider/:project", async (req, res) => {
       buf.toString("base64"),
       commitMsg,
       undefined,
-      info.defaultBranch,
+      branch,
       actor.author,
       true
     );
@@ -2022,12 +2242,13 @@ app.post("/api/move-folder/:provider/:project", async (req, res) => {
 
     const p = getProvider(provider);
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
     }
 
-    const all = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const all = await p.listAllFiles(actor.token, project, branch);
     const inside = all.map((f) => f.path).filter((x) => x.startsWith(fromPath + "/"));
     if (inside.length === 0) {
       res.status(404).json({ error: "folder_not_found" });
@@ -2053,7 +2274,7 @@ app.post("/api/move-folder/:provider/:project", async (req, res) => {
     }
 
     const commitMsg = message || `docs: 搬移資料夾 ${fromPath} → ${toPath}`;
-    await p.batchMoveFiles(actor.token, project, moves, commitMsg, info.defaultBranch, actor.author);
+    await p.batchMoveFiles(actor.token, project, moves, commitMsg, branch, actor.author);
     res.json({ ok: true, from: fromPath, to: toPath, count: moves.length });
   } catch (e) {
     handleError(res, e);
@@ -2106,12 +2327,13 @@ app.delete("/api/folder/:provider/:project/*", async (req, res) => {
 
     const p = getProvider(provider);
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
     }
 
-    const all = await p.listAllFiles(actor.token, project, info.defaultBranch);
+    const all = await p.listAllFiles(actor.token, project, branch);
     const inside = all.map((f) => f.path).filter((x) => x.startsWith(folderPath + "/"));
     if (inside.length === 0) {
       res.status(404).json({ error: "folder_not_found" });
@@ -2128,7 +2350,7 @@ app.delete("/api/folder/:provider/:project/*", async (req, res) => {
     }
 
     const commitMsg = message || `docs: 刪除資料夾 ${folderPath}（${inside.length} 個檔案）`;
-    await p.batchDeleteFiles(actor.token, project, inside, commitMsg, info.defaultBranch, actor.author);
+    await p.batchDeleteFiles(actor.token, project, inside, commitMsg, branch, actor.author);
     res.json({ ok: true, path: folderPath, count: inside.length });
   } catch (e) {
     handleError(res, e);
@@ -2235,6 +2457,7 @@ app.post("/api/upload/:provider/:project", async (req, res) => {
 
     const p = getProvider(provider);
     const info = await getRepoCached(provider, actor.token, project);
+    const branch = await effectiveBranch(req, provider, p, actor.token, project, info);
     if (!info.canPush) {
       res.status(403).json({ error: "no_write_permission" });
       return;
@@ -2248,7 +2471,7 @@ app.post("/api/upload/:provider/:project", async (req, res) => {
         project,
         validFiles,
         commitMsg,
-        info.defaultBranch,
+        branch,
         actor.author
       );
       res.json({
@@ -2268,7 +2491,7 @@ app.post("/api/upload/:provider/:project", async (req, res) => {
             f.contentBase64,
             commitMsg,
             undefined,
-            info.defaultBranch,
+            branch,
             actor.author,
             true
           );
@@ -2297,10 +2520,8 @@ app.get("/api/collab/config", (req, res) => {
     res.json({ enabled: false, user: null });
     return;
   }
-  const parts = docKey.split("/");
-  const provider = parts[0];
-  const project = parts.length >= 3 && isProviderName(provider) ? decodeURIComponent(parts[1]) : undefined;
-  const actor = project && isProviderName(provider) ? actorFor(req, provider, project) : {};
+  const parsed = parseCollabDocKey(docKey);
+  const actor = parsed ? actorFor(req, parsed.provider, parsed.project) : {};
   const name = collabUserName(req, actor);
   res.json({ enabled: true, user: { name, color: collabColorFor(name) } });
 });
@@ -2317,10 +2538,8 @@ app.post("/api/collab/flush", async (req, res) => {
     res.json({ ok: false, lastSavedAt: null });
     return;
   }
-  const parts = docKey.split("/");
-  const provider = parts[0];
-  const project = parts.length >= 3 && isProviderName(provider) ? decodeURIComponent(parts[1]) : undefined;
-  const actor = project && isProviderName(provider) ? actorFor(req, provider, project) : {};
+  const parsed = parseCollabDocKey(docKey);
+  const actor = parsed ? actorFor(req, parsed.provider, parsed.project) : {};
   collabUserName(req, actor); // 與 GET /api/collab/config 同一套身分推導
   const lastSavedAt = await flushRoom(docKey);
   res.json({ ok: true, lastSavedAt });
@@ -2511,7 +2730,7 @@ app.get("/go/:alias", (req, res) => {
 
 // ── prefs ──────────────────────────────────────────────
 app.post("/api/prefs/last-repo", (req, res) => {
-  const { provider, project, file } = req.body as { provider?: string; project?: string; file?: string | null };
+  const { provider, project, file, branch } = req.body as { provider?: string; project?: string; file?: string | null; branch?: string | null };
   if (!provider || !isProviderName(provider) || typeof project !== "string" || !project.trim()) {
     res.status(400).json({ error: "invalid parameters" });
     return;
@@ -2522,13 +2741,19 @@ app.post("/api/prefs/last-repo", (req, res) => {
     return;
   }
   const filePath = typeof file === "string" && file.trim() ? file.trim() : null;
+  const branchName = norm.provider === "gitea" && typeof branch === "string" && branch ? branch : null;
 
   const s = req.nbSession ?? getSession(req.cookies?.[COOKIE]);
   if (s) {
-    setLastRepo(`${s.provider}:${s.login}`, norm.provider, norm.projectPath, filePath);
+    setLastRepo(`${s.provider}:${s.login}`, norm.provider, norm.projectPath, filePath, branchName);
   }
 
-  const payload = { provider: norm.provider, project: norm.projectPath, file: filePath };
+  const payload = {
+    provider: norm.provider,
+    project: norm.projectPath,
+    file: filePath,
+    ...(branchName ? { branch: branchName } : {}),
+  };
   res.cookie("nb_last", encodeURIComponent(JSON.stringify(payload)), {
     httpOnly: true,
     sameSite: "lax",
@@ -2544,22 +2769,63 @@ app.post("/api/prefs/last-repo", (req, res) => {
 app.post("/api/share", async (req, res) => {
   const s = requireAuth(req, res);
   if (!s) return;
-  const { repo, path: filePath, paths, title } = req.body as {
+  const { provider: requestedProvider, repo: requestedRepo, path: filePath, paths, title, branch } = req.body as {
+    provider?: unknown;
     repo?: string;
     path?: string;
     paths?: string[];
     title?: string;
+    branch?: unknown;
   };
-  if (!repo) {
+  const providerValue = requestedProvider === undefined ? s.provider : requestedProvider;
+  if (typeof providerValue !== "string" || !isProviderName(providerValue)) {
+    res.status(400).json({ error: "invalid provider" });
+    return;
+  }
+  const provider = providerValue;
+  if (!requestedRepo) {
     res.status(400).json({ error: "repo required" });
     return;
+  }
+  const normalized = normalizeProjectInput(requestedRepo, provider);
+  if (!normalized || normalized.provider !== provider) {
+    res.status(400).json({ error: "invalid_repo" });
+    return;
+  }
+  const repo = normalized.projectPath;
+  const actor = actorFor(req, provider, repo);
+  if (!actor.authed) {
+    res.status(401).json({ error: "not_authenticated" });
+    return;
+  }
+  if (provider !== s.provider && !(openTokenReady(provider) && getMode(provider, repo) === "open")) {
+    res.status(400).json({ error: "share_actor_unavailable" });
+    return;
+  }
+  let branchName: string | null;
+  try {
+    branchName = parseRequestedBranch(provider, branch) ?? null;
+    await getProvider(provider).getRepo(actor.token, repo);
+  } catch (e) {
+    handleError(res, e);
+    return;
+  }
+  if (branchName) {
+    try {
+      const p = getProvider("gitea");
+      if (!p.validateBranch) throw new ProviderError(500, "Gitea branch validator unavailable");
+      await p.validateBranch(actor.token, repo, branchName);
+    } catch (e) {
+      handleError(res, e);
+      return;
+    }
   }
   if (Array.isArray(paths) && paths.length > 0) {
     if (paths.length > 200 || paths.some((p) => typeof p !== "string")) {
       res.status(400).json({ error: "invalid paths" });
       return;
     }
-    const token = createShareSet(s, repo, paths, title ?? null);
+    const token = createShareSet(s, repo, paths, title ?? null, branchName, provider);
     res.json({ token, url: `${BASE_URL}/s/${token}`, slidesUrl: `${BASE_URL}/s/${token}/slides` });
     return;
   }
@@ -2567,7 +2833,7 @@ app.post("/api/share", async (req, res) => {
     res.status(400).json({ error: "path or paths required" });
     return;
   }
-  const token = createShare(s, repo, filePath, title ?? null);
+  const token = createShare(s, repo, filePath, title ?? null, branchName, provider);
   res.json({ token, url: `${BASE_URL}/s/${token}`, slidesUrl: `${BASE_URL}/s/${token}/slides` });
 });
 
@@ -2584,30 +2850,40 @@ app.delete("/api/share/:token", (req, res) => {
   res.status(ok ? 200 : 404).json({ ok });
 });
 
-// 公開端點：訪客不需登入。內容用「分享者」的 session token + 該分享的 provider 即時拉。
+// 公開端點：open repo 用目前 open token；其他模式才使用分享者的同 provider session token。
 function resolveShare(req: express.Request, res: express.Response) {
   const share = getShare(req.params.token);
   if (!share) {
     res.status(404).json({ error: "share_not_found" });
     return null;
   }
-  // TODO: 分享連結在擁有者 token 過期後會失效（維持現有行為）
-  const owner = getSession(share.owner_sid);
-  if (!owner) {
-    res.status(410).json({ error: "share_owner_session_expired" });
-    return null;
-  }
   if (!isProviderName(share.provider)) {
     res.status(500).json({ error: "bad_share_provider" });
     return null;
   }
-  return { share, owner, provider: getProvider(share.provider) };
+  const providerName = share.provider as ProviderName;
+  let token = "";
+  if (openTokenReady(providerName) && getMode(providerName, share.repo) === "open") {
+    token = openToken(providerName);
+  } else {
+    const owner = getSession(share.owner_sid);
+    if (!owner) {
+      res.status(410).json({ error: "share_owner_session_expired" });
+      return null;
+    }
+    if (owner.provider === providerName) token = owner.token;
+  }
+  if (!token) {
+    res.status(410).json({ error: "share_actor_unavailable" });
+    return null;
+  }
+  return { share, token, provider: getProvider(providerName) };
 }
 
 app.get("/api/public/:token", async (req, res) => {
   const ctx = resolveShare(req, res);
   if (!ctx) return;
-  const { share, owner, provider } = ctx;
+  const { share, token, provider } = ctx;
   try {
     if (share.kind === "set" && share.paths) {
       const items = JSON.parse(share.paths) as string[];
@@ -2620,7 +2896,7 @@ app.get("/api/public/:token", async (req, res) => {
       });
       return;
     }
-    const f = await provider.readFile(owner.token, share.repo, share.path);
+    const f = await provider.readFile(token, share.repo, share.path, share.branch ?? undefined);
     res.json({
       kind: "doc",
       title: share.title || share.path.split("/").pop(),
@@ -2637,7 +2913,7 @@ app.get("/api/public/:token", async (req, res) => {
 app.get("/api/public/:token/file/*", async (req, res) => {
   const ctx = resolveShare(req, res);
   if (!ctx) return;
-  const { share, owner, provider } = ctx;
+  const { share, token, provider } = ctx;
   const filePath = (req.params as Record<string, string>)[0] || "";
   const allowed: string[] = share.kind === "set" && share.paths ? JSON.parse(share.paths) : [share.path];
   if (!allowed.includes(filePath)) {
@@ -2645,7 +2921,7 @@ app.get("/api/public/:token/file/*", async (req, res) => {
     return;
   }
   try {
-    const f = await provider.readFile(owner.token, share.repo, filePath);
+    const f = await provider.readFile(token, share.repo, filePath, share.branch ?? undefined);
     res.json({ path: f.path, content: f.content });
   } catch (e) {
     handleError(res, e);
@@ -2655,10 +2931,10 @@ app.get("/api/public/:token/file/*", async (req, res) => {
 app.get("/api/public/:token/raw/*", async (req, res) => {
   const ctx = resolveShare(req, res);
   if (!ctx) return;
-  const { share, owner, provider } = ctx;
+  const { share, token, provider } = ctx;
   const filePath = (req.params as Record<string, string>)[0] || "";
   try {
-    const buf = await provider.readFileRaw(owner.token, share.repo, filePath);
+    const buf = await provider.readFileRaw(token, share.repo, filePath, share.branch ?? undefined);
     sendRaw(res, filePath, buf);
   } catch (e) {
     if (e instanceof ProviderError) {
@@ -2688,8 +2964,11 @@ app.get("/", (req, res, next) => {
   if (s) {
     const last = getLastRepo(`${s.provider}:${s.login}`);
     if (last) {
-      const fStr = last.file ? `?f=${encodeURIComponent(last.file)}` : "";
-      res.redirect(`/edit/${encodeURIComponent(last.provider)}/${encodeURIComponent(last.project)}${fStr}`);
+      const query = new URLSearchParams();
+      if (last.provider === "gitea" && last.branch) query.set("ref", last.branch);
+      if (last.file) query.set("f", last.file);
+      const q = query.toString();
+      res.redirect(`/edit/${encodeURIComponent(last.provider)}/${encodeURIComponent(last.project)}${q ? `?${q}` : ""}`);
       return;
     }
   }
@@ -2698,10 +2977,13 @@ app.get("/", (req, res, next) => {
   if (req.cookies?.nb_last) {
     try {
       const raw = decodeURIComponent(req.cookies.nb_last);
-      const data = JSON.parse(raw) as { provider?: string; project?: string; file?: string | null };
+      const data = JSON.parse(raw) as { provider?: string; project?: string; file?: string | null; branch?: string | null };
       if (data && typeof data.provider === "string" && typeof data.project === "string" && data.project) {
-        const fStr = typeof data.file === "string" && data.file ? `?f=${encodeURIComponent(data.file)}` : "";
-        res.redirect(`/edit/${encodeURIComponent(data.provider)}/${encodeURIComponent(data.project)}${fStr}`);
+        const query = new URLSearchParams();
+        if (data.provider === "gitea" && typeof data.branch === "string" && data.branch) query.set("ref", data.branch);
+        if (typeof data.file === "string" && data.file) query.set("f", data.file);
+        const q = query.toString();
+        res.redirect(`/edit/${encodeURIComponent(data.provider)}/${encodeURIComponent(data.project)}${q ? `?${q}` : ""}`);
         return;
       }
     } catch {
@@ -2747,17 +3029,20 @@ function collabOptions() {
       return /^(1|true|yes)$/i.test(process.env.NOTE_COLLAB || "");
     },
     enabled(docKey: string) {
-      return collabEnvDocs().has(docKey);
+      const docs = collabEnvDocs();
+      if (docs.has(docKey)) return true;
+      const parsed = parseCollabDocKey(docKey);
+      return Boolean(
+        parsed?.branch &&
+        docs.has(`${parsed.provider}/${encodeURIComponent(parsed.project)}/${parsed.filePath}`)
+      );
     },
     async authorize({ cookies, docKey }: { cookies: Record<string, string>; docKey: string }) {
       // docKey = `${provider}/${encodeURIComponent(projectPath)}/${filePath}`
       // 前兩段是 provider 與 project，其餘（可能含 /）全部是檔案路徑
-      const parts = docKey.split("/");
-      if (parts.length < 3) return { ok: false };
-      const provider = parts[0];
-      const project = decodeURIComponent(parts[1]);
-      const filePath = parts.slice(2).join("/");
-      if (!isProviderName(provider)) return { ok: false };
+      const parsed = parseCollabDocKey(docKey);
+      if (!parsed) return { ok: false };
+      const { provider, project, filePath, branch } = parsed;
 
       const fake = { cookies } as unknown as express.Request;
       fake.nbSession = await resolveLiveSession(fake);
@@ -2770,7 +3055,13 @@ function collabOptions() {
       // 要有寫入權才進房（唯讀連線是後面的步驟）
       let canPush = false;
       try {
-        canPush = (await getProvider(provider).getRepo(actor.token, project)).canPush;
+        const p = getProvider(provider);
+        const info = await p.getRepo(actor.token, project);
+        if (branch) {
+          if (!p.validateBranch) return { ok: false };
+          await p.validateBranch(actor.token, project, branch);
+        }
+        canPush = info.canPush;
       } catch {
         canPush = false;
       }
@@ -2783,7 +3074,7 @@ function collabOptions() {
         user: { name, color: collabColorFor(name) },
         readFile: async () => {
           try {
-            const f = await getProvider(provider).readFile(actor.token, project, filePath);
+            const f = await getProvider(provider).readFile(actor.token, project, filePath, branch);
             return f.content;
           } catch {
             return null; // 新檔或讀不到 → 空房間
@@ -2795,7 +3086,7 @@ function collabOptions() {
           let sha: string | undefined;
           let current: string | null = null;
           try {
-            const f = await p.readFile(actor.token, project, filePath);
+            const f = await p.readFile(actor.token, project, filePath, branch);
             sha = f.sha;
             current = f.content;
           } catch {
@@ -2811,7 +3102,7 @@ function collabOptions() {
             content,
             `docs: update ${filePath} via note 共筆`,
             sha,
-            info.defaultBranch,
+             provider === "gitea" && branch ? branch : info.defaultBranch,
             actor.author,
             false
           );

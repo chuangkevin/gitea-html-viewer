@@ -1,13 +1,18 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type AccessMode, type Me } from "../lib/api";
-import { renderMarkdown, type LinkContext } from "../lib/markdown";
+import { linkContextAtPath, renderMarkdown, type LinkContext } from "../lib/markdown";
 import {
-  giteaRepoRedirectFromFileParam,
+  giteaRepoRedirectPlan,
+  collabDocumentKey,
+  directSlidesUrl,
+  workspaceDocumentKey,
+  workspaceSearchParams,
   ProviderIcon,
   providerLabel,
   type ProviderName,
 } from "../lib/providers";
+import { RequestGeneration, shouldApplyDocumentRead } from "../lib/request-guards";
 import FileTree, { buildTree, flattenFiles } from "../components/FileTree";
 import IdentityPicker from "../components/IdentityPicker";
 import RepoSelector, { touchRecent } from "../components/RepoSelector";
@@ -51,6 +56,7 @@ import {
   writeSidebarWidth,
 } from "../lib/sidebar-width";
 import { nextAutosaveDelay } from "../lib/autosave-schedule";
+import { flushPendingQueueJobs } from "../lib/pending-queue";
 
 // CodeMirror 是整包裡最重的一塊。切成獨立 chunk，只有真的要編輯時才下載——
 // 分享頁／簡報頁／唯讀預覽的訪客完全不用付這個成本。
@@ -204,14 +210,24 @@ export default function Workspace() {
   const repoLeaf = projectPath.split("/").pop() || projectPath;
   const [repoSelectorCollapsed, setRepoSelectorCollapsed] = useState(false);
   const [params, setParams] = useSearchParams();
+  const branch = provider === "gitea" ? params.get("ref") || undefined : undefined;
   const activePath = params.get("f") || "";
+  const [me, setMe] = useState<Me | null>(null);
+  const identityId = me?.login
+    ? `${me.provider}:${me.login}`
+    : me?.team?.selected
+    ? `ident:${me.team.selected.name}`
+    : null;
   // 編輯器的文件識別鍵＝repo ＋ 檔案路徑。換檔就換 key、換 EditorState，
   // undo 歷史才不會跨檔（在 B 檔按 Cmd+Z 倒回 A 檔的內容）。
   // 只用 activePath 不夠：不同 repo 可能有同名檔案（兩個 README.md），
   // 那樣切 repo 不會重建，會把 A repo 的歷史帶到 B repo。
-  const editorDocKey = `${refPath}/${activePath}`;
+  const editorDocKey = workspaceDocumentKey(provider, projectPath, branch, activePath, identityId);
+  const collabDocKey = collabDocumentKey(provider, projectPath, branch, activePath);
+  const setWorkspaceParams = useCallback((next: Record<string, string>) => {
+    setParams(workspaceSearchParams(branch, next));
+  }, [branch, setParams]);
 
-  const [me, setMe] = useState<Me | null>(null);
   const [files, setFiles] = useState<string[] | null>(null);
   const [canWrite, setCanWrite] = useState(false);
   const [collab, setCollab] = useState<CollabSession | null>(null);
@@ -254,21 +270,46 @@ export default function Workspace() {
   const [rawGrant, setRawGrant] = useState("");
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
   const [activeFolder, setActiveFolder] = useState("");
-  const [reloadKey, setReloadKey] = useState(0); // 換身分後強制重讀檔案樹與檔案內容
+  const [reloadKey, setReloadKey] = useState(0);
 
   // 自動存檔用。pendingSaveRef ＝「還沒成功寫回 GitLab 的快照」。
   // 用 ref 不用 state：切換檔案時 effect cleanup 必須拿得到「上一個檔案」的內容才能 flush。
   // 拖到預覽窗格上時的視覺回饋（預覽是渲染後 HTML，沒有 caret，要讓使用者知道放得進去）
   const [previewDropActive, setPreviewDropActive] = useState(false);
-  const pendingSaveRef = useRef<{ path: string; content: string; sha?: string } | null>(null);
+  type PendingSave = {
+    docKey: string;
+    identityId: string | null;
+    refPath: string;
+    branch?: string;
+    path: string;
+    content: string;
+    sha?: string;
+  };
+  const pendingSaveRef = useRef<Map<string, PendingSave>>(new Map());
   // 互動 HTML 頁排入佇列、還沒落地的寫入（jobId → 檔案與來源群組）
-  const pendingQueueRef = useRef<Map<string, { path: string; sourceGroup: string }>>(new Map());
+  const pendingQueueRef = useRef<Map<string, {
+    docKey: string;
+    identityId: string | null;
+    requestGeneration: number;
+    provider: string;
+    project: string;
+    refPath: string;
+    branch?: string;
+    path: string;
+    sourceGroup: string;
+  }>>(new Map());
+  const workspaceRequestsRef = useRef(new RequestGeneration());
   const savingRef = useRef(false);
   const dirtySinceRef = useRef<number | null>(null);
   const lastEditAtRef = useRef<number | null>(null);
   // render 期間直接賦值，讓 async callback 永遠讀得到最新值
   const activePathRef = useRef(activePath);
   activePathRef.current = activePath;
+  const editorDocKeyRef = useRef(editorDocKey);
+  editorDocKeyRef.current = editorDocKey;
+  const repoBranchKey = workspaceDocumentKey(provider, projectPath, branch, "", identityId);
+  const repoBranchKeyRef = useRef(repoBranchKey);
+  repoBranchKeyRef.current = repoBranchKey;
   const shaRef = useRef(sha);
   shaRef.current = sha;
   const contentRef = useRef(content);
@@ -400,21 +441,41 @@ export default function Workspace() {
     }
   }, [me?.giteaUrl]);
 
-  useEffect(() => {
-    const redirect = giteaRepoRedirectFromFileParam(activePath, giteaHost);
-    if (!redirect) return;
-    pendingSaveRef.current = null;
-    window.location.replace(redirect);
+  const activePathIsGiteaUrl = useMemo(() => {
+    if (!giteaHost || !/^https?:\/\//i.test(activePath)) return false;
+    try {
+      return new URL(activePath).host.toLowerCase() === giteaHost.toLowerCase();
+    } catch {
+      return false;
+    }
   }, [activePath, giteaHost]);
+  const resolvingPastedUrl = /^https?:\/\//i.test(activePath) && (me === null || activePathIsGiteaUrl);
+
+  useEffect(() => {
+    const plan = giteaRepoRedirectPlan(activePath, giteaHost);
+    if (!plan) {
+      if (activePathIsGiteaUrl) setError("無法解析 Gitea branch URL");
+      return;
+    }
+    pendingSaveRef.current.clear();
+    if (!plan.resolveBranch) {
+      window.location.replace(plan.redirect);
+      return;
+    }
+    void api.resolveGiteaUrl(activePath).then((resolved) => {
+      const query = new URLSearchParams({ ref: resolved.branch });
+      if (resolved.path) query.set("f", resolved.path);
+      window.location.replace(`/edit/gitea/${encodeURIComponent(resolved.project)}?${query.toString()}`);
+    }).catch((e) => setError(String((e as Error).message || e)));
+  }, [activePath, giteaHost, activePathIsGiteaUrl]);
 
   useEffect(() => {
     void refreshMe();
   }, [refreshMe]);
 
-  // 團隊模式：選了成員（或改選別人）→ 重抓身分、檔案樹與目前檔案
-  const handleIdentityChange = useCallback(() => {
-    void refreshMe();
-    setReloadKey((k) => k + 1);
+  // IdentityPicker 已經切換 server cookie；先重抓身分，identity-aware keys 會重載目前 repo。
+  const handleIdentityChange = useCallback(async () => {
+    await refreshMe();
   }, [refreshMe]);
 
   function persistWidth(px: number) {
@@ -470,40 +531,57 @@ export default function Workspace() {
   }
 
   const loadFiles = useCallback(() => {
+    if (resolvingPastedUrl) return;
     if (!hasRepo) {
       setAccessReady(true);
       return;
     }
     setNeedLogin(false);
+    const requestRepoKey = repoBranchKey;
+    const requestGeneration = workspaceRequestsRef.current.current();
     api
-      .files(refPath)
+      .files(refPath, branch)
       .then((r) => {
+        if (repoBranchKeyRef.current !== requestRepoKey || !workspaceRequestsRef.current.isCurrent(requestGeneration)) return;
         setFiles(r.files.map((f) => f.path));
         setCanWrite(r.canWrite);
         setIsPrivate(r.private);
         if (r.access) setAccessMode(r.access);
         if (r.guestName !== undefined && r.guestName !== null) setGuestName(r.guestName);
-        touchRecent(provider, projectPath);
+        touchRecent(provider, projectPath, branch);
+        if (me?.login || me?.team?.selected) {
+          void api.updateUserPrefs({
+            action: "touch",
+            provider,
+            project: projectPath,
+            branch: provider === "gitea" ? branch ?? null : null,
+            lastSeenAt: Date.now(),
+          }).catch(() => {});
+        }
         setAccessReady(true);
       })
       .catch((e) => {
+        if (repoBranchKeyRef.current !== requestRepoKey || !workspaceRequestsRef.current.isCurrent(requestGeneration)) return;
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       })
-      .finally(() => setAccessReady(true));
-  }, [refPath, reloadKey, hasRepo, provider, projectPath]);
+      .finally(() => {
+        if (repoBranchKeyRef.current === requestRepoKey && workspaceRequestsRef.current.isCurrent(requestGeneration)) setAccessReady(true);
+      });
+  }, [refPath, reloadKey, hasRepo, provider, projectPath, branch, resolvingPastedUrl, me?.login, me?.team?.selected, repoBranchKey]);
 
   useEffect(() => {
     setAccessReady(false);
-  }, [refPath, reloadKey, hasRepo]);
+    setFiles(null);
+  }, [refPath, reloadKey, hasRepo, branch, identityId]);
 
   useEffect(loadFiles, [loadFiles]);
 
   useEffect(() => {
     if (files !== null && hasRepo) {
-      api.setLastRepo(provider, projectPath, activePath).catch(() => {});
+      api.setLastRepo(provider, projectPath, activePath, branch).catch(() => {});
     }
-  }, [provider, projectPath, activePath, files, hasRepo]);
+  }, [provider, projectPath, activePath, files, hasRepo, branch]);
 
   const activeKind = activePath ? kindOf(activePath) : null;
   const readOnly = !canWrite;
@@ -527,24 +605,34 @@ export default function Workspace() {
   const editorLivePreview = effectiveView === "preview";
 
   const hasIdentity = Boolean(me?.login || me?.team?.selected);
-  const identityId = me?.login
-    ? `${me.provider}:${me.login}`
-    : me?.team?.selected
-    ? `ident:${me.team.selected.name}`
-    : null;
 
   useEffect(() => {
     if (!isPrivate || accessMode === "open" || !hasIdentity || rawGrant) return;
-    api.rawGrant(provider, projectPath).then((r) => setRawGrant(r.grant)).catch(() => {});
-  }, [isPrivate, accessMode, hasIdentity, rawGrant, provider, projectPath]);
+    const requestRepoKey = repoBranchKey;
+    const requestGeneration = workspaceRequestsRef.current.current();
+    api.rawGrant(provider, projectPath).then((r) => {
+      if (repoBranchKeyRef.current === requestRepoKey && workspaceRequestsRef.current.isCurrent(requestGeneration)) setRawGrant(r.grant);
+    }).catch(() => {});
+  }, [isPrivate, accessMode, hasIdentity, rawGrant, provider, projectPath, repoBranchKey]);
+
+  useEffect(() => {
+    setRawGrant("");
+  }, [repoBranchKey]);
 
     // open 模式的 repo 本來就免登入可讀，掛 grant 只會多一個會過期的東西，
   // 讓連結在 grant 失效後反而打不開。只有真正需要授權時才掛。
   const needsGrant = isPrivate && accessMode !== "open";
-  const rawBase = needsGrant && rawGrant ? `/rawt/${rawGrant}` : "/raw";
+  const rawBase = branch
+    ? needsGrant && rawGrant
+      ? `/rawtb/${rawGrant}/${encodeURIComponent(branch)}`
+      : `/rawb/${encodeURIComponent(branch)}`
+    : needsGrant && rawGrant ? `/rawt/${rawGrant}` : "/raw";
 
   useEffect(() => {
-    if (!activePath) return;
+    if (!activePath || resolvingPastedUrl) return;
+    const requestDocKey = editorDocKey;
+    const requestGeneration = workspaceRequestsRef.current.current();
+    const pendingAtStart = pendingSaveRef.current.get(requestDocKey);
     setSave("clean");
     dirtySinceRef.current = null;
     lastEditAtRef.current = null;
@@ -552,16 +640,28 @@ export default function Workspace() {
     const k = kindOf(activePath);
     if (k !== "md" && k !== "text" && k !== "html") return;
     api
-      .readFile(refPath, activePath)
+      .readFile(refPath, activePath, branch)
       .then((f) => {
+        if (!shouldApplyDocumentRead(
+          requestDocKey,
+          editorDocKeyRef.current,
+          pendingAtStart,
+          pendingSaveRef.current.get(requestDocKey)
+        ) || !workspaceRequestsRef.current.isCurrent(requestGeneration)) return;
         setContent(f.content);
         setSha(f.sha);
         // 遠端內容已載入，這個路徑的舊 pending 失效
-        if (pendingSaveRef.current?.path === activePath) pendingSaveRef.current = null;
+        pendingSaveRef.current.delete(requestDocKey);
       })
       .catch((e) => {
+        if (!shouldApplyDocumentRead(
+          requestDocKey,
+          editorDocKeyRef.current,
+          pendingAtStart,
+          pendingSaveRef.current.get(requestDocKey)
+        ) || !workspaceRequestsRef.current.isCurrent(requestGeneration)) return;
         if (isNewFileLoadError(e)) {
-          const pending = pendingSaveRef.current?.path === activePath ? pendingSaveRef.current : null;
+          const pending = pendingSaveRef.current.get(requestDocKey) ?? null;
           setContent(pending?.content ?? "");
           setSha(undefined);
           if (pending) setSave("dirty");
@@ -570,7 +670,7 @@ export default function Workspace() {
         if ((e as Error).message === "login_required") setNeedLogin(true);
         else setError(String((e as Error).message || e));
       });
-  }, [refPath, activePath, reloadKey]);
+  }, [refPath, activePath, reloadKey, branch, resolvingPastedUrl, editorDocKey]);
 
   const filesRef = useRef<string[] | null>(files);
   useEffect(() => {
@@ -601,7 +701,7 @@ export default function Workspace() {
         return { name: "", source: "anonymous" };
       },
       readFile: async (path: string) => {
-        const file = await api.readFile(refPath, path);
+        const file = await api.readFile(refPath, path, branch);
         return file.content;
       },
       saveFile: async (path: string, contentStr?: string, contentBase64?: string) => {
@@ -611,24 +711,47 @@ export default function Workspace() {
           refPath,
           [{ path, content: contentStr, contentBase64 }],
           sourceGroup,
-          msg
+          msg,
+          branch
         );
-        pendingQueueRef.current.set(res.jobId, { path, sourceGroup });
+        pendingQueueRef.current.set(res.jobId, {
+          docKey: editorDocKey,
+          identityId,
+          requestGeneration: workspaceRequestsRef.current.current(),
+          provider,
+          project: projectPath,
+          refPath,
+          branch,
+          path,
+          sourceGroup,
+        });
         return { jobId: res.jobId };
       },
       saveResult: async (jobId: string) => {
         const info = pendingQueueRef.current.get(jobId);
         const deadline = Date.now() + 60_000;
         for (;;) {
-          const s = await api.enqueueStatus(provider, projectPath, info?.sourceGroup);
+          const s = await api.enqueueStatus(
+            jobId,
+            info?.provider ?? provider,
+            info?.project ?? projectPath,
+            info?.sourceGroup,
+            info?.branch
+          );
           if (s.status === "done" || s.status === "conflict" || s.status === "error") {
-            pendingQueueRef.current.delete(jobId);
-            if (s.status === "done" && info && info.path === activePathRef.current) {
+            if (s.status === "done") pendingQueueRef.current.delete(jobId);
+            if (
+              s.status === "done" &&
+              info &&
+              info.docKey === editorDocKeyRef.current &&
+              workspaceRequestsRef.current.isCurrent(info.requestGeneration)
+            ) {
               // 遠端已更新，同步編輯器的 sha，否則下一次編輯存檔會誤判衝突
               try {
-                const cur = await api.readFile(refPath, info.path);
+                const cur = await api.readFile(info.refPath, info.path, info.branch);
+                if (info.docKey !== editorDocKeyRef.current) return { status: s.status };
                 setSha(cur.sha);
-                if (pendingSaveRef.current?.path === info.path) pendingSaveRef.current = null;
+                pendingSaveRef.current.delete(info.docKey);
                 dirtySinceRef.current = null;
                 lastEditAtRef.current = null;
                 setSave("clean");
@@ -639,7 +762,6 @@ export default function Workspace() {
             return { status: s.status, message: s.error, conflicts: s.conflicts };
           }
           if (Date.now() > deadline) {
-            pendingQueueRef.current.delete(jobId);
             return { status: "error" as const, message: "等不到落地結果（仍在背景重試）" };
           }
           await new Promise((r) => setTimeout(r, 700));
@@ -647,13 +769,13 @@ export default function Workspace() {
       },
       openPath: (path: string) => {
         setActiveFolder("");
-        setParams({ f: path });
+        setWorkspaceParams({ f: path });
       },
       listFiles: async (targetPath: string, recursive?: boolean) => {
         let fileList = filesRef.current;
         if (!fileList) {
           try {
-            const r = await api.files(refPath);
+            const r = await api.files(refPath, branch);
             fileList = r.files.map((f) => f.path);
           } catch {
             return [];
@@ -765,33 +887,36 @@ export default function Workspace() {
     return cleanup;
     // effectiveView 與 showMarkedPreview 要進依賴：切檢視模式會讓 iframe 掛載／卸載，
     // 沒有它們，橋在 iframe 重新出現時不會重建，互動式 HTML 頁就存不了檔。
-  }, [activeKind, activePath, refPath, sha, setParams, effectiveView, showMarkedPreview]);
+  }, [activeKind, activePath, refPath, sha, setWorkspaceParams, effectiveView, showMarkedPreview, branch, editorDocKey, identityId]);
 
   /**
    * 把一份快照寫回 GitLab。快照而非直接讀 state，是因為切檔案 / 關頁面時
    * 要能把「上一個檔案」的內容補存回去。
    */
   async function saveSnapshot(
-    snap: { path: string; content: string; sha?: string },
+    snap: PendingSave,
     opts?: { force?: boolean }
-  ) {
-    if (!snap.path || !canWrite) return;
-    if (savingRef.current) return; // 已有 in-flight，結束後 finally 會重新 arm
-    const isCurrent = () => snap.path === activePathRef.current;
+  ): Promise<boolean> {
+    if (!snap.path) return true;
+    if (!canWrite || savingRef.current) return false;
+    const isCurrent = () => snap.docKey === editorDocKeyRef.current;
     savingRef.current = true;
+    let saved = false;
     if (isCurrent()) setSave("saving");
     try {
-      const r = await api.saveFile(refPath, snap.path, snap.content, opts?.force ? undefined : snap.sha);
-      if (pendingSaveRef.current?.path === snap.path) {
-        if (pendingSaveRef.current.content === snap.content) {
-          pendingSaveRef.current = null; // 完整寫回了
+      const r = await api.saveFile(snap.refPath, snap.path, snap.content, opts?.force ? undefined : snap.sha, undefined, undefined, snap.branch);
+      saved = true;
+      const pending = pendingSaveRef.current.get(snap.docKey);
+      if (pending) {
+        if (pending.content === snap.content) {
+          pendingSaveRef.current.delete(snap.docKey); // 完整寫回了
         } else {
           // 存檔期間又打了字：保留 pending，但要換成新的 sha，否則下一次會誤判 409
-          pendingSaveRef.current.sha = r.sha;
+          pending.sha = r.sha;
         }
       }
       if (isCurrent()) {
-        if (pendingSaveRef.current) {
+        if (pendingSaveRef.current.has(snap.docKey)) {
           // 這一輪已落地；剩下的未存內容開新的閒置／封頂視窗，避免封頂後連續狂存
           const now = Date.now();
           dirtySinceRef.current = now;
@@ -803,24 +928,78 @@ export default function Workspace() {
         setSha(r.sha);
         // 存檔期間又打字的話 save 已經是 "dirty"，不要蓋掉
         setSave((s) => (s === "saving" ? "saved" : s));
-        setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 2000);
+        setTimeout(() => {
+          if (isCurrent()) setSave((s) => (s === "saved" ? "clean" : s));
+        }, 2000);
       }
     } catch (e) {
       const err = e as Error & { status?: number };
       if (err.status === 409) {
         // 遠端已被別人改過。停掉自動存檔，交給使用者決定，不要自動覆蓋別人的 commit。
-        setSave("conflict");
-        setError("這個檔案在遠端已被改過，自動存檔已暫停。請選擇「重新載入遠端版本」或「用我的版本覆蓋」。");
+        if (isCurrent()) {
+          setSave("conflict");
+          setError("這個檔案在遠端已被改過，自動存檔已暫停。請選擇「重新載入遠端版本」或「用我的版本覆蓋」。");
+        }
       } else {
-        setSave("error");
-        setError(String(err.message || e));
+        if (isCurrent()) {
+          setSave("error");
+          setError(String(err.message || e));
+        }
       }
     } finally {
       savingRef.current = false;
       // 還有沒寫回的內容 → 重新標 dirty，讓 debounce effect 再排一次
-      if (pendingSaveRef.current) {
+      if (pendingSaveRef.current.has(editorDocKeyRef.current)) {
         setSave((s) => (s === "conflict" || s === "error" ? s : "dirty"));
       }
+      const next = pendingSaveRef.current.values().next().value as PendingSave | undefined;
+      if (next && (saved || next.docKey !== snap.docKey)) void saveSnapshot(next);
+    }
+    return saved;
+  }
+
+  async function flushBeforeIdentityChange(): Promise<boolean> {
+    setError("");
+    try {
+      if (collab) {
+        const result = await api.collabFlush(collabDocKey);
+        if (!result.ok) throw new Error("共筆存檔失敗，身分尚未切換");
+      }
+
+      for (;;) {
+        if (savingRef.current) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          continue;
+        }
+        const pending = Array.from(pendingSaveRef.current.values()).find(
+          (item) => item.identityId === identityId
+        );
+        if (!pending) break;
+        if (!(await saveSnapshot(pending))) {
+          throw new Error("待存內容無法寫回，身分尚未切換");
+        }
+      }
+
+      const queued = Array.from(pendingQueueRef.current.entries())
+        .filter(([, info]) => info.identityId === identityId)
+        .map(([jobId, info]) => ({
+          jobId,
+          provider: info.provider,
+          project: info.project,
+          branch: info.branch,
+          sourceGroup: info.sourceGroup,
+        }));
+      await flushPendingQueueJobs(queued, {
+        flush: (entry) => api.enqueueFlush(entry.provider, entry.project, entry.sourceGroup, entry.branch, entry.jobId),
+        status: (entry) => api.enqueueStatus(entry.jobId, entry.provider, entry.project, entry.sourceGroup, entry.branch),
+      }, {
+        onDone: (entry) => pendingQueueRef.current.delete(entry.jobId),
+      });
+      workspaceRequestsRef.current.invalidate();
+      return true;
+    } catch (e) {
+      setError(String((e as Error).message || e));
+      return false;
     }
   }
 
@@ -828,28 +1007,32 @@ export default function Workspace() {
   async function handleSave() {
     if (collab) {
       if (collabFlushing) return;
+      const requestDocKey = editorDocKey;
       setCollabFlushing(true);
       try {
-        const r = await api.collabFlush(editorDocKey);
+        const r = await api.collabFlush(collabDocKey);
+        if (editorDocKeyRef.current !== requestDocKey) return;
         if (!r.ok) {
           setError("共筆存檔失敗");
           return;
         }
         if (r.lastSavedAt != null) setCollabSavedAt(r.lastSavedAt);
       } catch (e) {
-        setError(String((e as Error).message || e));
+        if (editorDocKeyRef.current === requestDocKey) {
+          setError(String((e as Error).message || e));
+        }
       } finally {
-        setCollabFlushing(false);
+        if (editorDocKeyRef.current === requestDocKey) setCollabFlushing(false);
       }
       return;
     }
-    const snap = pendingSaveRef.current ?? { path: activePath, content, sha };
+    const snap = pendingSaveRef.current.get(editorDocKey) ?? { docKey: editorDocKey, identityId, refPath, branch, path: activePath, content, sha };
     await saveSnapshot(snap);
   }
 
   /** 409 衝突：放棄本機修改，重新載入遠端版本。 */
   function handleConflictReload() {
-    pendingSaveRef.current = null;
+    pendingSaveRef.current.delete(editorDocKey);
     setError("");
     setSave("clean");
     setReloadKey((k) => k + 1);
@@ -858,13 +1041,15 @@ export default function Workspace() {
   /** 409 衝突：用本機版本覆蓋遠端（先取最新 sha 再寫）。 */
   async function handleConflictOverwrite() {
     if (!activePath) return;
+    const requestDocKey = editorDocKey;
     setError("");
     try {
-      const cur = await api.readFile(refPath, activePath);
+      const cur = await api.readFile(refPath, activePath, branch);
+      if (editorDocKeyRef.current !== requestDocKey) return;
       setSha(cur.sha);
-      const snap = pendingSaveRef.current ?? { path: activePath, content, sha: cur.sha };
+      const snap = pendingSaveRef.current.get(editorDocKey) ?? { docKey: editorDocKey, identityId, refPath, branch, path: activePath, content, sha: cur.sha };
       snap.sha = cur.sha;
-      pendingSaveRef.current = snap;
+      pendingSaveRef.current.set(editorDocKey, snap);
       setSave("dirty");
       await saveSnapshot(snap);
     } catch (e) {
@@ -936,7 +1121,7 @@ export default function Workspace() {
         const { text: next, caret: fallbackCaret } = insertAsBlock(cur, pos, snippet);
         contentRef.current = next;
         setContent(next);
-        pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+        pendingSaveRef.current.set(editorDocKey, { docKey: editorDocKey, identityId, refPath, branch, path: activePathRef.current, content: next, sha: shaRef.current });
         setSave((s) => (s === "conflict" ? s : "dirty"));
         return fallbackCaret;
       }
@@ -956,7 +1141,7 @@ export default function Workspace() {
     const result = applyDocEdit(edit ? [edit] : []);
     if (result === "fallback") {
       setContent(next);
-      pendingSaveRef.current = { path: activePathRef.current, content: next, sha: shaRef.current };
+      pendingSaveRef.current.set(editorDocKey, { docKey: editorDocKey, identityId, refPath, branch, path: activePathRef.current, content: next, sha: shaRef.current });
       setSave((s) => (s === "conflict" ? s : "dirty"));
       return;
     }
@@ -1193,9 +1378,9 @@ export default function Workspace() {
       setNewFile("");
       setBusy({ label: "建立檔案中…", path: p });
       try {
-        await api.saveFile(refPath, p, "", undefined, `docs: 新增 ${p}`);
+        await api.saveFile(refPath, p, "", undefined, `docs: 新增 ${p}`, undefined, branch);
         setFiles((f) => applyAdd(f ?? [], p));
-        setParams({ f: p });
+        setWorkspaceParams({ f: p });
       } catch (err: any) {
         setError(String(err.message || err));
       } finally {
@@ -1205,18 +1390,19 @@ export default function Workspace() {
     }
     setNewFile("");
     setFiles((f) => (f ? [...f, p] : [p]));
-    setParams({ f: p });
+    setWorkspaceParams({ f: p });
     const initial = created.initial;
     setContent(initial);
     setSha(undefined);
-    pendingSaveRef.current = { path: p, content: initial, sha: undefined };
+    const newDocKey = workspaceDocumentKey(provider, projectPath, branch, p, identityId);
+    pendingSaveRef.current.set(newDocKey, { docKey: newDocKey, identityId, refPath, branch, path: p, content: initial, sha: undefined });
     setSave("dirty");
   }
 
   async function handleShare() {
     if (!activePath) return;
     const title = content.match(/^#\s+(.+)$/m)?.[1];
-    const r = await api.share(projectPath, activePath, title);
+    const r = await api.share(provider, projectPath, activePath, title, branch);
     setShareUrl({ url: r.url, slidesUrl: r.slidesUrl });
   }
 
@@ -1231,15 +1417,16 @@ export default function Workspace() {
   function startPresent(items: string[], title: string) {
     if (items.length === 0) return;
     const g = needsGrant && rawGrant ? `&grant=${rawGrant}` : "";
+    const b = branch ? `&ref=${encodeURIComponent(branch)}` : "";
     navigate(
-      `/present/${refPath}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}`
+      `/present/${refPath}?list=${encodeURIComponent(JSON.stringify(items))}&title=${encodeURIComponent(title)}${g}${b}`
     );
   }
 
   async function handleShareSet() {
     if (checkedInOrder.length === 0) return;
     try {
-      const r = await api.shareSet(projectPath, checkedInOrder, `${repoLeaf} 展示`);
+      const r = await api.shareSet(provider, projectPath, checkedInOrder, `${repoLeaf} 展示`, branch);
       setShareUrl({ url: r.url, slidesUrl: r.url });
     } catch (e) {
       setError(String((e as Error).message || e));
@@ -1262,20 +1449,23 @@ export default function Workspace() {
   useEffect(() => {
     collab?.destroy();
     setCollab(null);
+    setCollabFlushing(false);
     if (!activePath || !canWrite) return;
 
     let cancelled = false;
+    const requestGeneration = workspaceRequestsRef.current.current();
+    const isCurrentRequest = () => !cancelled && workspaceRequestsRef.current.isCurrent(requestGeneration);
     let session: CollabSession | null = null;
 
     void (async () => {
       try {
-        const cfg = await api.collabConfig(editorDocKey);
-        if (cancelled) return;
+        const cfg = await api.collabConfig(collabDocKey);
+        if (!isCurrentRequest()) return;
         if (!cfg.enabled || !cfg.user) return;
         const { createCollabSession } = await import("../lib/collab");
-        if (cancelled) return;
-        session = await createCollabSession(editorDocKey, cfg.user);
-        if (cancelled) {
+        if (!isCurrentRequest()) return;
+        session = await createCollabSession(collabDocKey, cfg.user);
+        if (!isCurrentRequest()) {
           session.destroy();
           return;
         }
@@ -1291,7 +1481,7 @@ export default function Workspace() {
     };
     // collab 刻意不進 deps：連線建立後 setCollab 不該重跑這個 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorDocKey, canWrite]);
+  }, [editorDocKey, collabDocKey, canWrite]);
 
   // 共筆：訂閱 server 寫進 Y.Map("meta") 的 lastSavedAt，給工具列顯示「上次存檔」。
   useEffect(() => {
@@ -1344,7 +1534,7 @@ export default function Workspace() {
     });
     if (delay === null) return;
     const t = setTimeout(() => {
-      const p = pendingSaveRef.current;
+      const p = pendingSaveRef.current.get(editorDocKey);
       if (p) void saveSnapshot(p);
     }, delay);
     return () => clearTimeout(t);
@@ -1354,22 +1544,20 @@ export default function Workspace() {
   useEffect(() => {
     const flush = () => {
       if (collab) return;
-      const p = pendingSaveRef.current;
+      const p = pendingSaveRef.current.get(editorDocKey);
       if (p) void saveSnapshot(p);
     };
     /** 互動頁還有排入佇列但沒落地的寫入：請 server 立刻落地（跳過安靜視窗）。 */
     const flushQueue = () => {
-      const groups = new Set<string>();
-      for (const info of pendingQueueRef.current.values()) groups.add(info.sourceGroup);
-      if (groups.size === 0) return;
-      for (const sourceGroup of groups) {
+      if (pendingQueueRef.current.size === 0) return;
+      for (const [jobId, info] of pendingQueueRef.current) {
         try {
-          const body = new Blob([JSON.stringify({ provider, project: projectPath, sourceGroup })], {
+          const body = new Blob([JSON.stringify({ provider: info.provider, project: info.project, sourceGroup: info.sourceGroup, ref: info.branch, jobId })], {
             type: "application/json",
           });
           // sendBeacon 才能在卸載過程中送出（不能用一般的 fetch）
           const ok = navigator.sendBeacon?.("/api/enqueue-flush", body);
-          if (!ok) void api.enqueueFlush(provider, projectPath, sourceGroup).catch(() => {});
+          if (!ok) void api.enqueueFlush(info.provider, info.project, info.sourceGroup, info.branch, jobId).catch(() => {});
         } catch {
           // 送不出去也還有 server 端佇列在背景重試
         }
@@ -1386,7 +1574,7 @@ export default function Workspace() {
       flushQueue();
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (pendingSaveRef.current || pendingQueueRef.current.size > 0) {
+      if (pendingSaveRef.current.size > 0 || pendingQueueRef.current.size > 0) {
         e.preventDefault();
         e.returnValue = "";
       }
@@ -1407,11 +1595,11 @@ export default function Workspace() {
   useEffect(() => {
     return () => {
       if (collab) return;
-      const p = pendingSaveRef.current;
+      const p = pendingSaveRef.current.get(editorDocKey);
       if (p) void saveSnapshot(p);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePath]);
+  }, [editorDocKey]);
 
   const linkContext = useMemo<LinkContext>(
     () => ({
@@ -1420,8 +1608,9 @@ export default function Workspace() {
       currentPath: activePath,
       files: files || [],
       rawBase,
+      branch,
     }),
-    [provider, projectPath, activePath, files, rawBase]
+    [provider, projectPath, activePath, files, rawBase, branch]
   );
   const html = useMemo(() => renderMarkdown(content, linkContext), [content, linkContext]);
 
@@ -1472,7 +1661,7 @@ export default function Workspace() {
   ): Promise<boolean> {
     let refs: { shares: number; shortLinks: { alias: string; label: string | null }[] };
     try {
-      refs = await api.pathRefs(refPath, path, kind);
+      refs = await api.pathRefs(refPath, path, kind, branch);
     } catch {
       return true; // 查不到就不擋
     }
@@ -1496,11 +1685,11 @@ export default function Workspace() {
     const toDir = to.includes("/") ? to.slice(0, to.lastIndexOf("/")) : "";
     setBusy({ label: fromDir === toDir ? "重新命名中…" : "搬移中…", path: from });
     try {
-      await api.moveFile(refPath, from, to);
+      await api.moveFile(refPath, from, to, undefined, branch);
       setFiles((f) => applyMove(f ?? [], from, to));
       // 移動的正好是開著的檔 → 同步更新網址，否則會停在已經不存在的路徑上
       if (activePathRef.current === from) {
-        setParams({ f: to });
+        setWorkspaceParams({ f: to });
       }
     } catch (e: any) {
       if (e?.status === 409 || e?.code === "target_exists") {
@@ -1555,9 +1744,9 @@ export default function Workspace() {
     const to = duplicatePathFor(path, files ?? []);
     setBusy({ label: "複製中…", path });
     try {
-      await api.copyFile(refPath, path, to);
+      await api.copyFile(refPath, path, to, undefined, branch);
       setFiles((f) => applyAdd(f ?? [], to));
-      setParams({ f: to });
+      setWorkspaceParams({ f: to });
     } catch (e: any) {
       if (e?.status === 409 || e?.code === "target_exists") {
         setError(`已有同名檔案：${to}`);
@@ -1576,14 +1765,14 @@ export default function Workspace() {
     if (!window.confirm(`確定刪除「${path}」？這會在 repo 產生一個刪除 commit，可從 Git 歷史還原。`)) return;
     setBusy({ label: "刪除中…", path });
     try {
-      await api.deleteFile(refPath, path);
+      await api.deleteFile(refPath, path, undefined, branch);
       setFiles((f) => applyRemove(f ?? [], path));
       if (activePathRef.current === path) {
         setContent("");
         setSha(undefined);
-        pendingSaveRef.current = null;
+        pendingSaveRef.current.delete(editorDocKey);
         setSave("saved");
-        setParams({});
+        setWorkspaceParams({});
       }
     } catch (e: any) {
       if (e?.status === 501) {
@@ -1623,12 +1812,12 @@ export default function Workspace() {
     if (!(await confirmPathRefs(path, "folder", "rename"))) return;
     setBusy({ label: "重新命名資料夾中…", path });
     try {
-      await api.moveFolder(refPath, path, to);
+      await api.moveFolder(refPath, path, to, undefined, branch);
       setFiles((f) => applyFolderMove(f ?? [], path, to));
       if (activePathRef.current.startsWith(path + "/")) {
-        setParams({ f: to + activePathRef.current.slice(path.length) });
+        setWorkspaceParams({ f: to + activePathRef.current.slice(path.length) });
       } else if (params.has("dir") && (cleanDir === path || cleanDir.startsWith(path + "/"))) {
-        setParams({ dir: to + cleanDir.slice(path.length) });
+        setWorkspaceParams({ dir: to + cleanDir.slice(path.length) });
       }
     } catch (e: any) {
       const msg = e?.message || e;
@@ -1666,14 +1855,14 @@ export default function Workspace() {
     }
     setBusy({ label: "刪除資料夾中…", path });
     try {
-      await api.deleteFolder(refPath, path);
+      await api.deleteFolder(refPath, path, undefined, branch);
       setFiles((f) => applyFolderRemove(f ?? [], path));
       if (activePathRef.current.startsWith(path + "/")) {
         setContent("");
         setSha(undefined);
-        pendingSaveRef.current = null;
+        pendingSaveRef.current.delete(editorDocKey);
         setSave("saved");
-        setParams({});
+        setWorkspaceParams({});
       }
     } catch (e: any) {
       const msg = e?.message || e;
@@ -1723,9 +1912,9 @@ export default function Workspace() {
 
     setBusy({ label: "建立資料夾中…", path: folderPath });
     try {
-      await api.saveFile(refPath, newFilePath, contentStr, undefined, commitMsg);
+      await api.saveFile(refPath, newFilePath, contentStr, undefined, commitMsg, undefined, branch);
       setFiles((f) => applyAdd(f ?? [], newFilePath));
-      setParams({ f: newFilePath });
+      setWorkspaceParams({ f: newFilePath });
     } catch (err: any) {
       setError(String(err.message || err));
     } finally {
@@ -1805,7 +1994,7 @@ export default function Workspace() {
 
       setUploadProgress(`正在提交 ${payloadFiles.length} 個檔案至伺服器...`);
       const commitMsg = `docs: 上傳 ${payloadFiles.length} 個檔案`;
-      const res = await api.batchUpload(refPath, payloadFiles, commitMsg);
+      const res = await api.batchUpload(refPath, payloadFiles, commitMsg, branch);
 
       setUploadProgress(null);
       setIsUploading(false);
@@ -1887,7 +2076,8 @@ export default function Workspace() {
         const res = await api.batchUpload(
           refPath,
           payloadFiles.map(({ path, contentBase64 }) => ({ path, contentBase64 })),
-          commitMsg
+          commitMsg,
+          branch
         );
 
         setUploadProgress(null);
@@ -2179,6 +2369,8 @@ export default function Workspace() {
     }
 
     let cancelled = false;
+    const requestGeneration = workspaceRequestsRef.current.current();
+    const isCurrentRequest = () => !cancelled && workspaceRequestsRef.current.isCurrent(requestGeneration);
     setIsFolderLoading(true);
     setFolderMdContents({});
     setLoadedCount(0);
@@ -2193,34 +2385,34 @@ export default function Workspace() {
       await Promise.all(
         initialFiles.map(async (filePath) => {
           try {
-            const res = await api.readFile(refPath, filePath);
-            if (!cancelled) {
+            const res = await api.readFile(refPath, filePath, branch);
+            if (isCurrentRequest()) {
               contentsMap[filePath] = res.content;
             }
           } catch {
-            if (!cancelled) {
+            if (isCurrentRequest()) {
               contentsMap[filePath] = `*無法載入檔案: ${filePath}*`;
             }
           }
         })
       );
 
-      if (cancelled) return;
+      if (!isCurrentRequest()) return;
       setFolderMdContents({ ...contentsMap });
       setLoadedCount(initialBatchSize);
 
       for (let i = initialBatchSize; i < total; i++) {
-        if (cancelled) return;
+        if (!isCurrentRequest()) return;
         const filePath = cappedMdFiles[i];
         try {
-          const res = await api.readFile(refPath, filePath);
-          if (!cancelled) {
+          const res = await api.readFile(refPath, filePath, branch);
+          if (isCurrentRequest()) {
             contentsMap[filePath] = res.content;
             setFolderMdContents({ ...contentsMap });
             setLoadedCount(i + 1);
           }
         } catch {
-          if (!cancelled) {
+          if (isCurrentRequest()) {
             contentsMap[filePath] = `*無法載入檔案: ${filePath}*`;
             setFolderMdContents({ ...contentsMap });
             setLoadedCount(i + 1);
@@ -2228,7 +2420,7 @@ export default function Workspace() {
         }
       }
 
-      if (!cancelled) {
+      if (isCurrentRequest()) {
         setIsFolderLoading(false);
       }
     }
@@ -2238,7 +2430,7 @@ export default function Workspace() {
     return () => {
       cancelled = true;
     };
-  }, [params, cleanDir, cappedMdFiles, refPath, reloadKey]);
+  }, [params, cleanDir, cappedMdFiles, refPath, reloadKey, branch, identityId]);
 
   async function copyTextToClipboard(text: string): Promise<boolean> {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -2264,8 +2456,10 @@ export default function Workspace() {
   }
 
   async function handleCopyLink(path: string, kind: "file" | "folder") {
-    const q = kind === "folder" ? `?dir=${encodeURIComponent(path)}` : `?f=${encodeURIComponent(path)}`;
-    const url = `${window.location.origin}/edit/${refPath}${q}`;
+    const q = new URLSearchParams();
+    if (branch) q.set("ref", branch);
+    q.set(kind === "folder" ? "dir" : "f", path);
+    const url = `${window.location.origin}/edit/${refPath}?${q.toString()}`;
     const ok = await copyTextToClipboard(url);
     if (ok) showNotice("已複製連結");
     else setError(`複製失敗，請手動複製：${url}`);
@@ -2273,11 +2467,12 @@ export default function Workspace() {
 
   const currentShareTargetPath = useMemo(() => {
     if (!hasRepo || (!activePath && !params.has("dir"))) return "";
-    const paramStr = params.has("dir")
-      ? `?dir=${encodeURIComponent(cleanDir)}`
-      : `?f=${encodeURIComponent(activePath)}`;
+    const query = new URLSearchParams();
+    if (branch) query.set("ref", branch);
+    query.set(params.has("dir") ? "dir" : "f", params.has("dir") ? cleanDir : activePath);
+    const paramStr = `?${query.toString()}`;
     return `/edit/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
-  }, [hasRepo, activePath, params, cleanDir, provider, projectPath]);
+  }, [hasRepo, activePath, params, cleanDir, provider, projectPath, branch]);
 
   const defaultShortLabel = useMemo(() => {
     if (params.has("dir")) return cleanDir ? `${repoLeaf}/${cleanDir}/` : `${repoLeaf}/`;
@@ -2298,9 +2493,10 @@ export default function Workspace() {
   }
 
   function handleCopySite() {
-    const paramStr = params.has("dir")
-      ? `?dir=${encodeURIComponent(cleanDir)}`
-      : `?f=${encodeURIComponent(activePath)}`;
+    const query = new URLSearchParams();
+    if (branch) query.set("ref", branch);
+    query.set(params.has("dir") ? "dir" : "f", params.has("dir") ? cleanDir : activePath);
+    const paramStr = `?${query.toString()}`;
     const url = `${window.location.origin}/site/${provider}/${encodeURIComponent(projectPath)}${paramStr}`;
     void copyTextToClipboard(url).then(() => {
       setCopiedSite(true);
@@ -2506,7 +2702,7 @@ export default function Workspace() {
           {me?.team?.enabled && !me.login && (
             <div className="space-y-2">
               <p className="text-sm text-zinc-400">或者，選一下你是誰（團隊模式）：</p>
-              <IdentityPicker team={me.team} onChange={handleIdentityChange} size="lg" />
+              <IdentityPicker team={me.team} onBeforeChange={flushBeforeIdentityChange} onChange={handleIdentityChange} size="lg" />
             </div>
           )}
           {me?.providers?.[provider as ProviderName] ? (
@@ -2617,7 +2813,7 @@ export default function Workspace() {
         )}
         {activePath && activeKind === "md" && (
           <button
-            onClick={() => navigate(`/p/${refPath}/${activePath}`)}
+            onClick={() => navigate(directSlidesUrl(refPath, activePath, branch))}
             className="hidden lg:inline-flex rounded-lg border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap shrink-0"
           >
             🎞️ 簡報
@@ -2716,7 +2912,7 @@ export default function Workspace() {
         )}
         {me && !me.login && me.team?.enabled && (
           <div className="hidden lg:block shrink-0">
-            <IdentityPicker team={me.team} onChange={handleIdentityChange} />
+            <IdentityPicker team={me.team} onBeforeChange={flushBeforeIdentityChange} onChange={handleIdentityChange} />
           </div>
         )}
         {me && !me.login && me.providers?.[provider as "github" | "gitlab"] && (
@@ -2782,7 +2978,7 @@ export default function Workspace() {
               <button
                 onClick={() => {
                   setMenuOpen(false);
-                  navigate(`/p/${refPath}/${activePath}`);
+                  navigate(directSlidesUrl(refPath, activePath, branch));
                 }}
                 className="w-full text-left rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-sky-600 hover:text-sky-400 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
               >
@@ -2860,9 +3056,10 @@ export default function Workspace() {
                 <label className="text-xs text-zinc-400 px-1">選擇身分：</label>
                 <IdentityPicker
                   team={me.team}
-                  onChange={() => {
+                  onBeforeChange={flushBeforeIdentityChange}
+                  onChange={async () => {
                     setMenuOpen(false);
-                    handleIdentityChange();
+                    await handleIdentityChange();
                   }}
                 />
               </div>
@@ -3041,6 +3238,7 @@ export default function Workspace() {
             giteaHost={giteaHost}
             currentProvider={provider}
             currentProject={projectPath}
+            currentBranch={branch}
             collapsed={repoSelectorCollapsed}
             onToggleCollapse={() => setRepoSelectorCollapsed((v) => !v)}
             identified={hasIdentity}
@@ -3201,18 +3399,19 @@ export default function Workspace() {
               activeFolder={params.has("dir") ? cleanDir : activeFolder}
               onSelectFile={(f) => {
                 setActiveFolder("");
-                setParams({ f });
+                setWorkspaceParams({ f });
                 setSidebarOpen(false);
               }}
               onSelectFolder={(dir) => {
                 setActiveFolder(dir);
-                setParams({ dir });
+                setWorkspaceParams({ dir });
               }}
               presentMode={presentMode}
               checked={checked}
               onCheckedChange={setChecked}
               rawBase={rawBase}
               refPath={refPath}
+              branch={branch}
               onInsertFile={canWrite ? (p) => insertIntoEditor(insertSnippetFor(p)) : undefined}
               onMoveFile={canWrite ? handleMoveFile : undefined}
               onRenameFile={canWrite ? handleRenameFile : undefined}
@@ -3329,7 +3528,7 @@ export default function Workspace() {
                   <button
                     onClick={() => {
                       const parentDir = cleanDir.split("/").slice(0, -1).join("/");
-                      setParams({ dir: parentDir });
+                      setWorkspaceParams({ dir: parentDir });
                     }}
                     className="text-sm border border-zinc-700 text-zinc-300 hover:border-zinc-500 hover:text-white px-3 py-1.5 rounded flex items-center gap-1"
                   >
@@ -3358,7 +3557,7 @@ export default function Workspace() {
                     return (
                       <button
                         key={sf}
-                        onClick={() => setParams({ dir: sf })}
+                        onClick={() => setWorkspaceParams({ dir: sf })}
                         className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
                       >
                         <span>📁</span>
@@ -3371,7 +3570,7 @@ export default function Workspace() {
                     return (
                       <button
                         key={df}
-                        onClick={() => setParams({ f: df })}
+                        onClick={() => setWorkspaceParams({ f: df })}
                         className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
                       >
                         <span>📄</span>
@@ -3391,7 +3590,7 @@ export default function Workspace() {
                   return (
                     <button
                       key={sf}
-                      onClick={() => setParams({ dir: sf })}
+                      onClick={() => setWorkspaceParams({ dir: sf })}
                       className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-sky-400"
                     >
                       <span>📁</span>
@@ -3404,7 +3603,7 @@ export default function Workspace() {
                   return (
                     <button
                       key={df}
-                      onClick={() => setParams({ f: df })}
+                      onClick={() => setWorkspaceParams({ f: df })}
                       className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-900 text-left transition-colors font-mono text-sm text-zinc-200"
                     >
                       <span>📄</span>
@@ -3424,13 +3623,7 @@ export default function Workspace() {
                       </div>
                     );
                   }
-                  const itemLinkCtx: LinkContext = {
-                    provider,
-                    project: projectPath,
-                    currentPath: p,
-                    files: files || [],
-                    rawBase,
-                  };
+                  const itemLinkCtx = linkContextAtPath(linkContext, p);
                   const itemHtml = renderMarkdown(rawMd, itemLinkCtx);
                   return (
                     <div key={p} className="mb-8">
@@ -3438,7 +3631,7 @@ export default function Workspace() {
                       <div className="flex items-center gap-2 border-b border-zinc-800 pb-2 mb-4">
                         <span className="text-zinc-500 text-sm font-mono">📄</span>
                         <button
-                          onClick={() => setParams({ f: p })}
+                          onClick={() => setWorkspaceParams({ f: p })}
                           className="text-base font-semibold font-mono text-sky-400 hover:underline hover:text-sky-300 text-left"
                           title="點擊切換至單檔閱讀"
                         >
@@ -3564,7 +3757,7 @@ export default function Workspace() {
                   const next = e.target.value;
                   setContent(next);
                   setSave((s) => (s === "conflict" ? s : "dirty"));
-                  pendingSaveRef.current = { path: activePath, content: next, sha: shaRef.current };
+                  pendingSaveRef.current.set(editorDocKey, { docKey: editorDocKey, identityId, refPath, branch, path: activePath, content: next, sha: shaRef.current });
                 }}
                 spellCheck={false}
                 autoCapitalize="off"
@@ -3620,7 +3813,7 @@ export default function Workspace() {
                 onChange={(next) => {
                   setContent(next);
                   setSave((s) => (s === "conflict" ? s : "dirty"));
-                  pendingSaveRef.current = { path: activePath, content: next, sha: shaRef.current };
+                  pendingSaveRef.current.set(editorDocKey, { docKey: editorDocKey, identityId, refPath, branch, path: activePath, content: next, sha: shaRef.current });
                 }}
                 onSelectionChange={updateMentionTrigger}
                 onKeyDown={handleEditorKeyDown}
@@ -3675,7 +3868,7 @@ export default function Workspace() {
                           ⬇️ 下載
                         </a>
                         <a
-                          href={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                          href={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${branch ? `&ref=${encodeURIComponent(branch)}` : ""}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="rounded bg-zinc-800 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700 font-semibold flex items-center gap-1 shrink-0"
@@ -3687,7 +3880,7 @@ export default function Workspace() {
                     <iframe
                       ref={iframeRef}
                       key={activePath}
-                      src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
+                      src={`/site/${provider}/${encodeURIComponent(projectPath)}?f=${encodeURIComponent(activePath)}${branch ? `&ref=${encodeURIComponent(branch)}` : ""}${needsGrant && rawGrant ? `&grant=${rawGrant}` : ""}`}
                       /* ⚠️ 刻意不給 allow-same-origin：iframe 會是 opaque origin，能跑 JS 但碰不到 note 主站的 cookie / DOM */
                       sandbox="allow-scripts allow-popups allow-forms allow-modals allow-downloads allow-top-navigation-by-user-activation"
                       className="w-full flex-1 border-0 bg-white"

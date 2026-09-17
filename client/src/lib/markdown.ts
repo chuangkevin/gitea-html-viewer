@@ -18,6 +18,11 @@ export interface LinkContext {
   files: string[]; // 這個 repo 的所有檔案路徑
   /** 把 repo 路徑解析成可讀取的資產 URL（圖片用）。不給就不改寫 <img src>。 */
   rawBase?: string;
+  branch?: string;
+}
+
+export function linkContextAtPath(ctx: LinkContext, currentPath: string): LinkContext {
+  return { ...ctx, currentPath };
 }
 
 export function renderMarkdown(md: string, ctx?: LinkContext): string {
@@ -49,14 +54,15 @@ export function renderMarkdown(md: string, ctx?: LinkContext): string {
         const decodedHref = safeDecodeHref(href);
         const { path: resolvedPath, anchor } = resolveRepoHref(decodedHref, ctx.currentPath);
         const encodedProject = encodeURIComponent(ctx.project);
+        const branchQuery = ctx.provider === "gitea" && ctx.branch ? `ref=${encodeURIComponent(ctx.branch)}&` : "";
 
         if (ctx.files.includes(resolvedPath)) {
           // 完全等於某個檔案路徑
-          const newHref = `/edit/${ctx.provider}/${encodedProject}?f=${encodeURIComponent(resolvedPath)}${anchor}`;
+          const newHref = `/edit/${ctx.provider}/${encodedProject}?${branchQuery}f=${encodeURIComponent(resolvedPath)}${anchor}`;
           a.setAttribute("href", newHref);
         } else if (ctx.files.some((f) => f.startsWith(resolvedPath + "/"))) {
           // 目錄前綴
-          const newHref = `/edit/${ctx.provider}/${encodedProject}?dir=${encodeURIComponent(resolvedPath)}${anchor}`;
+          const newHref = `/edit/${ctx.provider}/${encodedProject}?${branchQuery}dir=${encodeURIComponent(resolvedPath)}${anchor}`;
           a.setAttribute("href", newHref);
         } else {
           // 都對不上

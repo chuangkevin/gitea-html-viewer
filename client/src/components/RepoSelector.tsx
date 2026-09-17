@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { parseRepoInput, refPathOf } from "../lib/providers";
 import { api, type UserPrefsResult } from "../lib/api";
+import { RequestGeneration } from "../lib/request-guards";
 
 /** ── 儲存結構 ── */
 interface RepoEntry {
   provider: string;
   project: string;
+  branch?: string | null;
   /** display label: group/repo */
   label: string;
   /** epoch ms */
@@ -30,24 +32,26 @@ function saveList(key: string, list: RepoEntry[]) {
 }
 
 function repoKey(e: RepoEntry) {
-  return `${e.provider}/${e.project}`;
+  return `${e.provider}/${e.project}/${e.provider === "gitea" ? e.branch ?? "" : ""}`;
 }
 
 /** 外部用：開啟 repo 時呼叫，更新 recent 清單 */
-export function touchRecent(provider: string, project: string) {
-  const label = project; // group/repo 形式
+export function touchRecent(provider: string, project: string, branch?: string) {
+  const label = provider === "gitea" && branch ? `${project} @ ${branch}` : project;
   const recent = loadList(LS_RECENT);
-  const filtered = recent.filter((r) => repoKey(r) !== `${provider}/${project}`);
-  filtered.unshift({ provider, project, label, lastOpened: Date.now() });
+  const entry = { provider, project, branch: provider === "gitea" ? branch ?? null : null, label, lastOpened: Date.now() };
+  const filtered = recent.filter((r) => repoKey(r) !== repoKey(entry));
+  filtered.unshift(entry);
   saveList(LS_RECENT, filtered.slice(0, MAX_RECENT));
 }
 
 /** Convert server prefs to RepoEntry[] */
-function prefsToEntries(prefs: { provider: string; project: string; lastSeenAt: number }[]): RepoEntry[] {
+function prefsToEntries(prefs: { provider: string; project: string; branch: string | null; lastSeenAt: number }[]): RepoEntry[] {
   return prefs.map((p) => ({
     provider: p.provider,
     project: p.project,
-    label: p.project,
+    branch: p.branch,
+    label: p.provider === "gitea" && p.branch ? `${p.project} @ ${p.branch}` : p.project,
     lastOpened: p.lastSeenAt,
   }));
 }
@@ -58,6 +62,7 @@ interface Props {
   giteaHost?: string;
   currentProvider?: string;
   currentProject?: string;
+  currentBranch?: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
   /** Is user identified (OAuth or team identity selected)? */
@@ -69,6 +74,7 @@ export default function RepoSelector({
   giteaHost,
   currentProvider,
   currentProject,
+  currentBranch,
   collapsed,
   onToggleCollapse,
   identified = false,
@@ -82,9 +88,11 @@ export default function RepoSelector({
   const inputRef = useRef<HTMLInputElement>(null);
   const [serverMode, setServerMode] = useState(false);
   const mergedRef = useRef(false);
+  const preferenceRequestsRef = useRef(new RequestGeneration());
 
   // Load from server when identified, merge localStorage data once
   useEffect(() => {
+    const generation = preferenceRequestsRef.current.next();
     if (!identified) {
       setServerMode(false);
       mergedRef.current = false;
@@ -108,12 +116,14 @@ export default function RepoSelector({
         ...lsPinned.map((e) => ({
           provider: e.provider,
           project: e.project,
+          branch: e.branch,
           pinned: true,
           lastSeenAt: e.lastOpened,
         })),
         ...lsRecent.map((e) => ({
           provider: e.provider,
           project: e.project,
+          branch: e.branch,
           pinned: false,
           lastSeenAt: e.lastOpened,
         })),
@@ -121,6 +131,7 @@ export default function RepoSelector({
       api
         .updateUserPrefs({ action: "merge", items })
         .then((result) => {
+          if (!preferenceRequestsRef.current.isCurrent(generation)) return;
           setPinned(prefsToEntries(result.pinned));
           setRecent(prefsToEntries(result.recent));
           // Clear localStorage after successful merge
@@ -128,18 +139,21 @@ export default function RepoSelector({
           localStorage.removeItem(LS_PINNED);
         })
         .catch(() => {
+          if (!preferenceRequestsRef.current.isCurrent(generation)) return;
           // Fallback: just load from server
-          loadFromServer();
+          loadFromServer(generation);
         });
     } else {
-      loadFromServer();
+      loadFromServer(generation);
     }
+    return () => preferenceRequestsRef.current.invalidate();
   }, [identified, identityId]);
 
-  function loadFromServer() {
+  function loadFromServer(generation = preferenceRequestsRef.current.next()) {
     api
       .getUserPrefs()
       .then((result) => {
+        if (!preferenceRequestsRef.current.isCurrent(generation)) return;
         setPinned(prefsToEntries(result.pinned));
         setRecent(prefsToEntries(result.recent));
       })
@@ -160,9 +174,11 @@ export default function RepoSelector({
     return () => window.removeEventListener("focus", onFocus);
   }, [serverMode]);
 
-  const currentKey = currentProvider && currentProject ? `${currentProvider}/${currentProject}` : null;
+  const currentKey = currentProvider && currentProject
+    ? repoKey({ provider: currentProvider, project: currentProject, branch: currentBranch, label: "", lastOpened: 0 })
+    : null;
 
-  const handleOpen = useCallback(() => {
+  const handleOpen = useCallback(async () => {
     const parsed = parseRepoInput(urlInput, giteaHost);
     if (!parsed) {
       setError(
@@ -172,14 +188,26 @@ export default function RepoSelector({
       );
       return;
     }
-    setError("");
-    setUrlInput("");
-    navigate(`/edit/${refPathOf(parsed.provider, parsed.projectPath)}`);
+    try {
+      let target = `/edit/${refPathOf(parsed.provider, parsed.projectPath)}`;
+      if (parsed.provider === "gitea" && parsed.giteaBranchSuffix) {
+        const resolved = await api.resolveGiteaUrl(urlInput);
+        const query = new URLSearchParams({ ref: resolved.branch });
+        if (resolved.path) query.set("f", resolved.path);
+        target += `?${query.toString()}`;
+      }
+      setError("");
+      setUrlInput("");
+      navigate(target);
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    }
   }, [urlInput, giteaHost, navigate]);
 
   const goTo = useCallback(
     (e: RepoEntry) => {
-      navigate(`/edit/${refPathOf(e.provider, e.project)}`);
+      const query = e.provider === "gitea" && e.branch ? `?ref=${encodeURIComponent(e.branch)}` : "";
+      navigate(`/edit/${refPathOf(e.provider, e.project)}${query}`);
     },
     [navigate]
   );
@@ -187,6 +215,7 @@ export default function RepoSelector({
   const togglePin = useCallback(
     (entry: RepoEntry) => {
       if (serverMode) {
+        const generation = preferenceRequestsRef.current.current();
         // Check current pin state
         const isPinnedNow = pinned.some((p) => repoKey(p) === repoKey(entry));
         if (isPinnedNow) {
@@ -196,10 +225,12 @@ export default function RepoSelector({
               action: "upsert",
               provider: entry.provider,
               project: entry.project,
+              branch: entry.branch,
               pinned: false,
               lastSeenAt: entry.lastOpened,
             })
             .then((result) => {
+              if (!preferenceRequestsRef.current.isCurrent(generation)) return;
               setPinned(prefsToEntries(result.pinned));
               setRecent(prefsToEntries(result.recent));
             })
@@ -211,10 +242,12 @@ export default function RepoSelector({
               action: "upsert",
               provider: entry.provider,
               project: entry.project,
+              branch: entry.branch,
               pinned: true,
               lastSeenAt: entry.lastOpened,
             })
             .then((result) => {
+              if (!preferenceRequestsRef.current.isCurrent(generation)) return;
               setPinned(prefsToEntries(result.pinned));
               setRecent(prefsToEntries(result.recent));
             })
@@ -236,13 +269,16 @@ export default function RepoSelector({
   const removeRecent = useCallback(
     (entry: RepoEntry) => {
       if (serverMode) {
+        const generation = preferenceRequestsRef.current.current();
         api
           .updateUserPrefs({
             action: "delete",
             provider: entry.provider,
             project: entry.project,
+            branch: entry.branch,
           })
           .then((result) => {
+            if (!preferenceRequestsRef.current.isCurrent(generation)) return;
             setPinned(prefsToEntries(result.pinned));
             setRecent(prefsToEntries(result.recent));
           })

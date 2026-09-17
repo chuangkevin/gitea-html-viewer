@@ -21,6 +21,9 @@ function baseUrl(): string {
 }
 
 const API = "/api/v1";
+/** Pasted branch URLs need longest-prefix resolution; cap the scan at 1000 branches. */
+const BRANCH_RESOLUTION_PAGE_SIZE = 50;
+const BRANCH_RESOLUTION_MAX_PAGES = 20;
 
 async function gt<T>(token: string, path: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -196,10 +199,44 @@ export const gitea: Provider = {
     return out;
   },
 
-  async readFile(token, projectPath, filePath) {
+  async validateBranch(token, projectPath, branch) {
+    try {
+      await gt(token, `/repos/${encodePath(projectPath)}/branches/${encodeURIComponent(branch)}`);
+    } catch (err) {
+      if (err instanceof ProviderError && err.status === 404) {
+        throw new ProviderError(404, `Gitea branch not found: ${branch}`);
+      }
+      throw err;
+    }
+  },
+
+  async resolveBranchPath(token, projectPath, suffix) {
+    const branches: string[] = [];
+    for (let page = 1; page <= BRANCH_RESOLUTION_MAX_PAGES; page++) {
+      const batch = await gt<{ name: string }[]>(
+        token,
+        `/repos/${projectPath}/branches?page=${page}&limit=${BRANCH_RESOLUTION_PAGE_SIZE}`
+      );
+      branches.push(...batch.map((item) => item.name));
+      if (batch.length < BRANCH_RESOLUTION_PAGE_SIZE) {
+        const matches = branches
+          .filter((branch) => suffix === branch || suffix.startsWith(`${branch}/`))
+          .sort((a, b) => b.length - a.length);
+        const branch = matches[0];
+        if (!branch) throw new ProviderError(404, `Gitea branch not found: ${suffix}`);
+        return { branch, path: suffix === branch ? "" : suffix.slice(branch.length + 1) };
+      }
+    }
+    throw new ProviderError(
+      503,
+      `Gitea branch resolution exceeded ${BRANCH_RESOLUTION_MAX_PAGES} pages (${BRANCH_RESOLUTION_MAX_PAGES * BRANCH_RESOLUTION_PAGE_SIZE} branches)`
+    );
+  },
+
+  async readFile(token, projectPath, filePath, branch) {
     const data = await gt<{ content: string; sha: string; path: string; type: string; encoding?: string }>(
       token,
-      `/repos/${projectPath}/contents/${encodePath(filePath)}`
+      `/repos/${projectPath}/contents/${encodePath(filePath)}${branch ? `?ref=${encodeURIComponent(branch)}` : ""}`
     );
     if (data.type !== "file") {
       throw new ProviderError(400, `Gitea 400: 不是檔案（type=${data.type}）：${filePath}`);
@@ -208,10 +245,10 @@ export const gitea: Provider = {
     return { content, sha: data.sha, path: data.path } satisfies RepoFile;
   },
 
-  async readFileRaw(token, projectPath, filePath) {
+  async readFileRaw(token, projectPath, filePath, branch) {
     let res: Response;
     try {
-      res = await fetch(`${baseUrl()}${API}/repos/${projectPath}/media/${encodePath(filePath)}`, {
+      res = await fetch(`${baseUrl()}${API}/repos/${projectPath}/media/${encodePath(filePath)}${branch ? `?ref=${encodeURIComponent(branch)}` : ""}`, {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "User-Agent": "note-bridge",

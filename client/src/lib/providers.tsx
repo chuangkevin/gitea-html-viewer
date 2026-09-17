@@ -11,6 +11,43 @@ export function refPathOf(provider: string, projectPath: string): string {
   return `${provider}/${encodeURIComponent(projectPath)}`;
 }
 
+export function workspaceSearchParams(branch: string | undefined, next: Record<string, string>): URLSearchParams {
+  const search = new URLSearchParams();
+  if (branch) search.set("ref", branch);
+  for (const [key, value] of Object.entries(next)) {
+    if (value || key === "dir") search.set(key, value);
+  }
+  return search;
+}
+
+export function collabDocumentKey(provider: string, project: string, branch: string | undefined, filePath: string): string {
+  if (provider === "gitea" && branch) {
+    return `gitea-ref/${encodeURIComponent(project)}/${encodeURIComponent(branch)}/${filePath}`;
+  }
+  return `${provider}/${encodeURIComponent(project)}/${filePath}`;
+}
+
+export function workspaceDocumentKey(
+  provider: string,
+  project: string,
+  branch: string | undefined,
+  filePath: string,
+  identityId?: string | null
+): string {
+  return `${encodeURIComponent(identityId ?? "anonymous")}\0${collabDocumentKey(provider, project, branch, filePath)}`;
+}
+
+export function presentationCacheKey(branch: string | undefined, filePath: string): string {
+  return `${branch ?? ""}\0${filePath}`;
+}
+
+export function directSlidesUrl(refPath: string, filePath: string, branch?: string): string {
+  const encodedPath = filePath.split("/").map(encodeURIComponent).join("/");
+  const query = new URLSearchParams();
+  if (branch) query.set("ref", branch);
+  return `/p/${refPath}/${encodedPath}${query.size > 0 ? `?${query.toString()}` : ""}`;
+}
+
 /**
  * 從貼上的網址或「owner/repo」判斷來源與專案路徑。
  *   https://github.com/owner/repo(.git)(/…)
@@ -21,7 +58,7 @@ export function refPathOf(provider: string, projectPath: string): string {
 export function parseRepoInput(
   input: string,
   giteaHost?: string
-): { provider: ProviderName; projectPath: string } | null {
+): { provider: ProviderName; projectPath: string; giteaBranchSuffix?: string } | null {
   const raw = input.trim();
   if (!raw) return null;
 
@@ -39,7 +76,10 @@ export function parseRepoInput(
     }
     if (giteaHost && host === giteaHost.toLowerCase()) {
       const p = cleanGitHub(rest);
-      return p ? { provider: "gitea", projectPath: p } : null;
+      if (!p) return null;
+      const suffix = giteaBranchSuffix(raw);
+      if (rest.includes("/src/branch/") && !suffix) return null;
+      return suffix ? { provider: "gitea", projectPath: p, giteaBranchSuffix: suffix } : { provider: "gitea", projectPath: p };
     }
     return null;
   }
@@ -52,7 +92,30 @@ export function parseRepoInput(
 export function giteaRepoRedirectFromFileParam(fileParam: string, giteaHost?: string): string | null {
   const parsed = parseRepoInput(fileParam, giteaHost);
   if (parsed?.provider !== "gitea") return null;
-  return `/edit/${refPathOf(parsed.provider, parsed.projectPath)}`;
+  const ref = parsed.giteaBranchSuffix ? `?ref=${encodeURIComponent(parsed.giteaBranchSuffix)}` : "";
+  return `/edit/${refPathOf(parsed.provider, parsed.projectPath)}${ref}`;
+}
+
+export function giteaRepoRedirectPlan(
+  fileParam: string,
+  giteaHost?: string
+): { redirect: string; resolveBranch: boolean } | null {
+  const redirect = giteaRepoRedirectFromFileParam(fileParam, giteaHost);
+  if (!redirect) return null;
+  return { redirect, resolveBranch: /\/src\/branch\//.test(fileParam) };
+}
+
+function giteaBranchSuffix(raw: string): string | undefined {
+  try {
+    const marker = "/src/branch/";
+    const pathname = new URL(raw).pathname;
+    const index = pathname.indexOf(marker);
+    if (index < 0) return undefined;
+    const encoded = pathname.slice(index + marker.length).replace(/^\/+|\/+$/g, "");
+    return encoded ? decodeURIComponent(encoded) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function cleanGitHub(rest: string): string | null {
