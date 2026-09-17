@@ -9,6 +9,7 @@
 # 可用環境變數：
 #   HEALTH_URL   健康檢查網址，未設則跳過檢查
 #   HEALTH_TRIES 檢查次數（預設 24，每次間隔 5 秒 = 最長 2 分鐘）
+#   NOTE_GITEA_DEPLOY 設為 1 時，檢查公司 CA 並驗證容器可經 HTTPS 連到 Gitea
 #
 # 鐵則 1：docker compose 一律不帶 -f（帶了 docker-compose.override.yml 會失效）
 # 鐵則 2：不准 git clean（.env / data/ / override 都是未追蹤的正式資料）
@@ -50,11 +51,56 @@ BUILD_SHA="${BUILD_SHA:-$(git rev-parse --short HEAD)}"
 echo "$BUILD_SHA" > client/.build-sha
 echo "==> BUILD_SHA = $BUILD_SHA"
 
+if [[ "${NOTE_GITEA_DEPLOY:-}" == "1" ]]; then
+  internal_ca_path="${INTERNAL_CA_PATH:-}"
+  if [[ -z "$internal_ca_path" ]]; then
+    while IFS='=' read -r key value; do
+      if [[ "$key" == "INTERNAL_CA_PATH" ]]; then
+        internal_ca_path="$value"
+      fi
+    done < <(docker compose config --environment)
+  fi
+  internal_ca_path="${internal_ca_path:-/home/interagent/ca-web/rootCA.pem}"
+  if [[ ! -r "$internal_ca_path" ]]; then
+    echo "[ERROR] Gitea root CA 不存在或無法讀取：$internal_ca_path" >&2
+    exit 1
+  fi
+  if ! openssl x509 -in "$internal_ca_path" -noout >/dev/null 2>&1; then
+    echo "[ERROR] Gitea root CA 不是有效的 PEM certificate：$internal_ca_path" >&2
+    exit 1
+  fi
+fi
+
+probe_gitea() {
+  [[ "${NOTE_GITEA_DEPLOY:-}" == "1" ]] || return 0
+
+  echo "==> 驗證 Note 容器可經 GITEA_URL 連到 Gitea"
+  docker compose exec -T note node -e '
+    const url = new URL(process.env.GITEA_URL || "");
+    if (url.protocol !== "https:") throw new Error("GITEA_URL 必須使用 HTTPS");
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}/api/healthz`;
+    fetch(url, { signal: AbortSignal.timeout(5000) })
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok || body?.status !== "pass") {
+          throw new Error(`Gitea health probe failed (HTTP ${res.status})`);
+        }
+        console.log(`Gitea HTTPS health probe passed (HTTP ${res.status})`);
+      })
+      .catch((err) => { console.error(err); process.exit(1); });
+  '
+}
+
 echo "==> docker compose up -d --build"
 BUILD_SHA="$BUILD_SHA" docker compose up -d --build
 
 if [[ -z "$HEALTH_URL" ]]; then
   echo "==> 未設定 HEALTH_URL，跳過健康檢查"
+  if ! probe_gitea; then
+    echo "[ERROR] Note 容器無法經 GITEA_URL 連到 Gitea" >&2
+    docker compose logs --tail 80
+    exit 1
+  fi
   docker compose ps
   exit 0
 fi
@@ -62,6 +108,11 @@ fi
 echo "==> 健康檢查 $HEALTH_URL（最多 ${HEALTH_TRIES} 次，每次間隔 5 秒）"
 for _ in $(seq 1 "$HEALTH_TRIES"); do
   if curl -sf --max-time 5 "$HEALTH_URL" >/dev/null 2>&1; then
+    if ! probe_gitea; then
+      echo "[ERROR] Note 容器無法經 GITEA_URL 連到 Gitea" >&2
+      docker compose logs --tail 80
+      exit 1
+    fi
     echo "==> 部署成功"
     docker compose ps
     docker image prune -f

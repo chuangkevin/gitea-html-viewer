@@ -48,6 +48,9 @@ cp .env.example .env
 > GitHub 也想開就一併填 `GITHUB_CLIENT_ID/SECRET`；不填就只顯示 GitLab 登入。
 > 自架 Gitea 想開就填 `GITEA_URL`（例 `https://gitea.ia`）＋ `GITEA_CLIENT_ID/SECRET`
 > （Gitea：`Settings → Applications → Manage OAuth2 Applications`，Redirect URI `<BASE_URL>/api/auth/callback`）。
+> Note 容器仍以 `https://gitea.ia` 呼叫 Gitea。docker-host 不走 FortiGate 的 `.ia` DNS，
+> GitLab 正式部署會疊加 `docker-compose.gitea.yml`，用 `GITEA_HOST_IP`（預設 `10.11.12.55`）補容器內解析，並從
+> `INTERNAL_CA_PATH`（預設 `/home/interagent/ca-web/rootCA.pem`）掛入公司 root CA。
 > `SECRET` 不填會自動產生存在 `data/.secret`（換機器要保留 `data/` 才能沿用既有 session/分享）。
 
 > **💡 OAuth Callback 失敗排查**：

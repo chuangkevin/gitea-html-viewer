@@ -127,7 +127,11 @@ deploy:
       git fetch --prune "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "+refs/heads/${CI_COMMIT_BRANCH}:refs/remotes/origin/${CI_COMMIT_BRANCH}"
       git reset --hard "origin/${CI_COMMIT_BRANCH}"
       git log -1 --format='deployed commit = %h %s'
-      ./scripts/deploy.sh
+      compose_files="docker-compose.yml"
+      if [ -f docker-compose.override.yml ]; then
+        compose_files="${compose_files}:docker-compose.override.yml"
+      fi
+      COMPOSE_FILE="${compose_files}:docker-compose.gitea.yml" NOTE_GITEA_DEPLOY=1 ./scripts/deploy.sh
 
       for maintenance_id in $maintenance_ids; do
         delete_http_code="$(curl -sS --connect-timeout 3 --max-time 10 -o /dev/null -w "%{http_code}" -X DELETE "${SKYNET_MAINTENANCE_URL}/${maintenance_id}" "${auth_args[@]}" || true)"

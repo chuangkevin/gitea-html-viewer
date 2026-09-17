@@ -1,0 +1,10 @@
+services:
+  note:
+    extra_hosts:
+      # docker-host 不走 FortiGate 的 .ia DNS；保留正式 domain，僅補容器內解析。
+      - "gitea.ia:${GITEA_HOST_IP:-10.11.12.55}"
+    environment:
+      # Gitea 使用公司 mkcert 憑證；Node 必須額外信任公司 root CA。
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/certs/interagent-rootCA.pem
+    volumes:
+      - ${INTERNAL_CA_PATH:-/home/interagent/ca-web/rootCA.pem}:/etc/ssl/certs/interagent-rootCA.pem:ro
