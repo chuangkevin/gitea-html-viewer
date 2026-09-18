@@ -8,6 +8,8 @@ import {
   resolvePreviewAssetPath,
   generateImportMap,
   injectPreviewHead,
+  rewriteDocumentRelativeAttrs,
+  hasFragmentsAffectedByBase,
   rewriteCssSideEffectImports,
   createCssShim,
   readWithPublicFallback,
@@ -220,6 +222,47 @@ describe("site-preview module", () => {
     const baseIndex = injected.indexOf(`<base href="${base}">`);
     const scriptIndex = injected.indexOf(`<script type="module" src="./main.js">`);
     assert.ok(baseIndex < scriptIndex, "base tag should come before first module script");
+  });
+
+  it("rewrites fragment-only and query-only href/action so injected <base> cannot hijack them", () => {
+    const html = `<!DOCTYPE html>
+<html><head></head><body>
+  <a href="#form">申請</a>
+  <a href="#subsidy-overview">總覽</a>
+  <form id="subsidy-form" action="#form" method="post"><input name="x"></form>
+  <a href="https://example.com/x">外部</a>
+  <a href="./other.html">相對檔</a>
+  <img src="./pic.png">
+  <a href="?page=2">下一頁</a>
+</body></html>`;
+    const docPath = "/site/gitlab/org%2Frepo?f=a.html";
+    const out = rewriteDocumentRelativeAttrs(html, docPath);
+
+    // fragment-only → 指向本文件（保留原 query），不再落到 /site-assets/...
+    assert.ok(out.includes(`href="/site/gitlab/org%2Frepo?f=a.html#form"`), "should absolutize href=#form");
+    assert.ok(out.includes(`action="/site/gitlab/org%2Frepo?f=a.html#form"`), "should absolutize action=#form");
+    assert.ok(out.includes(`href="/site/gitlab/org%2Frepo?f=a.html#subsidy-overview"`), "should handle multiple fragments");
+    assert.ok(out.includes(`href="/site/gitlab/org%2Frepo?f=a.html?page=2"`), "should absolutize query-only");
+
+    // 其他屬性一律不動
+    assert.ok(out.includes(`href="https://example.com/x"`), "absolute URL must be untouched");
+    assert.ok(out.includes(`href="./other.html"`), "relative file path must be untouched");
+    assert.ok(out.includes(`src="./pic.png"`), "relative src must be untouched");
+  });
+
+  it("hasFragmentsAffectedByBase detects only document-relative href/action", () => {
+    assert.equal(hasFragmentsAffectedByBase(`<a href="#form">x</a>`), true);
+    assert.equal(hasFragmentsAffectedByBase(`<form action="#form"></form>`), true);
+    assert.equal(hasFragmentsAffectedByBase(`<a href="?p=1">x</a>`), true);
+    assert.equal(hasFragmentsAffectedByBase(`<a href="./a.html">x</a>`), false);
+    assert.equal(hasFragmentsAffectedByBase(`<a href="https://x/#y">x</a>`), false);
+    assert.equal(hasFragmentsAffectedByBase(`<img src="#icon">`), false);
+  });
+
+  it("leaves fragment links untouched when no documentPath is provided", () => {
+    const html = `<a href="#form">x</a>`;
+    const out = rewriteDocumentRelativeAttrs(html, "");
+    assert.equal(out, html, "empty documentPath should be a no-op");
   });
 
   it("prevents script-close injection in importmap JSON", () => {

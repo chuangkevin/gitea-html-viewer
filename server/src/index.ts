@@ -97,6 +97,8 @@ import {
   resolvePreviewAssetPath,
   generateImportMap,
   injectPreviewHead,
+  rewriteDocumentRelativeAttrs,
+  hasFragmentsAffectedByBase,
   rewriteCssSideEffectImports,
   createCssShim,
   hasModuleScript,
@@ -1501,6 +1503,21 @@ app.get("/site/:provider/:project", async (req, res) => {
         }
 
         html = injectPreviewHead(html, baseHref, importMap);
+
+        // 注入的 <base> 會把 fragment-only（#a）與 query-only（?x）的 href/action
+        // 一起帶到資產路徑，害錨點與表單失效（互動頁整片白）。改寫成相對文件本身的
+        // 絕對 URL，並保留原本的 query（f、ref、grant…），行為才與未注入 base 時一致。
+        if (hasFragmentsAffectedByBase(html)) {
+          const documentQuery = new URLSearchParams();
+          for (const key of ["f", "ref", "grant"]) {
+            const value = req.query[key];
+            if (typeof value === "string" && value) documentQuery.set(key, value);
+          }
+          const qs = documentQuery.toString();
+          const documentPath =
+            `/site/${encodeURIComponent(provider)}/${encodeURIComponent(project)}` + (qs ? `?${qs}` : "");
+          html = rewriteDocumentRelativeAttrs(html, documentPath);
+        }
 
         // Note: Content-Security-Policy: sandbox is intentionally omitted to allow JS execution for standalone site view.
         // Trust model: Internal / self-hosted usage where repository contents are treated as trusted.

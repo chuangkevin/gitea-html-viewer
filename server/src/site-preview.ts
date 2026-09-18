@@ -160,6 +160,54 @@ export function hasModuleScript(html: string): boolean {
   return MODULE_SCRIPT_RE.test(html);
 }
 
+/**
+ * `/site/` 會注入 `<base href="/site-assets/.../">`，讓頁面的相對資產（./x.css、./a.png）
+ * 能正確指向 preview 資產路由。但 `<base>` 也會連帶影響**只含片段的 URL**：
+ *
+ *   <a href="#form">        → 被解析成 /site-assets/.../#form  （應該留在本頁）
+ *   <form action="#form">   → 表單送出時打到 /site-assets/...   → 404
+ *
+ * 後果是錨點導覽與表單全部失效，互動式頁面（本頁的「總覽／逐步說明」切換即靠 form）
+ * 直接白畫面。query-only（`?x=1`）同理會被帶到資產路徑。
+ *
+ * 這裡在伺服器端把 fragment-only 與 query-only 的 href/action 改寫成「相對於文件本身」
+ * 的絕對路徑，讓它們不再受 `<base>` 影響。頁面本身的相對資產路徑完全不動。
+ *
+ * 只在確實有注入 `<base>` 時才做；沒有 base 的頁面維持原本語意。
+ */
+const FRAGMENT_OR_QUERY_ONLY_RE = /^(#[^\s"'<>]*|\?[^\s"'<>]*)$/;
+
+/** 把單一屬性值改成相對文件 URL 的絕對值；不需要改動時回 null。 */
+function absolutizeDocumentRelative(value: string, documentPath: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  // 只處理 fragment-only（#x）與 query-only（?x=1#y）；其他交給瀏覽器與 base 處理
+  if (!FRAGMENT_OR_QUERY_ONLY_RE.test(trimmed)) return null;
+  // documentPath 是「含原 query、不含 fragment」的當前文件 URL（例如
+  // /site/gitlab/org%2Frepo?f=a.html）。片段直接接在它後面即等同原頁跳轉。
+  return documentPath ? `${documentPath}${trimmed}` : trimmed;
+}
+
+/**
+ * 改寫 fragment-only / query-only 的 href 與 action，使其不受注入的 <base> 影響。
+ * 只動這兩個屬性，其餘 HTML 原樣保留。
+ */
+export function rewriteDocumentRelativeAttrs(html: string, documentPath: string): string {
+  return html.replace(
+    /(\s(?:href|action)\s*=\s*)(["'])([^"']*)\2/gi,
+    (match, prefix: string, quote: string, value: string) => {
+      const rewritten = absolutizeDocumentRelative(value, documentPath);
+      if (rewritten === null || rewritten === value) return match;
+      return `${prefix}${quote}${rewritten}${quote}`;
+    }
+  );
+}
+
+/** fragment-only 的 URL 是否受 <base> 影響；用於決定要不要進改寫。 */
+export function hasFragmentsAffectedByBase(html: string): boolean {
+  return /(\s(?:href|action)\s*=\s*)(["'])(#[^"']*|\?[^"']*)\2/i.test(html);
+}
+
 export function injectPreviewHead(
   html: string,
   baseHref: string,

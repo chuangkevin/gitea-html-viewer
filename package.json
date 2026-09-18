@@ -1,6 +1,6 @@
 {
   "name": "note",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Markdown notes that live in your Git repo (GitHub / GitLab) — edit on the web, share as standalone pages, present as slides.",
   "workspaces": [
